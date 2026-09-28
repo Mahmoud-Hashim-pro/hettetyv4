@@ -135,7 +135,7 @@ export const calculatePropertyFit = (
 
   // Delivery Timeline Evaluation
   if (profile.deliveryTimeline && profile.deliveryTimeline !== 'all') {
-    const isReady = property.status === 'ready' || (property.deliveryTimeline && property.deliveryTimeline.toLowerCase().includes('ready'));
+    const isReady = !!property.deliveryDate && property.deliveryDate.toLowerCase().includes('ready');
     if (profile.deliveryTimeline === 'ready') {
       if (isReady) {
         score += 10;
@@ -397,7 +397,7 @@ ${JSON.stringify(properties.map(p => ({
   location: p.location,
   type: p.propertyType,
   status: p.status,
-  delivery: p.deliveryTimeline || p.status,
+  delivery: p.deliveryDate || p.status,
   bedrooms: p.bedrooms,
   area: p.area,
   paymentPlans: p.paymentPlans,
@@ -545,7 +545,7 @@ ${idx + 1}. [${p.category.toUpperCase()}] ${p.property.title}
    - Location: ${p.property.location}
    - Property Type: ${p.property.propertyType}
    - Price: ${p.property.price ? `${p.property.price.toLocaleString()} ${p.property.currency || 'EGP'}` : 'On Request'}
-   - Handover Status: ${p.property.deliveryTimeline || p.property.status}
+   - Handover Status: ${p.property.deliveryDate || p.property.status}
    - Match Score: ${p.matchScore}%
    - Key Advisory Factors: ${p.reasons.join(' | ')}
 `).join('')}
@@ -1094,7 +1094,7 @@ Disclaimer: Provided by HETTETY Smart Real Estate Advisor for property selection
                           <div>
                             <span className="block text-[9px] text-slate-400 font-bold">{isRtl ? 'جاهزية الاستلام' : 'Handover'}</span>
                             <span className="text-xs font-black text-emerald-600 dark:text-emerald-400 block truncate">
-                              {property.deliveryTimeline || (property.status === 'ready' ? (isRtl ? 'استلام فوري' : 'Ready') : (isRtl ? 'تحت الإنشاء' : 'Off-Plan'))}
+                              {property.deliveryDate || (isRtl ? 'غير محدد' : 'Not stated')}
                             </span>
                           </div>
                         </div>

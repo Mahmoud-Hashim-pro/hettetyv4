@@ -51,11 +51,13 @@ describe('Tier 1 — the property page hands the viewer everything it has', () =
     localStorage.setItem('hettety_consent', JSON.stringify({ necessary: true }));
   });
 
-  it('passes the stored depth maps, without which every photo renders flat', async () => {
+  it('passes the stored depth maps, index-matched to the photos', async () => {
     // displacementScale falls to 0 when depth is absent, so omitting these did
-    // not fail loudly — it silently turned the relief off.
+    // not fail loudly — it silently turned the relief off. The order matters as
+    // much as the presence: map [1] belongs to photo [1].
     const props = await open3D(unit());
     expect(props.depthMaps).toEqual(['data:image/png;base64,DDDD', 'data:image/png;base64,EEEE']);
+    expect(props.depthMaps).toHaveLength(props.images.length);
   }, 20000);
 
   it('passes a real walkthrough through so the viewer can offer it', async () => {
@@ -66,10 +68,5 @@ describe('Tier 1 — the property page hands the viewer everything it has', () =
   it('passes no tour URL when the link is not one we allow', async () => {
     const props = await open3D(unit({ digitalTwinUrl: 'javascript:alert(1)' }));
     expect(props.tourUrl).toBeFalsy();
-  }, 20000);
-
-  it('keeps the depth maps lined up with the photos they belong to', async () => {
-    const props = await open3D(unit());
-    expect(props.depthMaps).toHaveLength(props.images.length);
   }, 20000);
 });

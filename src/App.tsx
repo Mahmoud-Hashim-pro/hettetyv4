@@ -42,6 +42,8 @@ import { useFocusTrap } from './hooks/useFocusTrap';
 import { lazyWithReload } from './lib/lazyWithReload';
 import { LoadErrorBoundary } from './components/LoadErrorBoundary';
 import RealEstateAdvisor from './components/RealEstateAdvisor';
+import { parseNaturalLanguageQuery } from './services/search/query-parser';
+import { rankAndFilterProperties } from './services/search/ranking-engine';
 
 // Lazy-loaded so the heavy three.js bundle is only fetched when a 3D tour is opened
 const Property3DViewer = lazyWithReload(() => import('./components/Property3DViewer'), 'viewer3d');
@@ -4513,30 +4515,22 @@ export default function App() {
     
     setIsAiSearching(true);
     try {
-      const prompt = `
-        You are an AI real estate assistant. Return ONLY a JSON array of property IDs that match the user's search query.
-        User Query: "${listingSearchQuery}"
-        Available Properties:
-        ${JSON.stringify(properties.map(p => ({ id: p.id, title: p.title, location: p.location, price: p.price, type: p.status })), null, 2)}
-      `;
+      // Grounded Natural Language Structured Filter Extraction & Ranking
+      const parsedFilters = parseNaturalLanguageQuery(listingSearchQuery);
+      const ranked = rankAndFilterProperties(publicProperties, parsedFilters);
 
-      const response = await generateContentResilient({
-        task: 'search',
-        contents: prompt,
-        config: {
-          responseMimeType: 'application/json',
-          responseSchema: {
-            type: Type.ARRAY,
-            items: { type: Type.STRING },
-            description: "Array of property IDs matching the search query"
-          }
-        }
-      });
-
-      const text = response.text;
-      const ids = JSON.parse(text || "[]");
-      // Guard against the model returning something that isn't a string array
-      setAiFilteredIds(Array.isArray(ids) ? ids.filter((id: unknown) => typeof id === 'string') : null);
+      if (ranked.length > 0) {
+        setAiFilteredIds(ranked.map(r => r.property.id));
+      } else {
+        // Fallback: match title, location, or compound substrings
+        const q = listingSearchQuery.toLowerCase();
+        const fallback = publicProperties.filter(p =>
+          p.title.toLowerCase().includes(q) ||
+          p.location.toLowerCase().includes(q) ||
+          (p.compound || '').toLowerCase().includes(q)
+        );
+        setAiFilteredIds(fallback.map(p => p.id));
+      }
     } catch (err: any) {
       console.error("AI Search Error:", err);
       // Fall back to plain text search instead of interrupting the user with an alert

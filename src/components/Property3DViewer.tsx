@@ -18,6 +18,7 @@ import { useFocusTrap } from '../hooks/useFocusTrap';
 import { ThreeDTourAsset, TourRoomWaypoint } from '../types';
 import { FloorPlan } from './3d/FloorPlan';
 import { MeasurementTool } from './3d/MeasurementTool';
+import { SpatialAiAssistant } from './3d/SpatialAiAssistant';
 export { TourViewer } from './3d/TourViewer';
 
 /**
@@ -726,6 +727,13 @@ const Property3DViewer: React.FC<Property3DViewerProps> = ({ images, depthMaps, 
           <MeasurementTool isRtl={isRtl} />
         </div>
       )}
+
+      {/* In-Viewer Spatial AI Assistant */}
+      <SpatialAiAssistant
+        tour={threeDTour as any}
+        onNavigateToRoom={(roomId) => setActiveRoomId(roomId)}
+        isRtl={isRtl}
+      />
 
       {mode === 'tour' ? (
         <Canvas camera={{ position: [0, 2, 5], fov: 60 }} className="flex-1" gl={{ antialias: true }}>

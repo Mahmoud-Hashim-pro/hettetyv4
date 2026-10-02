@@ -22,7 +22,10 @@ def publish_tour_assets(
     callback_url: str,
     api_key: str,
     storage_client: Optional[Any] = None,
-    image_count: int = 30
+    image_count: int = 30,
+    mesh_vertex_count: int = 0,
+    mesh_face_count: int = 0,
+    is_calibrated_metric: bool = False
 ) -> Dict[str, Any]:
     """
     Publishes generated representations and invokes Hettety completion webhook.
@@ -62,8 +65,9 @@ def publish_tour_assets(
     # Density: based on compressed payload size (roughly 12 bytes/splat in SPZ)
     estimated_splats = max(1000, spz_size // 12)
     density_score = min(100, max(20, int((min(estimated_splats, 600000) / 450000.0) * 100)))
+    mesh_score = min(100, max(30, int((min(mesh_face_count, 500) / 200.0) * 100))) if mesh_face_count > 0 else 50
     sharpness_score = 90 if image_count >= 30 else 75
-    overall_score = int(coverage_score * 0.4 + density_score * 0.4 + sharpness_score * 0.2)
+    overall_score = int(coverage_score * 0.35 + density_score * 0.35 + mesh_score * 0.2 + sharpness_score * 0.1)
     
     payload = {
         "jobId": job_id,
@@ -80,7 +84,9 @@ def publish_tour_assets(
                 "format": "glb",
                 "url": glb_url,
                 "sizeBytes": glb_size,
-                "isCalibratedMetric": True
+                "vertexCount": mesh_vertex_count,
+                "faceCount": mesh_face_count,
+                "isCalibratedMetric": is_calibrated_metric
             }
         },
         "bounds": bounds,
@@ -89,7 +95,8 @@ def publish_tour_assets(
             "metrics": {
                 "coverage": coverage_score,
                 "sharpness": sharpness_score,
-                "density": density_score
+                "density": density_score,
+                "meshCompleteness": mesh_score
             }
         }
     }

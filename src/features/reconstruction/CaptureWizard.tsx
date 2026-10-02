@@ -3,7 +3,7 @@ import { Camera, Video, Compass, Globe, Upload, CheckCircle2, AlertTriangle, Arr
 import { ThreeDTour, ReconstructionJob } from '../../types';
 import { validatePhotoCapture, validateVideoCapture } from './CaptureValidator';
 import { ReconstructionProgress } from './ReconstructionProgress';
-import { createReconstructionJob, updateJobStatus } from '../../services/3d/reconstruction-service';
+import { createReconstructionJob, updateJobStatus, subscribeToJob } from '../../services/3d/reconstruction-service';
 import { createUploadSession, uploadFileToSession, registerCaptureAsset, registerThreeDAsset } from '../../services/3d/asset-service';
 import { buildDefaultThreeDTour } from '../../services/3d/tour-service';
 
@@ -110,6 +110,17 @@ export const CaptureWizard: React.FC<CaptureWizardProps> = ({
   const [activeJob, setActiveJob] = useState<ReconstructionJob | null>(null);
   const [processing, setProcessing] = useState(false);
   const [statusMessage, setStatusMessage] = useState<string>('');
+  const unsubscribeRef = React.useRef<(() => void) | null>(null);
+
+  // Clean up any real-time subscription on unmount
+  React.useEffect(() => {
+    return () => {
+      if (unsubscribeRef.current) {
+        unsubscribeRef.current();
+        unsubscribeRef.current = null;
+      }
+    };
+  }, []);
 
   // Real-time validation results
   const validation = method === 'photos'
@@ -118,82 +129,7 @@ export const CaptureWizard: React.FC<CaptureWizardProps> = ({
     ? validateVideoCapture(video ? { name: video.name, size: video.size, type: video.type } : null)
     : null;
 
-  const handleStartReconstruction = async () => {
-    if (method === 'external') {
-      if (!externalUrl.trim()) return;
-      const tour = buildDefaultThreeDTour(externalUrl, 'spz');
-      tour.source = 'matterport';
-      onTourGenerated(tour);
-      return;
-    }
-
-    if (validation && !validation.valid) {
-      alert(
-        isRtl
-          ? `لا يمكن بدء البناء الفراغي: ${validation.errorsAr.join('، ')}`
-          : `Cannot start 3D reconstruction: ${validation.errors.join(', ')}`
-      );
-      return;
-    }
-
-    setProcessing(true);
-    let captureFiles: File[] = [];
-
-    if (method === 'video' && video) {
-      setStatusMessage(isRtl ? 'جاري استخراج إطارات الفيديو الفراغية...' : 'Extracting spatial keyframes from video...');
-      captureFiles = await extractVideoKeyframes(video, 36);
-    } else {
-      captureFiles = photos;
-    }
-
-    // Step 1: Create genuine reconstruction job
-    const job = createReconstructionJob({
-      propertyId,
-      ownerId: 'current-user',
-      type: method === 'video' ? 'video' : 'photos',
-      sourceCount: captureFiles.length,
-    });
-    setActiveJob(job);
-
-    // Step 2: Create upload session and upload files
-    setStatusMessage(isRtl ? 'جاري رفع الإطارات والصور إلى سحابة Hettety...' : 'Uploading keyframes to Hettety storage...');
-    const uploadSession = createUploadSession({
-      propertyId,
-      files: captureFiles.map(f => ({ name: f.name, sizeBytes: f.size, mimeType: f.type })),
-    });
-
-    for (let i = 0; i < Math.min(captureFiles.length, uploadSession.signedUploadUrls.length); i++) {
-      const file = captureFiles[i];
-      const target = uploadSession.signedUploadUrls[i];
-      await uploadFileToSession(target.uploadUrl, file);
-      registerCaptureAsset({
-        id: `cap-${job.id}-${i}`,
-        jobId: job.id,
-        type: method === 'video' ? 'video' : 'photo',
-        storagePath: target.storagePath,
-        sizeBytes: file.size,
-        mimeType: file.type,
-        createdAt: new Date().toISOString(),
-      });
-    }
-
-    // Step 3: Run verified job pipeline progression
-    const stages: Array<{ status: any; progress: number; stage: string; delay: number }> = [
-      { status: 'VALIDATING', progress: 15, stage: 'Validating Quality', delay: 400 },
-      { status: 'UPLOADING', progress: 35, stage: 'Uploading Media', delay: 400 },
-      { status: 'RECONSTRUCTING', progress: 60, stage: 'COLMAP Scene Alignment', delay: 500 },
-      { status: 'TRAINING', progress: 82, stage: 'Training 3D Gaussians', delay: 500 },
-      { status: 'OPTIMIZING', progress: 95, stage: 'SPZ Progressive Compression', delay: 400 },
-      { status: 'READY', progress: 100, stage: 'Publishing Spatial Tour', delay: 300 },
-    ];
-
-    for (const step of stages) {
-      await new Promise(r => setTimeout(r, step.delay));
-      const updated = updateJobStatus(job.id, step.status, step.progress, step.stage);
-      if (updated) setActiveJob({ ...updated });
-    }
-
-    // Step 4: Register final 3D asset with dual representations
+  const handleJobCompletion = (job: ReconstructionJob) => {
     const spzUrl = `https://storage.googleapis.com/hettety-spatial-assets/${propertyId}/tour/scene.spz`;
     const glbUrl = `https://storage.googleapis.com/hettety-spatial-assets/${propertyId}/tour/mesh.glb`;
 
@@ -207,7 +143,7 @@ export const CaptureWizard: React.FC<CaptureWizardProps> = ({
       publicUrl: spzUrl,
       sizeBytes: 12500000,
       splatCount: 450000,
-      version: '1.0.0',
+      version: '2.0.0',
       isPrimary: true,
       createdAt: new Date().toISOString(),
     });
@@ -239,6 +175,7 @@ export const CaptureWizard: React.FC<CaptureWizardProps> = ({
       ]
     );
 
+    // HONEST REPRESENTATION: isCalibratedMetric is strictly false until verified with reference markers
     finalTour.representation = {
       gaussianSplat: {
         format: 'spz',
@@ -250,7 +187,7 @@ export const CaptureWizard: React.FC<CaptureWizardProps> = ({
         format: 'glb',
         url: glbUrl,
         sizeBytes: 4800000,
-        isCalibratedMetric: true,
+        isCalibratedMetric: false,
       },
       panorama: {
         url: 'https://images.unsplash.com/photo-1600585154340-be6161a56a0c?auto=format&fit=crop&w=2000&q=80',
@@ -268,6 +205,100 @@ export const CaptureWizard: React.FC<CaptureWizardProps> = ({
     finalTour.processingJobId = job.id;
     setProcessing(false);
     onTourGenerated(finalTour);
+  };
+
+  const handleStartReconstruction = async () => {
+    if (method === 'external') {
+      if (!externalUrl.trim()) return;
+      const tour = buildDefaultThreeDTour(externalUrl, 'spz');
+      tour.source = 'matterport';
+      onTourGenerated(tour);
+      return;
+    }
+
+    if (validation && !validation.valid) {
+      alert(
+        isRtl
+          ? `لا يمكن بدء البناء الفراغي: ${validation.errorsAr.join('، ')}`
+          : `Cannot start 3D reconstruction: ${validation.errors.join(', ')}`
+      );
+      return;
+    }
+
+    setProcessing(true);
+    let captureFiles: File[] = [];
+
+    if (method === 'video' && video) {
+      setStatusMessage(isRtl ? 'جاري استخراج إطارات الفيديو الفراغية...' : 'Extracting spatial keyframes from video...');
+      captureFiles = await extractVideoKeyframes(video, 36);
+    } else {
+      captureFiles = photos;
+    }
+
+    // Step 1: Create genuine reconstruction job in QUEUED status
+    const job = createReconstructionJob({
+      propertyId,
+      ownerId: 'current-user',
+      type: method === 'video' ? 'video' : 'photos',
+      sourceCount: captureFiles.length,
+    });
+    setActiveJob(job);
+
+    // Step 2: Subscribe to live Firestore updates
+    if (unsubscribeRef.current) {
+      unsubscribeRef.current();
+    }
+
+    unsubscribeRef.current = subscribeToJob(job.id, (updatedJob) => {
+      setActiveJob({ ...updatedJob });
+      if (updatedJob.status === 'READY') {
+        if (unsubscribeRef.current) {
+          unsubscribeRef.current();
+          unsubscribeRef.current = null;
+        }
+        handleJobCompletion(updatedJob);
+      } else if (updatedJob.status === 'FAILED') {
+        setProcessing(false);
+        setStatusMessage(
+          updatedJob.errorMessage || (isRtl ? 'فشلت المعالجة الفراغية' : 'Reconstruction failed')
+        );
+      } else if (updatedJob.status === 'CANCELLED') {
+        setProcessing(false);
+        setStatusMessage(isRtl ? 'تم إلغاء مهمة البناء الفراغي' : 'Reconstruction job cancelled');
+      }
+    });
+
+    // Step 3: Create upload session and upload real capture assets
+    try {
+      setStatusMessage(isRtl ? 'جاري رفع الإطارات والصور إلى سحابة Hettety...' : 'Uploading keyframes to Hettety storage...');
+      updateJobStatus(job.id, 'UPLOADING', 25, 'Uploading Media');
+
+      const uploadSession = createUploadSession({
+        propertyId,
+        files: captureFiles.map(f => ({ name: f.name, sizeBytes: f.size, mimeType: f.type })),
+      });
+
+      for (let i = 0; i < Math.min(captureFiles.length, uploadSession.signedUploadUrls.length); i++) {
+        const file = captureFiles[i];
+        const target = uploadSession.signedUploadUrls[i];
+        await uploadFileToSession(target.uploadUrl, file);
+        registerCaptureAsset({
+          id: `cap-${job.id}-${i}`,
+          jobId: job.id,
+          type: method === 'video' ? 'video' : 'photo',
+          storagePath: target.storagePath,
+          sizeBytes: file.size,
+          mimeType: file.type,
+          createdAt: new Date().toISOString(),
+        });
+      }
+
+      setStatusMessage(isRtl ? 'تم الرفع بنجاح — بانتظار معالجة خادم البناء الفراغي...' : 'Media uploaded — waiting for 3D reconstruction worker...');
+    } catch (err: any) {
+      updateJobStatus(job.id, 'FAILED', 25, 'Upload Failed', 'STORAGE_ERROR', err?.message || 'Upload failed');
+      setProcessing(false);
+      setStatusMessage(isRtl ? 'فشل رفع اللقطات إلى السحابة' : 'Failed to upload media files');
+    }
   };
 
   return (

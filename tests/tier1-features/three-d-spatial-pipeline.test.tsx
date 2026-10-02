@@ -18,6 +18,8 @@ import { FloorPlan } from '../../src/components/3d/FloorPlan';
 import { PREMIER_LANDMARK_PROPERTIES } from '../../src/lib/inventoryData';
 import { parseGaussianPly, parseGaussianSpz, InvalidGaussianDataError } from '../../src/lib/3d/spz-parser';
 import { extractVideoKeyframes } from '../../src/features/reconstruction/CaptureWizard';
+import { calibrateModelScale, ARCHITECTURAL_REFERENCES } from '../../src/lib/3d/metric-calibration';
+import { evaluateTourQualityGate } from '../../src/lib/3d/quality-gate';
 
 describe('Tier 1 — HETTETY Real 3D Reconstruction Pipeline & Architecture', () => {
   describe('CaptureValidator — Pre-flight Quality & Overlap Checks', () => {
@@ -357,6 +359,139 @@ property float x
     });
   });
 
+  describe('Metric Calibration Engine — Physical Scale Verification', () => {
+    it('strictly returns isCalibratedMetric: false when no physical anchors are supplied', () => {
+      const report = calibrateModelScale(3.2, []);
+      expect(report.isCalibratedMetric).toBe(false);
+      expect(report.confidenceScore).toBe(0);
+      expect(report.errorMarginPercent).toBeGreaterThan(20);
+      expect(report.disclaimer).toContain('not metric-calibrated');
+    });
+
+    it('calibrates model scale and awards isCalibratedMetric: true when multiple consistent reference markers are provided', () => {
+      // 2 standard doors (2.15m measured at 2.15 units) and 1 ceiling (2.90m measured at 2.90 units)
+      const references = [
+        { type: 'door_standard' as const, measuredUnits: 2.15, knownMeters: ARCHITECTURAL_REFERENCES.DOOR_HEIGHT_METERS },
+        { type: 'door_standard' as const, measuredUnits: 2.14, knownMeters: ARCHITECTURAL_REFERENCES.DOOR_HEIGHT_METERS },
+        { type: 'ceiling_standard' as const, measuredUnits: 2.90, knownMeters: ARCHITECTURAL_REFERENCES.CEILING_HEIGHT_METERS },
+      ];
+
+      const report = calibrateModelScale(2.9, references);
+      expect(report.isCalibratedMetric).toBe(true);
+      expect(report.confidenceScore).toBeGreaterThanOrEqual(0.90);
+      expect(report.errorMarginPercent).toBeLessThanOrEqual(5.0);
+      expect(report.scaleMetersPerUnit).toBeCloseTo(1.0, 2);
+      expect(report.disclaimer).toContain('verified architectural reference anchors');
+    });
+
+    it('rejects calibration when reference measurements have high discrepancy / variance', () => {
+      // High variance: door says 1 unit = 2m, window says 1 unit = 0.5m
+      const inconsistentRefs = [
+        { type: 'door_standard' as const, measuredUnits: 1.0, knownMeters: 2.15 },
+        { type: 'user_dimension' as const, measuredUnits: 3.0, knownMeters: 1.0 },
+      ];
+
+      const report = calibrateModelScale(2.5, inconsistentRefs);
+      expect(report.isCalibratedMetric).toBe(false);
+      expect(report.confidenceScore).toBeLessThan(0.90);
+      expect(report.errorMarginPercent).toBeGreaterThan(5.0);
+    });
+  });
+
+  describe('Multi-Stage Tour Quality Gate & Telemetry Assessment', () => {
+    it('approves tour with READY status when capture, gaussian, and mesh pass all requirements', () => {
+      const evaluation = evaluateTourQualityGate(
+        {
+          imageCount: 45,
+          avgResolution: [1920, 1080],
+          blurScore: 88,
+          overlapScore: 92,
+          coverageScore: 90,
+        },
+        {
+          splatCount: 420000,
+          bounds: { min: [-5, 0, -5], max: [5, 3.2, 5] },
+          spzSizeBytes: 8500000,
+          hasNaNOrInf: false,
+        },
+        {
+          vertexCount: 15400,
+          faceCount: 28000,
+          glbSizeBytes: 3200000,
+          isCalibratedMetric: true,
+          calibrationConfidence: 0.95,
+        }
+      );
+
+      expect(evaluation.passed).toBe(true);
+      expect(evaluation.status).toBe('READY');
+      expect(evaluation.overallScore).toBeGreaterThanOrEqual(80);
+      expect(evaluation.captureCheck.passed).toBe(true);
+      expect(evaluation.gaussianCheck.passed).toBe(true);
+      expect(evaluation.meshCheck.passed).toBe(true);
+    });
+
+    it('rejects tour when image count is insufficient or blur is high', () => {
+      const evaluation = evaluateTourQualityGate(
+        {
+          imageCount: 6,
+          avgResolution: [1280, 720],
+          blurScore: 40,
+          overlapScore: 35,
+          coverageScore: 30,
+        },
+        {
+          splatCount: 50000,
+          bounds: { min: [-2, 0, -2], max: [2, 2.5, 2] },
+          spzSizeBytes: 2000000,
+          hasNaNOrInf: false,
+        },
+        {
+          vertexCount: 500,
+          faceCount: 900,
+          glbSizeBytes: 150000,
+          isCalibratedMetric: false,
+          calibrationConfidence: 0.2,
+        }
+      );
+
+      expect(evaluation.passed).toBe(false);
+      expect(evaluation.status).toBe('REJECTED');
+      expect(evaluation.captureCheck.passed).toBe(false);
+      expect(evaluation.captureCheck.issues.length).toBeGreaterThan(0);
+    });
+
+    it('rejects tour when Gaussian splat primitives contain NaN/Inf or count is zero', () => {
+      const evaluation = evaluateTourQualityGate(
+        {
+          imageCount: 50,
+          avgResolution: [1920, 1080],
+          blurScore: 85,
+          overlapScore: 90,
+          coverageScore: 90,
+        },
+        {
+          splatCount: 0,
+          bounds: { min: [0, 0, 0], max: [0, 0, 0] },
+          spzSizeBytes: 100,
+          hasNaNOrInf: true,
+        },
+        {
+          vertexCount: 5000,
+          faceCount: 9000,
+          glbSizeBytes: 1500000,
+          isCalibratedMetric: false,
+          calibrationConfidence: 0.5,
+        }
+      );
+
+      expect(evaluation.passed).toBe(false);
+      expect(evaluation.status).toBe('REJECTED');
+      expect(evaluation.gaussianCheck.passed).toBe(false);
+      expect(evaluation.gaussianCheck.issues.some(i => i.includes('NaN or Infinity'))).toBe(true);
+    });
+  });
+
   describe('Video Keyframe Extraction', () => {
     it('extracts sampled keyframe image files from uploaded walkthrough video', async () => {
       const mockVideo = new File([new Uint8Array([0x00, 0x00, 0x00, 0x20])], 'walkthrough.mp4', {
@@ -371,3 +506,5 @@ property float x
     });
   });
 });
+
+

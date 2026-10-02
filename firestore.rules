@@ -130,6 +130,45 @@ service cloud.firestore {
     //   - createdAt: string/timestamp (required) - Lead creation timestamp
     //   - updatedAt: string/timestamp (optional) - Last modification timestamp
     //
+    // Collection: reconstruction_jobs
+    // Document ID: jobId
+    // Fields:
+    //   - propertyId: string (required) - Associated property ID
+    //   - ownerId: string (required) - UID of the job owner/creator
+    //   - status: string (required, enum: ['QUEUED', 'VALIDATING', 'UPLOADING', 'RECONSTRUCTING', 'TRAINING', 'OPTIMIZING', 'PUBLISHING', 'READY', 'FAILED', 'CANCELLED'])
+    //   - type: string (required, enum: ['video', 'photos', 'hybrid'])
+    //   - progress: number (optional) - Pipeline progress percentage (0 - 100)
+    //   - stage: string (optional) - Active processing stage
+    //   - errorCode: string (optional) - Failure error code if any
+    //   - errorMessage: string (optional) - Failure error message
+    //   - createdAt: string/timestamp (required) - Timestamp of job creation
+    //   - startedAt: string/timestamp (optional) - Processing start timestamp
+    //   - completedAt: string/timestamp (optional) - Completion timestamp
+    //   - retryCount: number (optional) - Number of retry attempts
+    //   - updatedAt: string/timestamp (optional) - Last state update timestamp
+    //
+    // Collection: capture_assets
+    // Document ID: assetId
+    // Fields:
+    //   - jobId: string (required) - Associated reconstruction job ID
+    //   - type: string (required, enum: ['photo', 'video', 'panorama'])
+    //   - storagePath: string (required) - Storage bucket path
+    //   - sizeBytes: number (required) - Asset size in bytes
+    //   - createdAt: string/timestamp (required) - Asset registration timestamp
+    //
+    // Collection: three_d_assets
+    // Document ID: assetId
+    // Fields:
+    //   - propertyId: string (required) - Associated property listing ID
+    //   - jobId: string (required) - Associated reconstruction job ID
+    //   - type: string (required, enum: ['GAUSSIAN_SPLAT', 'MESH', 'PANORAMA', 'THUMBNAIL', 'FLOORPLAN'])
+    //   - format: string (required, enum: ['spz', 'glb', 'ply', 'jpg', 'png'])
+    //   - storagePath: string (required) - Storage bucket path
+    //   - publicUrl: string (required) - Public CDN or storage URL
+    //   - sizeBytes: number (required) - Asset file size in bytes
+    //   - version: string (required) - Pipeline asset schema version
+    //   - createdAt: string/timestamp (required) - Creation timestamp
+    //
     // ===============================================================
 
     // ===============================================================
@@ -596,6 +635,32 @@ service cloud.firestore {
         isAdmin() ||
         (resource.data.assignedAgentId == request.auth.uid && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'priority', 'viewingAppointment', 'notes', 'updatedAt']))
       );
+      allow delete: if isAdmin();
+    }
+
+    // Phase 10: 3D Reconstruction Pipeline Collections
+    match /reconstruction_jobs/{jobId} {
+      allow read: if isAuthenticated() && (resource.data.ownerId == request.auth.uid || isAdmin());
+      allow create: if isAuthenticated() &&
+                    request.resource.data.ownerId == request.auth.uid &&
+                    request.resource.data.keys().hasAll(['propertyId', 'ownerId', 'status', 'type', 'createdAt']) &&
+                    request.resource.data.status in ['QUEUED', 'UPLOADING'];
+      allow update: if isAuthenticated() && (
+        isAdmin() ||
+        (resource.data.ownerId == request.auth.uid && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'progress', 'stage', 'errorCode', 'errorMessage', 'completedAt', 'startedAt', 'retryCount', 'updatedAt']))
+      );
+      allow delete: if isAdmin();
+    }
+
+    match /capture_assets/{assetId} {
+      allow read: if isAuthenticated();
+      allow create: if isAuthenticated() && request.resource.data.keys().hasAll(['jobId', 'type', 'storagePath', 'sizeBytes', 'createdAt']);
+      allow update, delete: if isAdmin();
+    }
+
+    match /three_d_assets/{assetId} {
+      allow read: if true; // Public spatial assets (SPZ / GLB) for property viewer
+      allow create, update: if isAuthenticated() && request.resource.data.keys().hasAll(['propertyId', 'jobId', 'type', 'format', 'storagePath', 'publicUrl', 'sizeBytes', 'version', 'createdAt']);
       allow delete: if isAdmin();
     }
   }

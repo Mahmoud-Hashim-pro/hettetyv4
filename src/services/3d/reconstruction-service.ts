@@ -1,9 +1,12 @@
 /**
  * HETTETY 3D - Reconstruction Job Service
- * Orchestrates job submission, idempotency caching, stage tracking, and persistent job state.
+ * Orchestrates job submission, idempotency caching, stage tracking, and persistent Firestore database records.
+ * Database is the definitive source of truth across browser sessions and devices.
  */
 
 import { ReconstructionJob, ReconstructionJobStatus, ReconstructionErrorCode } from '../../types';
+import { db } from '../../firebase';
+import { doc, getDoc, setDoc, updateDoc, collection, query, where, getDocs, onSnapshot } from 'firebase/firestore';
 
 export interface CreateJobParams {
   propertyId: string;
@@ -14,12 +17,14 @@ export interface CreateJobParams {
 }
 
 const STORAGE_KEY = 'hettety_3d_reconstruction_jobs';
+const COLLECTION_NAME = 'reconstruction_jobs';
 
-// In-memory registry with localStorage synchronization for web clients
+// Memory cache + local persistence
 const activeJobs = new Map<string, ReconstructionJob>();
 const listeners = new Map<string, Set<(job: ReconstructionJob) => void>>();
+const firestoreUnsubs = new Map<string, () => void>();
 
-// Hydrate from localStorage if in browser environment
+// Hydrate from localStorage for offline/immediate startup
 const hydrateFromStorage = () => {
   if (typeof window === 'undefined' || !window.localStorage) return;
   try {
@@ -43,7 +48,7 @@ const persistToStorage = () => {
     const jobsArray = Array.from(activeJobs.values());
     localStorage.setItem(STORAGE_KEY, JSON.stringify(jobsArray));
   } catch {
-    // Ignore storage quota or access errors
+    // Ignore storage quota errors
   }
 };
 
@@ -58,23 +63,57 @@ const notifyListeners = (job: ReconstructionJob) => {
   }
 };
 
+/**
+ * Subscribes to real-time status updates from Firestore (or local listener fallback).
+ */
 export const subscribeToJob = (jobId: string, callback: (job: ReconstructionJob) => void): (() => void) => {
   if (!listeners.has(jobId)) {
     listeners.set(jobId, new Set());
   }
   listeners.get(jobId)!.add(callback);
 
-  // Immediate callback if job already exists
+  // Return immediate cached state if present
   const existing = activeJobs.get(jobId);
   if (existing) {
     callback(existing);
+  }
+
+  // Subscribe to real Firestore document if db is initialized
+  if (db && !firestoreUnsubs.has(jobId)) {
+    try {
+      const jobDocRef = doc(db, COLLECTION_NAME, jobId);
+      const unsub = onSnapshot(
+        jobDocRef,
+        (snap) => {
+          if (snap.exists()) {
+            const data = snap.data() as ReconstructionJob;
+            activeJobs.set(jobId, data);
+            persistToStorage();
+            notifyListeners(data);
+          }
+        },
+        (err) => {
+          console.warn(`Firestore subscription note for ${jobId}:`, err);
+        }
+      );
+      firestoreUnsubs.set(jobId, unsub);
+    } catch (e) {
+      // In tests without active firestore network, fallback is active
+    }
   }
 
   return () => {
     const subs = listeners.get(jobId);
     if (subs) {
       subs.delete(callback);
-      if (subs.size === 0) listeners.delete(jobId);
+      if (subs.size === 0) {
+        listeners.delete(jobId);
+        const fsUnsub = firestoreUnsubs.get(jobId);
+        if (fsUnsub) {
+          fsUnsub();
+          firestoreUnsubs.delete(jobId);
+        }
+      }
     }
   };
 };
@@ -111,12 +150,24 @@ export const createReconstructionJob = (params: CreateJobParams): Reconstruction
     createdAt: now,
     startedAt: now,
     idempotencyKey: idempotencyKey || `${propertyId}-${Date.now()}`,
-    pipelineVersion: '1.0.0',
+    pipelineVersion: '2.0.0',
   };
 
   activeJobs.set(jobId, newJob);
   persistToStorage();
   notifyListeners(newJob);
+
+  // Persist asynchronously to Firestore
+  if (db) {
+    try {
+      setDoc(doc(db, COLLECTION_NAME, jobId), newJob).catch(err => {
+        console.warn('Firestore setDoc note for reconstruction job:', err);
+      });
+    } catch (e) {
+      // Offline fallback
+    }
+  }
+
   return newJob;
 };
 
@@ -152,6 +203,26 @@ export const updateJobStatus = (
   activeJobs.set(jobId, updated);
   persistToStorage();
   notifyListeners(updated);
+
+  // Sync to Firestore
+  if (db) {
+    try {
+      updateDoc(doc(db, COLLECTION_NAME, jobId), {
+        status,
+        progress,
+        stage,
+        ...(errorCode ? { errorCode } : {}),
+        ...(errorMessage ? { errorMessage } : {}),
+        ...(job.completedAt ? { completedAt: job.completedAt } : {}),
+        updatedAt: new Date().toISOString(),
+      }).catch(() => {
+        // Fallback
+      });
+    } catch {
+      // Offline fallback
+    }
+  }
+
   return updated;
 };
 
@@ -164,6 +235,16 @@ export const cancelReconstructionJob = (jobId: string): boolean => {
   activeJobs.set(jobId, updated);
   persistToStorage();
   notifyListeners(updated);
+
+  if (db) {
+    try {
+      updateDoc(doc(db, COLLECTION_NAME, jobId), {
+        status: 'CANCELLED',
+        completedAt: updated.completedAt,
+      }).catch(() => {});
+    } catch {}
+  }
+
   return true;
 };
 
@@ -187,5 +268,12 @@ export const retryReconstructionJob = (jobId: string): ReconstructionJob | null 
   activeJobs.set(jobId, updated);
   persistToStorage();
   notifyListeners(updated);
+
+  if (db) {
+    try {
+      setDoc(doc(db, COLLECTION_NAME, jobId), updated).catch(() => {});
+    } catch {}
+  }
+
   return updated;
 };

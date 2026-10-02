@@ -12,3 +12,6 @@ __pycache__/
 *.pyc
 *.pyo
 .pytest_cache/
+hettety-3d-worker/storage/spatial_assets/
+spatial_assets/
+

@@ -111,7 +111,10 @@ class ReconstructionWorker:
             mesh_res = generate_metric_mesh_glb(colmap_dir, glb_path)
 
             if not convert_res.get("success"):
-                return self._fail_job(job_id, property_id, "COMPRESSION_FAILED", "SPZ conversion failed", callback_url, api_key)
+                return self._fail_job(job_id, property_id, "COMPRESSION_FAILED", convert_res.get("message", "SPZ conversion failed"), callback_url, api_key)
+
+            if not mesh_res.get("success"):
+                return self._fail_job(job_id, property_id, "MESH_GENERATION_FAILED", mesh_res.get("message", "Metric GLB mesh generation failed"), callback_url, api_key)
 
             # Stage 7: Publishing & Callback
             logger.info("[Stage 7/7: PUBLISHING] Publishing artifacts and notifying Hettety control plane...")
@@ -125,8 +128,13 @@ class ReconstructionWorker:
                 callback_url=callback_url,
                 api_key=api_key,
                 storage_client=self.storage_client,
-                image_count=val_res.get("image_count", 30)
+                image_count=val_res.get("image_count", 30),
+                mesh_vertex_count=mesh_res.get("vertex_count", 0),
+                mesh_face_count=mesh_res.get("face_count", 0)
             )
+
+            if not pub_res.get("success"):
+                return self._fail_job(job_id, property_id, pub_res.get("error_code", "PUBLISH_FAILED"), pub_res.get("message", "Publishing failed"), callback_url, api_key)
 
             logger.info(f"==> Successfully completed reconstruction for Job {job_id}!")
             return pub_res

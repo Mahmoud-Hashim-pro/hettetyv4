@@ -67,16 +67,17 @@ export const uploadFileToSession = async (
             if (xhr.status >= 200 && xhr.status < 300) {
               resolve(uploadUrl);
             } else {
-              // Non-fatal fallback for mock storage targets during dev
-              resolve(uploadUrl);
+              reject(new Error(`Storage upload failed with HTTP status ${xhr.status}: ${xhr.statusText || 'Upload Rejected'}`));
             }
           };
-          xhr.onerror = () => resolve(uploadUrl); // Resolve gracefully in dev/test sandbox
+          xhr.onerror = () => reject(new Error('Network error during storage asset upload.'));
           xhr.send(file);
         });
       }
-    } catch {
-      // Fallback
+    } catch (err: any) {
+      if (!uploadUrl.includes('hettety-storage-bucket')) {
+        throw err;
+      }
     }
   }
 

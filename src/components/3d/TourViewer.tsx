@@ -107,7 +107,7 @@ export const TourViewer: React.FC<TourViewerProps> = ({
         {/* Floating Measurement Tool (Bottom End) */}
         {showMeasure && (
           <div className="absolute bottom-20 end-4 z-20 animate-fade-in">
-            <MeasurementTool isRtl={isRtl} />
+            <MeasurementTool isCalibrated={tour?.representation?.mesh?.isCalibratedMetric} isRtl={isRtl} />
           </div>
         )}
       </div>

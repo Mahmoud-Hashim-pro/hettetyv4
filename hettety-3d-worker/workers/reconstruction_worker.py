@@ -1,6 +1,7 @@
 """
 HETTETY 3D GPU Worker — Master Coordinator
 Executes the full reconstruction lifecycle from raw keyframes to SPZ / GLB dual representations.
+Enforces strict failure invariants: no silent progression past failed SfM or training.
 """
 
 import os
@@ -65,19 +66,40 @@ class ReconstructionWorker:
             # Stage 3: SfM (Structure-from-Motion)
             logger.info("[Stage 3/7: RECONSTRUCTING] Running COLMAP feature extraction & bundle adjustment...")
             try:
-                run_sfm(raw_images_dir, colmap_dir)
+                sfm_ok = run_sfm(raw_images_dir, colmap_dir)
+                if not sfm_ok:
+                    return self._fail_job(job_id, property_id, "SFM_FAILED", "COLMAP SfM did not converge.", callback_url, api_key)
             except Exception as e:
-                logger.warning(f"COLMAP execution note: {e}. Utilizing fallback spatial alignment for environment.")
+                logger.error(f"COLMAP execution failed: {e}")
+                return self._fail_job(job_id, property_id, "SFM_FAILED", f"COLMAP feature matching failed: {e}", callback_url, api_key)
 
             # Stage 4: 3DGS Optimization / Training
             logger.info("[Stage 4/7: TRAINING] Optimizing 3D Gaussian Splatting scene (30,000 iterations)...")
             train_res = run_gaussian_training(colmap_dir, model_dir, iterations=30000)
+            if not train_res.get("success"):
+                return self._fail_job(
+                    job_id,
+                    property_id,
+                    train_res.get("error_code", "TRAINING_FAILED"),
+                    train_res.get("message", "3DGS training failed"),
+                    callback_url,
+                    api_key
+                )
             target_ply = train_res.get("target_ply")
 
             # Stage 5: Floater pruning & bounding box extraction
             logger.info("[Stage 5/7: OPTIMIZING] Pruning floaters and computing spatial boundaries...")
             optimized_ply = os.path.join(model_dir, "point_cloud_clean.ply")
             opt_res = optimize_splat_cloud(target_ply, optimized_ply)
+            if not opt_res.get("success"):
+                return self._fail_job(
+                    job_id,
+                    property_id,
+                    opt_res.get("error_code", "OPTIMIZATION_FAILED"),
+                    opt_res.get("message", "Point cloud optimization failed"),
+                    callback_url,
+                    api_key
+                )
             bounds = opt_res.get("bounds", {"min": [-5.0, -1.0, -5.0], "max": [5.0, 3.5, 5.0]})
 
             # Stage 6: SPZ compression & Metric GLB mesh extraction
@@ -85,8 +107,11 @@ class ReconstructionWorker:
             spz_path = os.path.join(dist_dir, "scene.spz")
             glb_path = os.path.join(dist_dir, "mesh.glb")
             
-            convert_ply_to_spz(optimized_ply, spz_path)
-            generate_metric_mesh_glb(colmap_dir, glb_path)
+            convert_res = convert_ply_to_spz(optimized_ply, spz_path)
+            mesh_res = generate_metric_mesh_glb(colmap_dir, glb_path)
+
+            if not convert_res.get("success"):
+                return self._fail_job(job_id, property_id, "COMPRESSION_FAILED", "SPZ conversion failed", callback_url, api_key)
 
             # Stage 7: Publishing & Callback
             logger.info("[Stage 7/7: PUBLISHING] Publishing artifacts and notifying Hettety control plane...")
@@ -98,7 +123,9 @@ class ReconstructionWorker:
                 bounds=bounds,
                 cdn_base_url=self.cdn_base_url,
                 callback_url=callback_url,
-                api_key=api_key
+                api_key=api_key,
+                storage_client=self.storage_client,
+                image_count=val_res.get("image_count", 30)
             )
 
             logger.info(f"==> Successfully completed reconstruction for Job {job_id}!")
@@ -108,7 +135,6 @@ class ReconstructionWorker:
             logger.exception(f"Fatal error in reconstruction pipeline: {e}")
             return self._fail_job(job_id, property_id, "PROCESSING_ERROR", str(e), callback_url, api_key)
         finally:
-            # Clean up raw temp buffers if needed
             logger.info(f"Cleaning working artifacts for {job_id}")
 
     def _fail_job(self, job_id: str, property_id: str, error_code: str, message: str, callback_url: str, api_key: str) -> Dict[str, Any]:
@@ -128,27 +154,3 @@ class ReconstructionWorker:
             except Exception as ex:
                 logger.warning(f"Failed to post error callback: {ex}")
         return payload
-
-def main():
-    parser = argparse.ArgumentParser(description="Hettety 3D Reconstruction Worker")
-    parser.add_argument("--job-id", type=str, help="Single job ID to run directly")
-    parser.add_argument("--listen", action="store_true", help="Run as daemon listening on Redis queue")
-    args = parser.parse_args()
-
-    worker = ReconstructionWorker()
-
-    if args.job_id:
-        test_job = {
-            "id": args.job_id,
-            "propertyId": "prop_test_01",
-            "captureUrls": [f"file://frame_{i}.jpg" for i in range(20)],
-            "callbackUrl": "mock://callback"
-        }
-        res = worker.process_job(test_job)
-        print(f"Direct run result: {res.get('status')}")
-    else:
-        consumer = QueueConsumer()
-        consumer.listen(handler=worker.process_job)
-
-if __name__ == "__main__":
-    main()

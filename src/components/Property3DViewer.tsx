@@ -585,8 +585,26 @@ const Property3DViewer: React.FC<Property3DViewerProps> = ({ images, depthMaps, 
               ? (isRtl ? 'جولة 360°' : '360° Tour')
               : (isRtl ? 'معاينة مجسّمة للصورة' : 'Photo relief view')}
           </h3>
+          {/* Spatial Representation Level Tag */}
+          <div className="flex items-center gap-2 mt-1">
+            {mode === 'tour' && (
+              <span className="px-2 py-0.5 rounded-full bg-brand-500/20 text-brand-300 border border-brand-500/30 text-[10px] font-bold">
+                {isRtl ? 'المستوى 2: تجسيم فراغي 3DGS' : 'Level 2: 3DGS Spatial Scene'}
+              </span>
+            )}
+            {mode === 'pano' && (
+              <span className="px-2 py-0.5 rounded-full bg-sky-500/20 text-sky-300 border border-sky-500/30 text-[10px] font-bold">
+                {isRtl ? 'المستوى 1: بانوراما 360° محيطية' : 'Level 1: 360° Panorama'}
+              </span>
+            )}
+            {mode === 'depth' && (
+              <span className="px-2 py-0.5 rounded-full bg-slate-500/20 text-slate-300 border border-slate-500/30 text-[10px] font-medium">
+                {isRtl ? 'بديل تقديري: صور مجسمة 2.5D (بارالاكس)' : 'Fallback: 2.5D Photo Relief (Parallax)'}
+              </span>
+            )}
+          </div>
           {title && (
-            <p className="text-xs sm:text-sm text-white/80">
+            <p className="text-xs sm:text-sm text-white/80 mt-0.5">
               {title} {activeRoom ? `• ${isRtl ? (activeRoom.nameAr || activeRoom.name) : activeRoom.name}` : ''}
             </p>
           )}
@@ -724,7 +742,7 @@ const Property3DViewer: React.FC<Property3DViewerProps> = ({ images, depthMaps, 
       {/* Floating Measurement Tool */}
       {showMeasure && (
         <div className="absolute bottom-24 end-6 z-30 animate-fade-in">
-          <MeasurementTool isRtl={isRtl} />
+          <MeasurementTool isCalibrated={Boolean(threeDTour?.representation?.mesh?.isCalibratedMetric)} isRtl={isRtl} />
         </div>
       )}
 

@@ -16,6 +16,8 @@ import { buildDefaultThreeDTour, hasValidTourRepresentation } from '../../src/se
 import { MeasurementTool } from '../../src/components/3d/MeasurementTool';
 import { FloorPlan } from '../../src/components/3d/FloorPlan';
 import { PREMIER_LANDMARK_PROPERTIES } from '../../src/lib/inventoryData';
+import { parseGaussianPly, parseGaussianSpz, InvalidGaussianDataError } from '../../src/lib/3d/spz-parser';
+import { extractVideoKeyframes } from '../../src/features/reconstruction/CaptureWizard';
 
 describe('Tier 1 — HETTETY Real 3D Reconstruction Pipeline & Architecture', () => {
   describe('CaptureValidator — Pre-flight Quality & Overlap Checks', () => {
@@ -266,6 +268,106 @@ describe('Tier 1 — HETTETY Real 3D Reconstruction Pipeline & Architecture', ()
       expect(hydePark?.threeDTour?.representation?.mesh?.format).toBe('glb');
       expect(hydePark?.threeDTour?.representation?.mesh?.isCalibratedMetric).toBe(true);
       expect(hydePark?.threeDTour?.bounds).toBeDefined();
+    });
+  });
+
+  describe('SPZ & 3DGS Binary Parser Integrity', () => {
+    it('parses valid ASCII PLY with Gaussian coordinates and spherical harmonic / RGB colors', () => {
+      const validPlyAscii = `ply
+format ascii 1.0
+element vertex 2
+property float x
+property float y
+property float z
+property float red
+property float green
+property float blue
+property float opacity
+end_header
+1.0 2.0 3.0 255 200 150 1.0
+-1.0 0.5 2.0 100 150 200 0.9
+`;
+      const buffer = new TextEncoder().encode(validPlyAscii).buffer;
+      const parsed = parseGaussianPly(buffer);
+
+      expect(parsed.count).toBe(2);
+      expect(parsed.positions[0]).toBe(1.0);
+      expect(parsed.positions[1]).toBe(2.0);
+      expect(parsed.positions[2]).toBe(3.0);
+      expect(parsed.colors[0]).toBeCloseTo(1.0);
+      expect(parsed.colors[1]).toBeCloseTo(200 / 255);
+      expect(parsed.colors[2]).toBeCloseTo(150 / 255);
+      expect(parsed.bounds.min).toBeDefined();
+      expect(parsed.bounds.max).toBeDefined();
+    });
+
+    it('strictly throws InvalidGaussianDataError when PLY declares 0 vertices (zero-point proxy failure)', () => {
+      const zeroVertexPly = `ply
+format ascii 1.0
+element vertex 0
+property float x
+property float y
+property float z
+end_header
+`;
+      const buffer = new TextEncoder().encode(zeroVertexPly).buffer;
+      expect(() => parseGaussianPly(buffer)).toThrow(InvalidGaussianDataError);
+      expect(() => parseGaussianPly(buffer)).toThrow(/Zero-point PLY detected/i);
+    });
+
+    it('strictly throws InvalidGaussianDataError on corrupted PLY missing end_header', () => {
+      const corruptedPly = `ply
+format ascii 1.0
+element vertex 10
+property float x
+`;
+      const buffer = new TextEncoder().encode(corruptedPly).buffer;
+      expect(() => parseGaussianPly(buffer)).toThrow(InvalidGaussianDataError);
+      expect(() => parseGaussianPly(buffer)).toThrow(/missing "end_header"/i);
+    });
+
+    it('rejects corrupt SPZ files with zero primitives declared in header', async () => {
+      // Buffer with SPZ1 magic (0x53, 0x50, 0x5a, 0x31), version 1, count 0
+      const buffer = new ArrayBuffer(16);
+      const view = new DataView(buffer);
+      view.setUint8(0, 0x53); // S
+      view.setUint8(1, 0x50); // P
+      view.setUint8(2, 0x5a); // Z
+      view.setUint8(3, 0x31); // 1
+      view.setUint32(4, 1, true); // version
+      view.setUint32(8, 0, true); // count = 0
+
+      await expect(parseGaussianSpz(buffer)).rejects.toThrow(InvalidGaussianDataError);
+      await expect(parseGaussianSpz(buffer)).rejects.toThrow(/zero Gaussian primitives/i);
+    });
+  });
+
+  describe('MeasurementTool — Metric Calibration Awareness', () => {
+    it('displays prominent warning banner when 3D geometry is uncalibrated', () => {
+      render(<MeasurementTool isCalibrated={false} isRtl={false} />);
+      expect(screen.getByText(/not metric-calibrated/i)).toBeInTheDocument();
+      expect(screen.getByText(/\(approx\.\)/i)).toBeInTheDocument();
+      expect(screen.getByText(/do not use for architectural contracting/i)).toBeInTheDocument();
+    });
+
+    it('displays verified metric calibration info when isCalibrated is true', () => {
+      render(<MeasurementTool isCalibrated={true} isRtl={false} />);
+      expect(screen.queryByText(/not metric-calibrated/i)).toBeNull();
+      expect(screen.getByText(/calibrated from the verified metric reconstructed geometry/i)).toBeInTheDocument();
+    });
+  });
+
+  describe('Video Keyframe Extraction', () => {
+    it('extracts sampled keyframe image files from uploaded walkthrough video', async () => {
+      const mockVideo = new File([new Uint8Array([0x00, 0x00, 0x00, 0x20])], 'walkthrough.mp4', {
+        type: 'video/mp4',
+      });
+
+      const frames = await extractVideoKeyframes(mockVideo, 12);
+      expect(frames).toBeDefined();
+      expect(frames.length).toBe(12);
+      expect(frames[0].name).toContain('frame_');
+      expect(frames[0].type).toBe('image/jpeg');
     });
   });
 });

@@ -1,6 +1,7 @@
 """
 HETTETY 3D GPU Worker — Stage 4: Gaussian Splatting Optimization
 Trains 3D Gaussian Splatting representation from COLMAP sparse output.
+Strictly requires genuine training and rejects 0-vertex proxy fallbacks.
 """
 
 import os
@@ -21,6 +22,7 @@ def run_gaussian_training(
     Executes the 3D Gaussian Splatting optimization loop.
     Source dir contains the COLMAP sparse reconstruction and input images.
     Output dir will contain the trained point cloud (iteration_30000/point_cloud.ply).
+    Fails explicitly if submodule is absent or outputs 0 vertices.
     """
     os.makedirs(output_model_dir, exist_ok=True)
     logger.info(f"Starting 3DGS training: source={source_dir}, iters={iterations}")
@@ -28,15 +30,11 @@ def run_gaussian_training(
     import sys
     script_path = "submodules/gaussian-splatting/train.py"
     if not os.path.exists(script_path):
-        logger.info("Gaussian Splatting training script not present locally. Creating proxy point cloud for pipeline continuity.")
-        proxy_ply = os.path.join(output_model_dir, "point_cloud.ply")
-        with open(proxy_ply, "w") as f:
-            f.write("ply\nformat ascii 1.0\nelement vertex 0\nend_header\n")
+        logger.error(f"Gaussian Splatting training script not present at {script_path}.")
         return {
-            "success": True,
-            "target_ply": proxy_ply,
-            "iterations": iterations,
-            "fallback": True
+            "success": False,
+            "error_code": "GAUSSIAN_TRAINING_FAILED",
+            "message": "3DGS training script missing. Simulation/proxy 0-vertex output prohibited in production."
         }
 
     cmd = [
@@ -64,6 +62,14 @@ def run_gaussian_training(
             f"iteration_{iterations}",
             "point_cloud.ply"
         )
+
+        if not os.path.exists(target_ply) or os.path.getsize(target_ply) < 100:
+            logger.error(f"3DGS training yielded empty or zero-point PLY at {target_ply}.")
+            return {
+                "success": False,
+                "error_code": "ZERO_GAUSSIANS_PRODUCED",
+                "message": "Reconstruction produced zero Gaussian primitives."
+            }
         
         return {
             "success": True,
@@ -71,20 +77,15 @@ def run_gaussian_training(
             "iterations": iterations,
             "message": "Optimization converged successfully"
         }
-    except FileNotFoundError:
-        # Fallback for standalone/mock container environments or simulated testing
-        logger.warning("Gaussian Splatting training submodule not found on system PATH. Creating standard proxy output for testing.")
-        proxy_ply = os.path.join(output_model_dir, "point_cloud.ply")
-        with open(proxy_ply, "w") as f:
-            f.write("ply\nformat ascii 1.0\nelement vertex 0\nend_header\n")
+    except FileNotFoundError as e:
+        logger.error(f"Gaussian Splatting runner binary not found: {e}")
         return {
-            "success": True,
-            "target_ply": proxy_ply,
-            "iterations": iterations,
-            "fallback": True
+            "success": False,
+            "error_code": "GAUSSIAN_BINARY_NOT_FOUND",
+            "message": str(e)
         }
     except subprocess.CalledProcessError as e:
-        logger.error(f"3DGS training failed: {e.stderr}")
+        logger.error(f"3DGS training failed with non-zero exit code: {e.stderr}")
         return {
             "success": False,
             "error_code": "TRAINING_FAILED",

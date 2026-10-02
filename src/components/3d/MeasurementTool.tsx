@@ -1,13 +1,17 @@
 import React, { useState } from 'react';
-import { Ruler, Check, RotateCcw, Info } from 'lucide-react';
+import { Ruler, Check, RotateCcw, Info, AlertTriangle } from 'lucide-react';
 import { Vec3, calculateDistanceMeters, formatDistance } from '../../lib/3d/coordinates';
 
 interface MeasurementToolProps {
   onClose?: () => void;
+  isCalibrated?: boolean;
   isRtl?: boolean;
 }
 
-export const MeasurementTool: React.FC<MeasurementToolProps> = ({ isRtl = false }) => {
+export const MeasurementTool: React.FC<MeasurementToolProps> = ({
+  isCalibrated = true,
+  isRtl = false,
+}) => {
   const [pointA, setPointA] = useState<Vec3 | null>([-1.8, 0, -1.2]);
   const [pointB, setPointB] = useState<Vec3 | null>([2.4, 0, 1.5]);
 
@@ -33,23 +37,39 @@ export const MeasurementTool: React.FC<MeasurementToolProps> = ({ isRtl = false 
         <button
           type="button"
           onClick={handleReset}
-          className="text-slate-400 hover:text-slate-600 dark:hover:text-white p-1"
+          className="text-slate-400 hover:text-slate-600 dark:hover:text-white p-1 cursor-pointer"
           title={isRtl ? 'إعادة التعيين' : 'Reset'}
         >
           <RotateCcw size={13} />
         </button>
       </div>
 
+      {!isCalibrated && (
+        <div className="flex items-start gap-1.5 p-2 bg-amber-500/10 border border-amber-500/30 rounded-xl mb-3 text-[10px] text-amber-600 dark:text-amber-400 leading-normal">
+          <AlertTriangle size={13} className="shrink-0 mt-0.5 text-amber-500" />
+          <span>
+            {isRtl
+              ? 'تنبيه: النموذج غير معاير هندسياً بمقياس متري حقيقي (1:1). القياسات المعروضة نسبية وتقريبية فقط.'
+              : 'Notice: Model geometry is not metric-calibrated (1:1). Measurements are relative and approximate.'}
+          </span>
+        </div>
+      )}
+
       <p className="text-[11px] text-slate-500 dark:text-slate-400 mb-3 leading-relaxed">
         {isRtl
-          ? 'حدد نقطتين على جدران أو أرضية النموذج لقياس البعد الحقيقي بدقة مترية.'
-          : 'Tap two points on the model surface to measure true metric distance.'}
+          ? 'حدد نقطتين على جدران أو أرضية النموذج لقياس البعد بدقة.'
+          : 'Tap two points on the model surface to measure true spatial distance.'}
       </p>
 
       {/* Measurement readout */}
       <div className="p-3 bg-brand-50 dark:bg-brand-950/40 border border-brand-200 dark:border-brand-800/60 rounded-xl mb-3 text-center">
         <span className="text-[10px] text-brand-600 dark:text-brand-400 font-bold block mb-0.5">
           {isRtl ? 'المسافة المحسوبة' : 'Calculated Distance'}
+          {!isCalibrated && (
+            <span className="ms-1 text-[9px] text-amber-500 font-normal">
+              {isRtl ? '(تقريبي)' : '(approx.)'}
+            </span>
+          )}
         </span>
         <span className="text-xl font-black text-brand-700 dark:text-brand-300">
           {distanceMeters !== null ? formatDistance(distanceMeters, isRtl) : '--'}
@@ -60,7 +80,7 @@ export const MeasurementTool: React.FC<MeasurementToolProps> = ({ isRtl = false 
         <button
           type="button"
           onClick={handleSampleWallMeasure}
-          className="flex-1 py-1.5 px-2 bg-slate-100 dark:bg-slate-800 hover:bg-brand-100 text-slate-700 dark:text-slate-200 font-semibold rounded-lg transition-colors text-center text-[10px]"
+          className="flex-1 py-1.5 px-2 bg-slate-100 dark:bg-slate-800 hover:bg-brand-100 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 font-semibold rounded-lg transition-colors text-center text-[10px] cursor-pointer"
         >
           {isRtl ? 'قياس عرض الريسبشن (4.72 م)' : 'Measure Reception (4.72 m)'}
         </button>
@@ -69,9 +89,13 @@ export const MeasurementTool: React.FC<MeasurementToolProps> = ({ isRtl = false 
       <div className="flex items-start gap-1.5 mt-3 pt-2 border-t border-slate-100 dark:border-slate-800 text-[10px] text-slate-400">
         <Info size={12} className="shrink-0 mt-0.5 text-slate-400" />
         <span>
-          {isRtl
-            ? 'القياسات مستخرجة ومعايرة من المجسم الهندسي (Metric Reconstructed Mesh).'
-            : 'Measurements calibrated from the metric reconstructed geometry.'}
+          {isCalibrated
+            ? isRtl
+              ? 'القياسات مستخرجة ومعايرة من المجسم الهندسي (Metric Reconstructed Mesh).'
+              : 'Measurements calibrated from the verified metric reconstructed geometry.'
+            : isRtl
+            ? 'غير معايرة: لا تستخدم هذه الأبعاد في التعاقدات الرسمية أو التصنيع.'
+            : 'Uncalibrated: do not use for architectural contracting or construction specs.'}
         </span>
       </div>
     </div>

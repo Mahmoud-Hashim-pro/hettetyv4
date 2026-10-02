@@ -63,6 +63,32 @@ service cloud.firestore {
     //   - reason: string (optional) - Description / reason for transition
     //   - metadata: map (optional) - Additional operational metadata
     //
+    // Collection: transactions
+    // Document ID: transactionId
+    // Fields:
+    //   - id: string (optional) - Transaction record ID
+    //   - propertyId: string (required) - Associated property ID
+    //   - propertyTitle: string (optional) - Property title
+    //   - buyerId: string (required) - Purchasing buyer UID
+    //   - buyerName: string (optional) - Purchasing buyer display name
+    //   - buyerPhone: string (optional) - Purchasing buyer contact phone
+    //   - sellerId: string (required) - Property seller UID
+    //   - sellerName: string (optional) - Property seller display name
+    //   - agentId: string (optional) - Designated broker/agent UID
+    //   - agreedPrice: number (required) - Agreed purchase price
+    //   - currency: string (optional, enum: ['EGP', 'USD']) - Transaction currency
+    //   - depositAmount: number (required) - Escrow deposit amount (جدية الحجز)
+    //   - depositPercent: number (optional) - Percentage of price for deposit
+    //   - depositStatus: string (optional, enum: ['unpaid', 'held_in_escrow', 'released_to_seller', 'refunded_to_buyer'])
+    //   - paymentMethod: string (optional) - Selected payment method
+    //   - escrowReference: string (optional) - Platform/CBE escrow tracking reference
+    //   - status: string (required, enum: ['offer_submitted', 'counter_offered', 'offer_accepted', 'deposit_pending', 'deposit_escrowed', 'contract_drafting', 'closing_scheduled', 'completed', 'cancelled', 'refunded'])
+    //   - idempotencyKey: string (required) - Unique idempotency key
+    //   - contractTerms: map (optional) - Payment schedule and contingencies
+    //   - closingDate: string (optional) - Real Estate Publicity Department closing timestamp
+    //   - createdAt: string/timestamp (required) - Creation timestamp
+    //   - updatedAt: string/timestamp (optional) - Last update timestamp
+    //
     // ===============================================================
 
     // ===============================================================
@@ -411,6 +437,27 @@ service cloud.firestore {
       allow update: if isAuthenticated() && (
                       isAdmin() ||
                       (resource.data.ownerId == request.auth.uid && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'grantedAt', 'expiresAt']))
+                    );
+      allow delete: if isAdmin();
+    }
+
+    match /transactions/{transactionId} {
+      allow read: if isAuthenticated() && (
+        resource.data.buyerId == request.auth.uid ||
+        resource.data.sellerId == request.auth.uid ||
+        ('agentId' in resource.data && resource.data.agentId == request.auth.uid) ||
+        isAdmin()
+      );
+      allow create: if isAuthenticated()
+                    && request.resource.data.buyerId == request.auth.uid
+                    && request.resource.data.buyerId != request.resource.data.sellerId
+                    && request.resource.data.keys().hasAll(['propertyId', 'buyerId', 'sellerId', 'agreedPrice', 'depositAmount', 'status', 'idempotencyKey', 'createdAt'])
+                    && request.resource.data.agreedPrice > 0
+                    && request.resource.data.status in ['offer_submitted', 'offer_accepted'];
+      allow update: if isAuthenticated() && (
+                      isAdmin() ||
+                      (resource.data.buyerId == request.auth.uid && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'depositStatus', 'paymentMethod', 'escrowReference', 'updatedAt'])) ||
+                      (resource.data.sellerId == request.auth.uid && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'updatedAt']))
                     );
       allow delete: if isAdmin();
     }

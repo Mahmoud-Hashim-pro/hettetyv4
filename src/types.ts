@@ -3,6 +3,7 @@ export * from './types/reconstruction';
 export * from './types/property-lifecycle';
 export * from './types/search';
 export * from './types/verification-and-legal';
+export * from './types/transactions';
 import { ThreeDTour, ThreeDTourAsset } from './types/three-d-tour';
 import { PropertyLifecycleStatus, GranularVerificationDetails } from './types/property-lifecycle';
 import { PropertyTrustMatrix } from './types/verification-and-legal';

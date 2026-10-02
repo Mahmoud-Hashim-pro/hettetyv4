@@ -35,6 +35,21 @@ service cloud.firestore {
     //   - lifecycleStatus: string (optional, enum: ['draft', 'submitted', 'under_review', 'changes_requested', 'approved', 'published', 'viewed', 'contacted', 'reserved', 'sold', 'archived'])
     //   - granularVerification: map (optional) - Detailed compliance verification metrics
     //   - threeDTour: map (optional) - 3D reconstruction asset and waypoints
+    //   - trustMatrix: map (optional) - Multi-pillar legal, licensing, financial & physical inspection matrix
+    //
+    // Collection: document_access_requests
+    // Document ID: requestId
+    // Fields:
+    //   - propertyId: string (required) - Associated property ID
+    //   - ownerId: string (required) - Property owner UID
+    //   - requesterId: string (required) - Requesting buyer UID
+    //   - requesterName: string (required) - Buyer display name
+    //   - requesterPhone: string (required) - Buyer contact phone
+    //   - status: string (required, enum: ['pending', 'granted', 'rejected', 'revoked', 'expired'])
+    //   - requestedAt: string (required) - Timestamp of request
+    //   - watermarkText: string (required) - Cryptographic / tamper-evident watermark stamp
+    //   - grantedAt: string (optional) - Timestamp of owner grant
+    //   - expiresAt: string (optional) - Expiration timestamp of access grant
     //
     // Collection: property_audit_logs
     // Document ID: logId
@@ -101,7 +116,7 @@ service cloud.firestore {
                                  'maintenanceFee', 'phase', 'projectAreaFeddan', 'greenSpacePercent',
                                  'financing', 'masterPlanUrl', 'floorPlanUrls', 'depthMaps',
                                  'projectPriceFrom', 'priceSource', 'priceAsOf',
-                                 'lifecycleStatus', 'granularVerification', 'threeDTour']) &&
+                                 'lifecycleStatus', 'granularVerification', 'threeDTour', 'trustMatrix']) &&
              data.keys().hasAll(['title', 'price', 'location', 'status']) &&
              data.title is string && data.title.size() > 0 && data.title.size() < 200 &&
              data.price is number && data.price >= 0 &&
@@ -172,7 +187,8 @@ service cloud.firestore {
              (!('depthMaps' in data) || (data.depthMaps is list && data.depthMaps.size() <= 20)) &&
              (!('lifecycleStatus' in data) || (data.lifecycleStatus is string && data.lifecycleStatus in ['draft', 'submitted', 'under_review', 'changes_requested', 'approved', 'published', 'viewed', 'contacted', 'reserved', 'sold', 'archived'])) &&
              (!('granularVerification' in data) || data.granularVerification is map) &&
-             (!('threeDTour' in data) || data.threeDTour is map);
+             (!('threeDTour' in data) || data.threeDTour is map) &&
+             (!('trustMatrix' in data) || data.trustMatrix is map);
     }
 
     function isValidNotification(data) {
@@ -384,6 +400,19 @@ service cloud.firestore {
                         )
                       )
                     );
+    }
+
+    match /document_access_requests/{requestId} {
+      allow read: if isAuthenticated() && (resource.data.requesterId == request.auth.uid || resource.data.ownerId == request.auth.uid || isAdmin());
+      allow create: if isAuthenticated()
+                    && request.resource.data.requesterId == request.auth.uid
+                    && request.resource.data.keys().hasAll(['propertyId', 'ownerId', 'requesterId', 'requesterName', 'requesterPhone', 'status', 'requestedAt', 'watermarkText'])
+                    && request.resource.data.status == 'pending';
+      allow update: if isAuthenticated() && (
+                      isAdmin() ||
+                      (resource.data.ownerId == request.auth.uid && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'grantedAt', 'expiresAt']))
+                    );
+      allow delete: if isAdmin();
     }
 
     match /notifications/{notificationId} {

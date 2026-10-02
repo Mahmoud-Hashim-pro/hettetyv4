@@ -2,8 +2,10 @@ export * from './types/three-d-tour';
 export * from './types/reconstruction';
 export * from './types/property-lifecycle';
 export * from './types/search';
+export * from './types/verification-and-legal';
 import { ThreeDTour, ThreeDTourAsset } from './types/three-d-tour';
 import { PropertyLifecycleStatus, GranularVerificationDetails } from './types/property-lifecycle';
+import { PropertyTrustMatrix } from './types/verification-and-legal';
 
 export type Page = 'home' | 'listings' | '3d-experience' | 'legal' | 'ai-chat' | 'login' | 'register' | 'contact' | '3d' | 'about' | 'buy' | 'verification' | 'tours' | 'terms' | 'privacy' | 'cookie-policy' | 'profile' | 'add-listing' | 'payment' | 'manage-users' | 'property' | 'yalla-sahel' | 'project' | 'edit-listing';
 
@@ -48,6 +50,7 @@ export interface Property {
   listingState?: 'Draft' | 'Live' | 'Removed';
   lifecycleStatus?: PropertyLifecycleStatus;
   granularVerification?: GranularVerificationDetails;
+  trustMatrix?: PropertyTrustMatrix;
   verifiedBy?: string;     // Reviewer email — written by an admin only
   verifiedAt?: string;     // ISO timestamp of the review
   reviewNote?: string;     // What the reviewer saw / what needs fixing

@@ -32,6 +32,21 @@ service cloud.firestore {
     //   - isVerified: bool (optional) - Whether the property is verified
     //   - paymentMethods: list (optional) - List of payment methods
     //   - authorUid: string (optional) - UID of the user who created the listing
+    //   - lifecycleStatus: string (optional, enum: ['draft', 'submitted', 'under_review', 'changes_requested', 'approved', 'published', 'viewed', 'contacted', 'reserved', 'sold', 'archived'])
+    //   - granularVerification: map (optional) - Detailed compliance verification metrics
+    //   - threeDTour: map (optional) - 3D reconstruction asset and waypoints
+    //
+    // Collection: property_audit_logs
+    // Document ID: logId
+    // Fields:
+    //   - propertyId: string (required) - Associated property ID
+    //   - actorId: string (required) - UID of actor executing status change
+    //   - actorRole: string (required) - Role of the actor
+    //   - fromStatus: string (required) - Lifecycle status transitioned from
+    //   - toStatus: string (required) - Lifecycle status transitioned to
+    //   - timestamp: string (required) - ISO timestamp of transition
+    //   - reason: string (optional) - Description / reason for transition
+    //   - metadata: map (optional) - Additional operational metadata
     //
     // ===============================================================
 
@@ -82,10 +97,11 @@ service cloud.firestore {
 
     function isValidProperty(data) {
       return data.keys().hasOnly(['title', 'price', 'location', 'bedrooms', 'bathrooms', 'area', 'propertyType', 'compound', 'developer', 'deliveryDate', 'finishing', 'floor', 'view', 'furnished', 'contactPhone', 'amenities', 'areaTo', 'paymentPlans', 'currency', 'pricePeriod', 'guests', 'village', 'yallaSahel', 'lat', 'lng', 'imageUrl', 'images', 'panoramas', 'videoUrl', 'digitalTwinUrl', 'status', 'availability', 'isVerified', 'verificationStatus', 'paymentMethods', 'publishDate', 'unitCode', 'legalDocs', 'authorUid', 'description', 'registrationNumber', 'courtSignatureValidity', 'isResale', 'listingState', 'verifiedBy', 'verifiedAt', 'reviewNote', 'rejectedAt',
-                                'gardenArea', 'roofArea', 'unitModel', 'buildingType', 'floorsDescription',
-                                'maintenanceFee', 'phase', 'projectAreaFeddan', 'greenSpacePercent',
-                                'financing', 'masterPlanUrl', 'floorPlanUrls', 'depthMaps',
-                                'projectPriceFrom', 'priceSource', 'priceAsOf']) &&
+                                 'gardenArea', 'roofArea', 'unitModel', 'buildingType', 'floorsDescription',
+                                 'maintenanceFee', 'phase', 'projectAreaFeddan', 'greenSpacePercent',
+                                 'financing', 'masterPlanUrl', 'floorPlanUrls', 'depthMaps',
+                                 'projectPriceFrom', 'priceSource', 'priceAsOf',
+                                 'lifecycleStatus', 'granularVerification', 'threeDTour']) &&
              data.keys().hasAll(['title', 'price', 'location', 'status']) &&
              data.title is string && data.title.size() > 0 && data.title.size() < 200 &&
              data.price is number && data.price >= 0 &&
@@ -153,7 +169,10 @@ service cloud.firestore {
              (!('financing' in data) || (data.financing is list && data.financing.size() <= 10)) &&
              (!('masterPlanUrl' in data) || (data.masterPlanUrl is string && data.masterPlanUrl.size() < 2000000)) &&
              (!('floorPlanUrls' in data) || (data.floorPlanUrls is list && data.floorPlanUrls.size() <= 20)) &&
-             (!('depthMaps' in data) || (data.depthMaps is list && data.depthMaps.size() <= 20));
+             (!('depthMaps' in data) || (data.depthMaps is list && data.depthMaps.size() <= 20)) &&
+             (!('lifecycleStatus' in data) || (data.lifecycleStatus is string && data.lifecycleStatus in ['draft', 'submitted', 'under_review', 'changes_requested', 'approved', 'published', 'viewed', 'contacted', 'reserved', 'sold', 'archived'])) &&
+             (!('granularVerification' in data) || data.granularVerification is map) &&
+             (!('threeDTour' in data) || data.threeDTour is map);
     }
 
     function isValidNotification(data) {
@@ -219,7 +238,8 @@ service cloud.firestore {
               'listingState', 'isVerified', 'verificationStatus',
               'gardenArea', 'roofArea', 'unitModel', 'buildingType', 'floorsDescription',
               'maintenanceFee', 'phase', 'projectAreaFeddan', 'greenSpacePercent',
-              'financing', 'masterPlanUrl', 'floorPlanUrls', 'depthMaps'];
+              'financing', 'masterPlanUrl', 'floorPlanUrls', 'depthMaps',
+              'lifecycleStatus', 'threeDTour'];
     }
 
     // Changing any of these invalidates whatever a reviewer previously saw, so the
@@ -235,6 +255,28 @@ service cloud.firestore {
 
     function listingChangedKeys() {
       return request.resource.data.diff(resource.data).affectedKeys();
+    }
+
+    function isValidOwnerLifecycleTransition(fromStatus, toStatus) {
+      return toStatus == 'archived' ||
+             (fromStatus == 'draft' && toStatus == 'submitted') ||
+             (fromStatus == 'submitted' && toStatus == 'draft') ||
+             (fromStatus == 'changes_requested' && (toStatus == 'submitted' || toStatus == 'draft')) ||
+             (fromStatus == 'archived' && toStatus == 'draft');
+    }
+
+    function isValidPropertyAuditLog(data) {
+      return data.keys().hasAll(['propertyId', 'actorId', 'actorRole', 'fromStatus', 'toStatus', 'timestamp']) &&
+             data.propertyId is string && data.propertyId.size() > 0 && data.propertyId.size() < 100 &&
+             data.actorId is string && data.actorId.size() > 0 && data.actorId.size() < 100 &&
+             data.actorRole is string && data.actorRole.size() < 50 &&
+             data.fromStatus is string && data.fromStatus.size() < 50 &&
+             data.toStatus is string && data.toStatus.size() < 50 &&
+             (data.timestamp is string || data.timestamp is timestamp) &&
+             (!('id' in data) || (data.id is string && data.id.size() < 100)) &&
+             (!('actorEmail' in data) || (data.actorEmail is string && data.actorEmail.size() < 255)) &&
+             (!('reason' in data) || (data.reason is string && data.reason.size() < 2000)) &&
+             (!('metadata' in data) || data.metadata is map);
     }
 
     // ===============================================================
@@ -254,7 +296,8 @@ service cloud.firestore {
     }
 
     match /properties/{propertyId} {
-      allow read, list: if true;
+      allow read: if (resource.data.get('lifecycleStatus', 'published') == 'published' && resource.data.get('listingState', 'Live') == 'Live')
+                  || (isAuthenticated() && (resource.data.get('authorUid', '') == request.auth.uid || isAdmin()));
       // Admins create anything; any authenticated user may submit their OWN
       // listing for review, but only as an unverified "Pending" entry.
       allow create: if isValidProperty(request.resource.data) && (
@@ -266,7 +309,8 @@ service cloud.firestore {
                         // The audit trail is the platform's. Without this a seller
                         // can create a listing already carrying a fabricated
                         // reviewer and timestamp, which they then cannot remove.
-                        && !request.resource.data.keys().hasAny(['verifiedBy', 'verifiedAt', 'reviewNote', 'rejectedAt']))
+                        && !request.resource.data.keys().hasAny(['verifiedBy', 'verifiedAt', 'reviewNote', 'rejectedAt'])
+                        && (!('lifecycleStatus' in request.resource.data) || request.resource.data.lifecycleStatus in ['draft', 'submitted']))
                     );
       // Admins edit anything. A listing's own author may edit their own listing,
       // but only the fields above, and never upward: touching a material field
@@ -283,16 +327,28 @@ service cloud.firestore {
                         && listingChangedKeys().hasOnly(ownerEditableListingKeys())
                         && ( listingChangedKeys().hasAny(materialListingKeys())
                              ? ( request.resource.data.get('verificationStatus', '') == 'Pending'
-                                 && request.resource.data.get('isVerified', true) == false )
+                                  && request.resource.data.get('isVerified', true) == false )
                              : ( request.resource.data.get('verificationStatus', 'Pending')
                                    == resource.data.get('verificationStatus', 'Pending')
                                  && request.resource.data.get('isVerified', false)
                                    == resource.data.get('isVerified', false) )
-                           )
+                            )
+                        && ( !listingChangedKeys().hasAny(['lifecycleStatus'])
+                             || request.resource.data.get('lifecycleStatus', '') == resource.data.get('lifecycleStatus', '')
+                             || isValidOwnerLifecycleTransition(resource.data.get('lifecycleStatus', 'draft'), request.resource.data.lifecycleStatus) )
                       )
                     );
       allow delete: if isAdmin()
                     || (isAuthenticated() && resource.data.get('authorUid', '') == request.auth.uid);
+    }
+
+    match /property_audit_logs/{logId} {
+      allow read: if isAuthenticated() && (resource.data.actorId == request.auth.uid || isAdmin());
+      allow create: if isAuthenticated()
+                    && request.resource.data.actorId == request.auth.uid
+                    && request.resource.data.keys().hasAll(['propertyId', 'actorId', 'actorRole', 'fromStatus', 'toStatus', 'timestamp'])
+                    && isValidPropertyAuditLog(request.resource.data);
+      allow update, delete: if false;
     }
 
     match /user_documents/{docId} {

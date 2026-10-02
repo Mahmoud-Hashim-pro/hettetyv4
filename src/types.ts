@@ -1,6 +1,8 @@
 export * from './types/three-d-tour';
 export * from './types/reconstruction';
+export * from './types/property-lifecycle';
 import { ThreeDTour, ThreeDTourAsset } from './types/three-d-tour';
+import { PropertyLifecycleStatus, GranularVerificationDetails } from './types/property-lifecycle';
 
 export type Page = 'home' | 'listings' | '3d-experience' | 'legal' | 'ai-chat' | 'login' | 'register' | 'contact' | '3d' | 'about' | 'buy' | 'verification' | 'tours' | 'terms' | 'privacy' | 'cookie-policy' | 'profile' | 'add-listing' | 'payment' | 'manage-users' | 'property' | 'yalla-sahel' | 'project' | 'edit-listing';
 
@@ -43,6 +45,8 @@ export interface Property {
   // NOTE: this is a UI-level hide, not a privacy boundary — the properties collection
   // is world-readable, so a Draft is hidden, never secret.
   listingState?: 'Draft' | 'Live' | 'Removed';
+  lifecycleStatus?: PropertyLifecycleStatus;
+  granularVerification?: GranularVerificationDetails;
   verifiedBy?: string;     // Reviewer email — written by an admin only
   verifiedAt?: string;     // ISO timestamp of the review
   reviewNote?: string;     // What the reviewer saw / what needs fixing

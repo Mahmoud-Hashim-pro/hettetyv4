@@ -30,6 +30,7 @@ import {
 } from './firebase';
 import { createUserWithEmailAndPassword, signInWithEmailAndPassword } from 'firebase/auth';
 import AboutPage from './components/AboutPage';
+import BrandLogo, { BrandMonogram } from './components/BrandLogo';
 import { BuyPropertyPage, VerificationPage, Tours3DPage } from './components/ServicePages';
 import TermsPage from './components/TermsPage';
 import PrivacyPage from './components/PrivacyPage';
@@ -195,7 +196,7 @@ const SplashScreen = ({ onFinish }: { onFinish: () => void }) => {
              transition={{ duration: 3, repeat: Infinity, ease: "easeInOut" }}
              className="absolute inset-[-50%] bg-brand-500/20 blur-[100px] rounded-full"
           />
-          <Logo className="h-44 md:h-56 w-auto relative z-10 text-brand-900 dark:text-white transition-colors" />
+          <BrandMonogram className="h-32 md:h-44 w-auto relative z-10 text-brand-900 dark:text-white transition-colors" />
         </div>
         
         <div className="text-center space-y-6">
@@ -204,15 +205,15 @@ const SplashScreen = ({ onFinish }: { onFinish: () => void }) => {
             animate={{ y: 0, opacity: 1 }}
             transition={{ delay: 0.8, duration: 0.8 }}
           >
-            <h1 className="text-5xl md:text-7xl font-black text-brand-900 dark:text-white tracking-tighter mb-4 italic uppercase">
+            <h1 className="text-5xl md:text-7xl font-black text-brand-900 dark:text-white tracking-widest mb-4 uppercase font-sans">
               HETTETY
             </h1>
             <div className="flex items-center justify-center gap-4">
-              <div className="h-0.5 w-12 bg-brand-200 dark:bg-slate-800"></div>
-              <p className="text-brand-600 dark:text-brand-400 font-black uppercase tracking-[0.4em] text-xs md:text-sm">
-                Real Estate Ecosystem
+              <div className="h-0.5 w-12 bg-orange-200 dark:bg-orange-900/40"></div>
+              <p className="text-[#FF5722] font-black uppercase tracking-[0.3em] text-xs md:text-sm">
+                FIND. TRUST. OWN.
               </p>
-              <div className="h-0.5 w-12 bg-brand-200 dark:bg-slate-800"></div>
+              <div className="h-0.5 w-12 bg-orange-200 dark:bg-orange-900/40"></div>
             </div>
           </motion.div>
 
@@ -268,100 +269,22 @@ const Button: React.FC<{
   );
 };
 
-const Logo: React.FC<{ color?: string; className?: string }> = ({ color = "currentColor", className = "h-12" }) => {
-  const isWhite = color === "white" || color === "#ffffff";
-  const isCurrent = color === "currentColor";
-  const primaryColor = isCurrent ? "currentColor" : (isWhite ? "#ffffff" : color);
-  const orangeColor = isWhite ? "#ffffff" : "#e67e22";
-
-  const drawAnimation = {
-    pathLength: [0, 1],
-    opacity: [0, 1]
-  };
-
-  const drawTransition = {
-    duration: 1.5,
-    repeat: Infinity,
-    repeatDelay: 8.5,
-    ease: "easeInOut"
-  };
-
+const Logo: React.FC<{ color?: string; className?: string; variant?: 'horizontal' | 'full' | 'mark' }> = ({ 
+  color = "currentColor", 
+  className = "h-12",
+  variant
+}) => {
+  // If the context uses a compact square/circle icon (e.g. chat avatars or small badges)
+  const isSmallIcon = className.includes('h-6') || className.includes('w-6') || variant === 'mark';
+  if (isSmallIcon && !variant) {
+    return <BrandMonogram className={className} color={color} isWhite={color === 'white' || color === '#ffffff'} />;
+  }
   return (
-    <motion.svg 
-      viewBox="0 40 200 150" 
+    <BrandLogo 
+      variant={variant || 'horizontal'} 
+      color={color} 
       className={className} 
-      xmlns="http://www.w3.org/2000/svg"
-      animate={{ 
-        scale: [1, 1.05, 1],
-      }}
-      transition={{ 
-        duration: 2, 
-        repeat: Infinity, 
-        repeatDelay: 8,
-        ease: "easeInOut"
-      }}
-    >
-      {/* Orange Roof */}
-      <motion.path 
-        d="M 25 110 L 100 45 L 175 110 L 155 110 L 100 62 L 45 110 Z" 
-        fill={orangeColor}
-        initial={{ pathLength: 0, opacity: 0 }}
-        animate={drawAnimation}
-        transition={drawTransition as any}
-      />
-      
-      {/* Window Panes */}
-      <motion.g 
-        transform="translate(93, 82)"
-        initial={{ opacity: 0 }}
-        animate={{ opacity: [0, 1] }}
-        transition={{ ...drawTransition, delay: 0.5 } as any}
-      >
-        <rect x="0" y="0" width="6" height="6" fill={orangeColor} />
-        <rect x="8" y="0" width="6" height="6" fill={orangeColor} />
-        <rect x="0" y="8" width="6" height="6" fill={orangeColor} />
-        <rect x="8" y="8" width="6" height="6" fill={orangeColor} />
-      </motion.g>
-
-      {/* Navy Stylized H / Logo mark */}
-      <g>
-        {/* Top bar of the H with angled edges */}
-        <motion.path 
-          d="M 68 110 L 132 110 L 122 124 L 78 124 Z" 
-          fill={primaryColor}
-          initial={{ pathLength: 0, opacity: 0 }}
-          animate={drawAnimation}
-          transition={{ ...drawTransition, delay: 0.3 } as any}
-        />
-        
-        {/* Left vertical with J hook */}
-        <motion.path 
-          d="M 83 124 L 93 124 L 93 160 C 93 182 66 182 67 160 L 78 160 C 78 170 83 170 83 160 Z" 
-          fill={primaryColor}
-          initial={{ pathLength: 0, opacity: 0 }}
-          animate={drawAnimation}
-          transition={{ ...drawTransition, delay: 0.5 } as any}
-        />
-        
-        {/* Right vertical component */}
-        <motion.path 
-          d="M 107 124 L 117 124 L 117 185 L 107 185 Z" 
-          fill={primaryColor}
-          initial={{ pathLength: 0, opacity: 0 }}
-          animate={drawAnimation}
-          transition={{ ...drawTransition, delay: 0.7 } as any}
-        />
-        
-        {/* Middle connector */}
-        <motion.path 
-          d="M 93 142 L 107 142 L 107 154 L 93 154 Z" 
-          fill={primaryColor}
-          initial={{ pathLength: 0, opacity: 0 }}
-          animate={drawAnimation}
-          transition={{ ...drawTransition, delay: 0.9 } as any}
-        />
-      </g>
-    </motion.svg>
+    />
   );
 };
 
@@ -437,15 +360,17 @@ const PropertyCard: React.FC<{
           <span className={`${av.color} text-white text-lg font-black uppercase tracking-widest px-6 py-2 rounded-lg -rotate-12 shadow-xl`}>{av.label}</span>
         </div>
       ) : null; })()}
-      <div className={`absolute top-4 ${isRtl ? 'right-4' : 'left-4'} bg-accent-500 text-white px-3 py-1 rounded-full text-xs font-bold uppercase tracking-wider shadow-sm`}>
-        {property.status === 'For Sale' ? t.prop_forsale : t.prop_forrent}
-      </div>
-{/* The badge follows verificationStatus alone. A stale isVerified: true on a
-          listing a reviewer later rejected must never keep showing green. And an
-          unreviewed listing says so, rather than saying nothing. */}
-      <div className={`absolute top-4 ${isRtl ? 'left-[72px]' : 'right-[72px]'} ${listingReviewInfo(property, t).chip} px-2 py-1 rounded-full text-xs font-bold flex items-center gap-1 shadow-sm`}>
-        {property.verificationStatus === 'Verified' && <ShieldCheck size={12} aria-hidden="true" />}
-        {listingReviewInfo(property, t).label}
+      <div className="absolute top-4 start-4 flex flex-col items-start gap-1.5 z-10 max-w-[calc(100%-80px)]">
+        <div className="bg-accent-500 text-white px-3 py-1 rounded-full text-xs font-bold uppercase tracking-wider shadow-sm">
+          {property.status === 'For Sale' ? t.prop_forsale : t.prop_forrent}
+        </div>
+        {/* The badge follows verificationStatus alone. A stale isVerified: true on a
+            listing a reviewer later rejected must never keep showing green. And an
+            unreviewed listing says so, rather than saying nothing. */}
+        <div className={`${listingReviewInfo(property, t).chip} px-2 py-1 rounded-full text-xs font-bold flex items-center gap-1 shadow-sm truncate max-w-full`}>
+          {property.verificationStatus === 'Verified' && <ShieldCheck size={12} aria-hidden="true" />}
+          <span className="truncate">{listingReviewInfo(property, t).label}</span>
+        </div>
       </div>
       {onToggleFavorite && (
         <button 
@@ -453,7 +378,7 @@ const PropertyCard: React.FC<{
           onClick={(e) => { e.stopPropagation(); onToggleFavorite(); }}
           aria-label={isFavorited ? (isRtl ? 'إزالة من المفضلة' : 'Remove from favorites') : (isRtl ? 'إضافة إلى المفضلة' : 'Add to favorites')}
           aria-pressed={isFavorited}
-          className={`absolute top-4 ${isRtl ? 'left-4' : 'right-4'} min-w-[48px] min-h-[48px] p-2.5 rounded-full backdrop-blur-md transition-all shadow-lg flex items-center justify-center cursor-pointer focus:outline-none focus:ring-2 focus:ring-red-400 ${isFavorited ? 'bg-red-500 text-white' : 'bg-black/40 hover:bg-black/60 text-white'}`}
+          className={`absolute top-4 end-4 z-10 min-w-[48px] min-h-[48px] p-2.5 rounded-full backdrop-blur-md transition-all shadow-lg flex items-center justify-center cursor-pointer focus:outline-none focus:ring-2 focus:ring-red-400 ${isFavorited ? 'bg-red-500 text-white' : 'bg-black/40 hover:bg-black/60 text-white'}`}
         >
           <Heart size={18} fill={isFavorited ? 'currentColor' : 'none'} aria-hidden="true" />
         </button>
@@ -495,7 +420,7 @@ const PropertyCard: React.FC<{
       <div className="flex items-center gap-2 mb-3 flex-wrap">
         {property.yallaSahel && <span className="text-[10px] font-bold bg-cyan-50 dark:bg-cyan-900/30 text-cyan-700 dark:text-cyan-300 px-2 py-0.5 rounded">🌊 {isRtl ? 'ساحل حتتي' : 'Sahel Hettety'}</span>}
         {property.propertyType && <span className="text-[10px] font-bold bg-brand-50 dark:bg-brand-900/30 text-brand-700 dark:text-brand-300 px-2 py-0.5 rounded">{typeLabel(property.propertyType, isRtl)}</span>}
-        <span className="flex items-center text-slate-600 dark:text-slate-400 text-sm"><MapPin size={14} className={isRtl ? "ml-1" : "mr-1"} aria-hidden="true" /> {property.location}</span>
+        <span className="flex items-center text-slate-600 dark:text-slate-400 text-sm"><MapPin size={14} className="me-1" aria-hidden="true" /> {property.location}</span>
       </div>
       {property.unitCode && (
         <div className="text-xs text-slate-600 dark:text-slate-400 mb-3 bg-slate-100 dark:bg-slate-800 px-2 py-1 rounded inline-block w-fit">
@@ -1630,13 +1555,13 @@ const LegalCenter = ({ t, isRtl, userEmail }: { t: any, isRtl: boolean, userEmai
         </div>
         <div className="flex flex-col sm:flex-row gap-3 w-full md:w-auto">
           <div className="relative flex-1 sm:w-64">
-            <Search className={`absolute top-1/2 -translate-y-1/2 text-slate-400 w-4 h-4 ${isRtl ? 'right-3' : 'left-3'}`} />
+            <Search className={"absolute top-1/2 -translate-y-1/2 text-slate-400 w-4 h-4 start-3"} />
             <input 
               type="text" 
               placeholder={isRtl ? "البحث بالاسم أو المعرف..." : "Search by name or ID..."}
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              className={`w-full bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl py-2.5 focus:ring-2 focus:ring-brand-500 outline-none text-sm text-slate-700 dark:text-slate-200 ${isRtl ? 'pr-9 pl-4' : 'pl-9 pr-4'}`}
+              className={`w-full bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl py-2.5 focus:ring-2 focus:ring-brand-500 outline-none text-sm text-slate-700 dark:text-slate-200 ps-9 pe-4`}
             />
           </div>
           <input type="file" ref={fileInputRef} onChange={handleFileChange} className="hidden" accept=".pdf,.jpg,.jpeg,.png,.doc,.docx" />
@@ -2181,6 +2106,7 @@ Images: ${property.images?.length ? property.images.join(', ') : property.imageU
     if (!reviewComment.trim()) return;
     setSubmittingReview(true);
     try {
+      const reviewDocId = `${property.id}_${auth.currentUser.uid}`;
       const rev = {
         propertyId: property.id,
         userId: auth.currentUser.uid,
@@ -2189,8 +2115,8 @@ Images: ${property.images?.length ? property.images.join(', ') : property.imageU
         comment: reviewComment.trim().slice(0, 999),
         createdAt: new Date().toISOString(),
       };
-      const ref = await addDoc(collection(db, 'reviews'), rev);
-      setReviews(prev => [{ id: ref.id, ...rev }, ...prev]);
+      await setDoc(doc(db, 'reviews', reviewDocId), rev);
+      setReviews(prev => [{ id: reviewDocId, ...rev }, ...prev.filter(r => r.id !== reviewDocId)]);
       setReviewComment('');
       setReviewRating(5);
     } catch (e) {
@@ -2601,7 +2527,7 @@ Images: ${property.images?.length ? property.images.join(', ') : property.imageU
 
         {/* AI assistant column (always visible) */}
         <div className="lg:col-span-1">
-          <div className="lg:sticky lg:top-24 bg-white dark:bg-slate-900 rounded-3xl border border-slate-200 dark:border-slate-800 shadow-xl overflow-hidden flex flex-col h-[32rem] lg:h-[calc(100vh-8rem)]">
+          <div className="lg:sticky lg:top-24 bg-white dark:bg-slate-900 rounded-3xl border border-slate-200 dark:border-slate-800 shadow-xl overflow-hidden flex flex-col h-[32rem] lg:h-[calc(100dvh-8rem)]">
             <div className="p-4 border-b border-slate-100 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/50 flex items-center gap-2 shrink-0">
               <div className="w-8 h-8 rounded-full bg-accent-500/10 text-accent-500 flex items-center justify-center"><MessageSquare size={16} /></div>
               <div>
@@ -2641,9 +2567,9 @@ Images: ${property.images?.length ? property.images.join(', ') : property.imageU
                   value={input}
                   onChange={(e) => setInput(e.target.value)}
                   placeholder={isRtl ? 'اسأل عن العقار...' : 'Ask about this property...'}
-                  className={`w-full bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl py-3 px-4 ${isRtl ? 'pl-12' : 'pr-12'} focus:outline-none focus:ring-2 focus:ring-accent-500 text-slate-900 dark:text-white`}
+                  className={`w-full bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl py-3 px-4 pe-12 focus:outline-none focus:ring-2 focus:ring-accent-500 text-slate-900 dark:text-white`}
                 />
-                <button type="submit" disabled={!input.trim() || isLoading} className={`absolute ${isRtl ? 'left-2' : 'right-2'} p-2 bg-brand-600 hover:bg-brand-700 text-white rounded-lg disabled:opacity-50 transition-colors cursor-pointer`}>
+                <button type="submit" disabled={!input.trim() || isLoading} className={`absolute end-2 p-2 bg-brand-600 hover:bg-brand-700 text-white rounded-lg disabled:opacity-50 transition-colors cursor-pointer`}>
                   <Send size={18} className={isRtl ? 'rotate-180' : ''} />
                 </button>
               </form>
@@ -2831,13 +2757,14 @@ const ProfilePage = ({ t, isRtl, onBrowse, onLogout, onLogin, userEmail, userFav
     try {
       // setDoc(merge) rather than updateDoc: an account whose /users document was
       // never written has nothing to update, and the failure surfaced nowhere.
-      await setDoc(doc(db, 'users', auth.currentUser.uid), {
+      const syncedProfile = {
         ...editForm,
         uid: auth.currentUser.uid,
         email: auth.currentUser.email || editForm.email || '',
         role: profile?.role || (SUPER_ADMIN_EMAILS.includes((auth.currentUser.email || '').toLowerCase()) ? 'admin' : 'user'),
-      }, { merge: true });
-      setProfile(editForm);
+      };
+      await setDoc(doc(db, 'users', auth.currentUser.uid), syncedProfile, { merge: true });
+      setProfile(syncedProfile);
       setIsEditing(false);
     } catch (err) {
       handleFirestoreError(err, OperationType.UPDATE, `users/${auth.currentUser.uid}`);
@@ -5113,7 +5040,7 @@ export default function App() {
                <div className="flex flex-col sm:flex-row flex-wrap gap-4 w-full lg:w-auto">
                  <div className="relative flex-1 min-w-[240px] flex gap-2">
                    <div className="relative flex-1">
-                     <Search className={`absolute top-3 text-slate-400 w-4 h-4 ${isRtl ? 'right-3' : 'left-3'}`} />
+                     <Search className={"absolute top-3 text-slate-400 w-4 h-4 start-3"} />
                      <input 
                        placeholder={t.prop_search} 
                        value={listingSearchQuery}
@@ -5122,7 +5049,7 @@ export default function App() {
                          setAiFilteredIds(null);
                        }}
                        onKeyDown={(e) => e.key === 'Enter' && handleAiSearch()}
-                       className={`w-full py-2.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 focus:ring-2 focus:ring-brand-500 outline-none text-black dark:text-white ${isRtl ? 'pr-10 pl-4' : 'pl-10 pr-4'}`} 
+                       className={`w-full py-2.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 focus:ring-2 focus:ring-brand-500 outline-none text-black dark:text-white ps-10 pe-4`} 
                      />
                    </div>
                    <button 
@@ -5135,7 +5062,7 @@ export default function App() {
                    </button>
                  </div>
                  <div className="relative flex-1 md:w-32">
-                   <DollarSign className={`absolute top-3 text-slate-400 w-4 h-4 ${isRtl ? 'right-3' : 'left-3'}`} />
+                   <DollarSign className={"absolute top-3 text-slate-400 w-4 h-4 start-3"} />
                    <input 
                      type="number"
                      min="0"
@@ -5146,11 +5073,11 @@ export default function App() {
                        if (val === '') setMinPrice('');
                        else if (Number(val) >= 0) setMinPrice(Number(val));
                      }}
-                     className={`w-full py-2.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 focus:ring-2 focus:ring-brand-500 outline-none text-black dark:text-white ${isRtl ? 'pr-10 pl-4' : 'pl-10 pr-4'}`} 
+                     className={`w-full py-2.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 focus:ring-2 focus:ring-brand-500 outline-none text-black dark:text-white ps-10 pe-4`} 
                    />
                  </div>
                  <div className="relative flex-1 md:w-32">
-                   <DollarSign className={`absolute top-3 text-slate-400 w-4 h-4 ${isRtl ? 'right-3' : 'left-3'}`} />
+                   <DollarSign className={"absolute top-3 text-slate-400 w-4 h-4 start-3"} />
                    <input 
                      type="number"
                      min="0"
@@ -5161,7 +5088,7 @@ export default function App() {
                        if (val === '') setMaxPrice('');
                        else if (Number(val) >= 0) setMaxPrice(Number(val));
                      }}
-                     className={`w-full py-2.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 focus:ring-2 focus:ring-brand-500 outline-none text-black dark:text-white ${isRtl ? 'pr-10 pl-4' : 'pl-10 pr-4'}`} 
+                     className={`w-full py-2.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 focus:ring-2 focus:ring-brand-500 outline-none text-black dark:text-white ps-10 pe-4`} 
                    />
                  </div>
                  <select
@@ -5269,7 +5196,7 @@ export default function App() {
                             <span className="absolute top-4 right-4 bg-brand-600 text-white text-xs font-bold px-3 py-1 rounded-full">{units.length} {isRtl ? 'وحدة' : 'units'}</span>
                           </div>
                           <div className="p-5">
-                            <p className="flex items-center text-slate-500 dark:text-slate-400 text-sm mb-2"><MapPin size={14} className={isRtl ? 'ml-1' : 'mr-1'} /> {units[0].location}</p>
+                            <p className="flex items-center text-slate-500 dark:text-slate-400 text-sm mb-2"><MapPin size={14} className="me-1" /> {units[0].location}</p>
                             <div className="font-bold text-brand-600 dark:text-brand-400">{min === max ? min.toLocaleString() : `${min.toLocaleString()} – ${max.toLocaleString()}`} {cur}</div>
                           </div>
                         </div>
@@ -5494,11 +5421,19 @@ export default function App() {
                 handleNav('login');
                 return;
               }
-              // The request itself is what matters; if it fails, nothing is written
-              // and the error is reported, so retrying can't create a duplicate.
-              await addDoc(collection(db, 'purchases'), {
+              if (paymentProperty.availability === 'Sold') {
+                alert(isRtl ? 'عذراً، هذا العقار تم بيعه بالفعل.' : 'Sorry, this property is already sold.');
+                setPaymentProperty(null);
+                return;
+              }
+              // Idempotent purchase request with frozen price snapshot
+              const purchaseId = `purchase_${auth.currentUser.uid}_${paymentProperty.id}`;
+              await setDoc(doc(db, 'purchases', purchaseId), {
                 userId: auth.currentUser.uid,
                 propertyId: paymentProperty.id,
+                propertyTitle: paymentProperty.title,
+                frozenPrice: paymentProperty.price || paymentProperty.projectPriceFrom || 0,
+                currency: paymentProperty.currency || 'EGP',
                 status: 'processing',
                 createdAt: new Date().toISOString()
               });
@@ -5762,7 +5697,7 @@ export default function App() {
                   <table className="w-full text-sm">
                     <thead>
                       <tr>
-                        <th className={`p-3 ${isRtl ? 'sticky right-0' : 'sticky left-0'} bg-white dark:bg-slate-900 z-10`}></th>
+                        <th className={`p-3 sticky start-0 bg-white dark:bg-slate-900 z-10`}></th>
                         {items.map(p => (
                           <th key={p.id} className="p-3 min-w-[160px]">
                             <PropertyImage src={p.imageUrl} alt={p.title || (isRtl ? 'صورة العقار' : 'Property thumbnail')} className="w-full h-24 object-cover rounded-xl mb-2" />
@@ -5782,7 +5717,7 @@ export default function App() {
                     <tbody>
                       {rows.map(([label, fn], ri) => (
                         <tr key={ri} className={ri % 2 ? 'bg-slate-50 dark:bg-slate-800/40' : ''}>
-                          <td className={`p-3 font-bold text-slate-600 dark:text-slate-400 whitespace-nowrap ${isRtl ? 'sticky right-0' : 'sticky left-0'} bg-white dark:bg-slate-900 z-10`}>{label}</td>
+                          <td className={`p-3 font-bold text-slate-600 dark:text-slate-400 whitespace-nowrap sticky start-0 bg-white dark:bg-slate-900 z-10`}>{label}</td>
                           {items.map(p => <td key={p.id} className="p-3 text-center font-medium text-slate-800 dark:text-slate-200">{fn(p)}</td>)}
                         </tr>
                       ))}

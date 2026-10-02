@@ -24,7 +24,8 @@ function assertFetchable(raw: string): URL {
   }
   // When the bucket is configured, pin to it as well — otherwise any public
   // Firebase file in the world would be fetchable through this function.
-  const bucket = process.env.STORAGE_BUCKET;
+  // In production, fallback to the project's official bucket if not explicitly passed in env.
+  const bucket = process.env.STORAGE_BUCKET || (process.env.NODE_ENV === 'production' ? 'gen-lang-client-0748002195.firebasestorage.app' : undefined);
   if (bucket && !url.pathname.startsWith(`/v0/b/${bucket}/`)) {
     throw new ProviderError('That file is not in this project\'s storage bucket', 400);
   }

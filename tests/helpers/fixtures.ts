@@ -168,5 +168,5 @@ export const MOCK_TEST_PROPERTIES: Property[] = [
     unitCode: 'HET-1005',
     publishDate: '2025-12-01',
     yallaSahel: false,
-  }
+  },
 ];

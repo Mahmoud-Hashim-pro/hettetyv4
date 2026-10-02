@@ -20,6 +20,7 @@
 import { resolveFileUrls } from './_lib/fetchFile.js';
 import { resolve } from './_lib/router.js';
 import { AI_TASKS, AIRequest, Message, ProviderError, isTransientStatus } from './_lib/types.js';
+import { checkRateLimit } from './_lib/rateLimiter.js';
 
 // Vercel rejects a body over ~4.5MB at the edge before this function runs, so a
 // larger ceiling here would just be a number that never applies. Measured on
@@ -85,6 +86,18 @@ export default async function handler(req: any, res: any) {
   if (req.method !== 'POST') {
     res.setHeader('Allow', 'POST');
     return res.status(405).json({ error: 'Method not allowed' });
+  }
+
+  // Rate limiting: 20 requests/minute per client IP
+  const clientIp = (req.headers && (req.headers['x-forwarded-for'] || req.headers['x-real-ip'])) || req.socket?.remoteAddress || '127.0.0.1';
+  const ip = Array.isArray(clientIp) ? clientIp[0] : String(clientIp).split(',')[0].trim();
+  const rateLimit = checkRateLimit(ip);
+  if (!rateLimit.allowed) {
+    res.setHeader('Retry-After', String(rateLimit.retryAfterSeconds));
+    return res.status(429).json({
+      error: 'Too many AI requests. Please wait a moment before trying again.',
+      transient: true
+    });
   }
 
   try {

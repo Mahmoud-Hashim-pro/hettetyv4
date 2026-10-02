@@ -31,6 +31,22 @@ service firebase.storage {
     // New uploads are namespaced by uploader uid so an owner deleting their own
     // listing can clean up its media. Without the uid segment there is nothing for
     // a rule to check.
+    // Confidential property legal documents (deeds, contracts, certificates):
+    // Restricted strictly to the property owner and super-admins.
+    match /properties/{ownerUid}/legal/{fileName} {
+      allow read: if isOwner(ownerUid) || isSuperAdmin();
+      allow create: if isOwner(ownerUid) && (
+                     (request.resource.contentType == 'application/pdf' && request.resource.size < 15 * 1024 * 1024) ||
+                     (request.resource.contentType.matches('image/.*') && request.resource.size < 15 * 1024 * 1024)
+                   );
+      allow update: if false;
+      allow delete: if isOwner(ownerUid) || isSuperAdmin();
+    }
+
+    // Property media — any authenticated user may upload:
+    //  • images  (≤ 15MB)
+    //  • videos  (≤ 80MB) — property tour clips
+    //  • PDFs    (≤ 15MB) — public property brochures
     match /properties/{ownerUid}/{fileName} {
       allow read: if true;
       allow create: if isOwner(ownerUid) && (

@@ -18,27 +18,8 @@ interface RealEstateAdvisorProps {
   onOpenProperty?: (propertyId: string) => void;
 }
 
-// Benchmark yields by Egyptian district & property classification (preserved for algorithmic ranking)
-export const DISTRICT_BENCHMARKS: Record<string, { rentalYield: number; capitalGrowth: number }> = {
-  'New Cairo': { rentalYield: 8.5, capitalGrowth: 20 },
-  'التجمع': { rentalYield: 8.5, capitalGrowth: 20 },
-  'التجمع الخامس': { rentalYield: 8.5, capitalGrowth: 20 },
-  'القاهرة الجديدة': { rentalYield: 8.5, capitalGrowth: 20 },
-  'Sheikh Zayed': { rentalYield: 8.0, capitalGrowth: 19 },
-  'الشيخ زايد': { rentalYield: 8.0, capitalGrowth: 19 },
-  '6th of October': { rentalYield: 7.5, capitalGrowth: 18 },
-  'أكتوبر': { rentalYield: 7.5, capitalGrowth: 18 },
-  'North Coast': { rentalYield: 14.0, capitalGrowth: 24 },
-  'الساحل': { rentalYield: 14.0, capitalGrowth: 24 },
-  'الساحل الشمالي': { rentalYield: 14.0, capitalGrowth: 24 },
-  'New Capital': { rentalYield: 11.5, capitalGrowth: 22 },
-  'العاصمة الإدارية': { rentalYield: 11.5, capitalGrowth: 22 },
-  'Maadi': { rentalYield: 7.5, capitalGrowth: 16 },
-  'المعادي': { rentalYield: 7.5, capitalGrowth: 16 },
-  'Shorouk': { rentalYield: 8.0, capitalGrowth: 18 },
-  'الشروق': { rentalYield: 8.0, capitalGrowth: 18 },
-  'Default': { rentalYield: 8.0, capitalGrowth: 19 },
-};
+import { DISTRICT_BENCHMARKS, TOP_DEVELOPERS, PRIME_HUBS } from '../lib/marketIntelligence';
+export { DISTRICT_BENCHMARKS, TOP_DEVELOPERS, PRIME_HUBS };
 
 export const getDistrictBenchmark = (location: string, propertyType?: string) => {
   const normLoc = (location || '').toLowerCase();
@@ -135,7 +116,8 @@ export const calculatePropertyFit = (
 
   // Delivery Timeline Evaluation
   if (profile.deliveryTimeline && profile.deliveryTimeline !== 'all') {
-    const isReady = !!property.deliveryDate && property.deliveryDate.toLowerCase().includes('ready');
+    const isReady = (!!property.deliveryDate && property.deliveryDate.toLowerCase().includes('ready')) ||
+                    (!!property.deliveryTimeline && property.deliveryTimeline.toLowerCase().includes('ready'));
     if (profile.deliveryTimeline === 'ready') {
       if (isReady) {
         score += 10;
@@ -362,24 +344,39 @@ You are a senior, unbiased real estate consultant specialized in the Egyptian re
 ## Core Role & Principles:
 1. Pure, Unbiased Real Estate Consulting:
    - Provide comprehensive real estate guidance: project comparisons, location strategic advantages, developer track records, masterplans, and delivery timelines.
-   - You NEVER fabricate return on investment percentages or financial wealth accumulation promises.
    - You evaluate properties based on actual physical features: location, finishing quality, developer reliability, amenities, layout, and payment flexibilities.
-2. District & Location Expertise:
-   - Deep knowledge of Egyptian growth corridors: New Cairo (التجمع الخامس / بيت الوطن / التجمع السادس), Sheikh Zayed & October (الشيخ زايد / الحزام الأخضر / حدائق أكتوبر), North Coast (سيدي عبد الرحمن / رأس الحكمة), New Capital (العاصمة الإدارية / الحي السكني R7 / R8 / منطقة الأعمال المركزية CBD), Maadi, and Shorouk/Mostakbal City.
-3. Developer & Project Due Diligence:
-   - Guide clients on verifying construction licenses, land allocation, and registration at the Real Estate Publicity Department (الشهر العقاري).
-   - Advise on evaluating delivery track records and maintenance deposits.
-4. Interactive 3D Tour Launcher:
+   - Proactively ask the user for their target budget, available cash/down payment, and monthly installment capacity to tailor recommendations.
+   - Guide clients with realistic annual rental yields (e.g. 8-10% in New Cairo/Zayed, 12-16% seasonal summer in North Coast/Ras El Hekma, 11-14% commercial in New Capital) and capital appreciation benchmarks.
+2. District & Growth Corridors Expertise:
+   - New Cairo & Mostakbal City: Golden Square (المربع الذهبي), Fifth Settlement (التجمع الخامس), Beit El Watan, South & North 90th, Aliva, Bloomfields.
+   - Sheikh Zayed & 6th of October: Central Zayed, New Zayed (الحزام الأخضر), Dahshur Link, October Gardens, Westown.
+   - North Coast & Ras El Hekma: Ras El Hekma ($35B UAE ADQ mega-project), Sidi Abdel Rahman, New Alamein City.
+   - New Administrative Capital: R7 & R8 Residential, CBD & Iconic Tower, Downtown, Green River.
+3. Top Egyptian Developers Due Diligence:
+   - Emaar Misr (Marassi, Cairo Gate, Belle Vie, Uptown Cairo, Mivida - Blue Chip expat yields, 5-8 yr plans).
+   - Mountain View / DMG (iCity New Cairo & October, LVLS & Mountain View Ras El Hekma, Plage, Aliva - 4D island living, lagoons, 8-9 yr plans).
+   - Hyde Park Developments (One Hyde Park, Hyde Park Golden Square, Tawny, Seashore - 141-feddan park, bank backing, 8 yr plans).
+   - SODIC / Aldar (Villette New Cairo, Eastown, October Plaza, Karmell, June - European landscaping, EDNC/Club S hubs, 7-8 yr plans).
+   - Palm Hills (Badya, Palm Hills October & New Cairo, Hacienda Bay/Waters - 8-10 yr plans).
+   - Tatweer Misr, Talaat Moustafa Group (TMG - Madinaty, Noor, SouthMED), Ora Developers (Zed Towers, Solana), Al Ahly Sabbour.
+4. Legal & Contract Verification (Due Diligence):
+   - Guide clients on verifying official registration at the Real Estate Publicity Department (الشهر العقاري طبقاً للقانون 9 لسنة 2022).
+   - Check judicial validity (دعوى صحة ونفاذ), court signature (صحة توقيع), ministerial decrees (القرار الوزاري), and maintenance deposits (وديعة صيانة 8-10%).
+5. Interactive 3D Tour Launcher:
    - When the user asks to see or tour a property in 3D, append [SHOW_3D:<propertyId>] at the very end of your response.
-5. Two-Way State Synchronization:
-   - When the user specifies or refines preferences (preferred district, property type, delivery timeline, or purchase objective), you can update the state by appending:
-     [ADVISOR_STATE:{"preferredLocation":"<string>","propertyType":"<string>","deliveryTimeline":"ready"|"1-2years"|"3+years"|"all","purpose":"residential"|"investment"|"resale"|"coastal"|"all"}]
-     Only include keys you can determine.
+6. Two-Way Financial & Search State Synchronization:
+   - Whenever the user mentions or refines budget, down payment, monthly capacity, preferred location, property type, delivery timeline, or purchase objective, ALWAYS append:
+     [ADVISOR_STATE:{"budget":<number>,"downPayment":<number>,"monthlyCapacity":<number>,"preferredLocation":"<string>","propertyType":"<string>","deliveryTimeline":"ready"|"1-2years"|"3+years"|"all","purpose":"residential"|"investment"|"resale"|"coastal"|"all"}]
+     Only include keys you can determine from user input.
 
 ${userName ? `The user's name is ${userName}. Address them warmly by name.` : ''}
 
-Current User Search Preferences:
+Current User Financial & Search Profile:
 ${JSON.stringify({
+  budget: profile.budget,
+  downPayment: profile.downPayment,
+  monthlyCapacity: profile.monthlyCapacity,
+  currency: profile.currency,
   location: profile.preferredLocation,
   propertyType: profile.propertyType,
   timeline: profile.deliveryTimeline,
@@ -397,7 +394,7 @@ ${JSON.stringify(properties.map(p => ({
   location: p.location,
   type: p.propertyType,
   status: p.status,
-  delivery: p.deliveryDate || p.status,
+  delivery: p.deliveryDate || p.deliveryTimeline || p.status,
   bedrooms: p.bedrooms,
   area: p.area,
   paymentPlans: p.paymentPlans,
@@ -445,8 +442,9 @@ ${JSON.stringify(properties.map(p => ({
           }
         }
       } else {
-        const response = await api.chat(userMsg.text);
-        aiText = response.success ? response.data : "Mock API failed";
+        aiText = isRtl
+          ? 'المستشار الذكي غير متصل حالياً، يرجى المحاولة مرة أخرى أو مراجعة الاتصال بالإنترنت.'
+          : 'The smart real estate advisor is currently unavailable. Please check your connection and try again.';
       }
 
       // Check for 3D marker
@@ -545,7 +543,7 @@ ${idx + 1}. [${p.category.toUpperCase()}] ${p.property.title}
    - Location: ${p.property.location}
    - Property Type: ${p.property.propertyType}
    - Price: ${p.property.price ? `${p.property.price.toLocaleString()} ${p.property.currency || 'EGP'}` : 'On Request'}
-   - Handover Status: ${p.property.deliveryDate || p.property.status}
+   - Handover Status: ${p.property.deliveryDate || p.property.deliveryTimeline || p.property.status}
    - Match Score: ${p.matchScore}%
    - Key Advisory Factors: ${p.reasons.join(' | ')}
 `).join('')}
@@ -700,6 +698,128 @@ Disclaimer: Provided by HETTETY Smart Real Estate Advisor for property selection
               >
                 <RefreshCw size={13} /> {isRtl ? 'إعادة ضبط' : 'Reset'}
               </button>
+            </div>
+
+            {/* Interactive Financial & Investment Sliders Deck */}
+            <div className="bg-slate-50 dark:bg-slate-900/60 p-5 rounded-2xl border border-slate-200/80 dark:border-slate-800 space-y-5">
+              <div className="flex items-center justify-between border-b border-slate-200/60 dark:border-slate-800/80 pb-3">
+                <div className="flex items-center gap-2">
+                  <Sliders size={18} className="text-brand-600 dark:text-brand-400" />
+                  <span className="text-sm font-black text-slate-900 dark:text-white">
+                    {isRtl ? 'المحددات المالية والقدرة الاستثمارية المباشرة' : 'Financial Budget & Investment Sliders'}
+                  </span>
+                </div>
+                <span className="text-[11px] font-bold text-slate-500 dark:text-slate-400">
+                  {profile.currency || 'EGP'}
+                </span>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                {/* 1. Target Budget Slider */}
+                <div className="space-y-2">
+                  <div className="flex justify-between items-center text-xs font-bold">
+                    <label className="text-slate-700 dark:text-slate-300 flex items-center gap-1.5">
+                      <Landmark size={14} className="text-emerald-500" />
+                      {t.advisor_budget_label || (isRtl ? 'الميزانية الإجمالية المستهدفة' : 'Target Budget')}
+                    </label>
+                    <span className="text-emerald-600 dark:text-emerald-400 font-black">
+                      {profile.budget > 0 ? `${profile.budget.toLocaleString()} ${profile.currency || 'EGP'}` : (isRtl ? 'مرن / غير محدد' : 'Flexible')}
+                    </span>
+                  </div>
+                  <input
+                    type="range"
+                    min={0}
+                    max={40000000}
+                    step={250000}
+                    value={profile.budget}
+                    onChange={(e) => setProfile(prev => ({ ...prev, budget: Number(e.target.value) }))}
+                    className="w-full accent-emerald-500 cursor-pointer h-2 bg-slate-200 dark:bg-slate-700 rounded-lg appearance-none"
+                    aria-label={t.advisor_budget_label || 'Target Budget'}
+                  />
+                  <div className="flex gap-1.5 flex-wrap pt-1">
+                    {[3000000, 6000000, 10000000, 18000000, 30000000].map(val => (
+                      <button
+                        key={val}
+                        type="button"
+                        onClick={() => setProfile(prev => ({ ...prev, budget: val }))}
+                        className={`px-2 py-0.5 text-[10px] font-bold rounded-md transition-all cursor-pointer ${profile.budget === val ? 'bg-emerald-600 text-white' : 'bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-300 border border-slate-200 dark:border-slate-700 hover:border-emerald-400'}`}
+                      >
+                        {val >= 1000000 ? `${val / 1000000}M` : `${val / 1000}k`}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* 2. Available Cash / Down Payment Slider */}
+                <div className="space-y-2">
+                  <div className="flex justify-between items-center text-xs font-bold">
+                    <label className="text-slate-700 dark:text-slate-300 flex items-center gap-1.5">
+                      <KeyRound size={14} className="text-brand-500" />
+                      {t.advisor_down_payment_label || (isRtl ? 'السيولة المتاحة (المقدم)' : 'Available Cash (Down Payment)')}
+                    </label>
+                    <span className="text-brand-600 dark:text-brand-400 font-black">
+                      {profile.downPayment > 0 ? `${profile.downPayment.toLocaleString()} ${profile.currency || 'EGP'}` : (isRtl ? 'مرن / غير محدد' : 'Flexible')}
+                    </span>
+                  </div>
+                  <input
+                    type="range"
+                    min={0}
+                    max={10000000}
+                    step={100000}
+                    value={profile.downPayment}
+                    onChange={(e) => setProfile(prev => ({ ...prev, downPayment: Number(e.target.value) }))}
+                    className="w-full accent-brand-500 cursor-pointer h-2 bg-slate-200 dark:bg-slate-700 rounded-lg appearance-none"
+                    aria-label={t.advisor_down_payment_label || 'Available Cash (Down Payment)'}
+                  />
+                  <div className="flex gap-1.5 flex-wrap pt-1">
+                    {[500000, 1000000, 2000000, 3500000, 6000000].map(val => (
+                      <button
+                        key={val}
+                        type="button"
+                        onClick={() => setProfile(prev => ({ ...prev, downPayment: val }))}
+                        className={`px-2 py-0.5 text-[10px] font-bold rounded-md transition-all cursor-pointer ${profile.downPayment === val ? 'bg-brand-600 text-white' : 'bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-300 border border-slate-200 dark:border-slate-700 hover:border-brand-400'}`}
+                      >
+                        {val >= 1000000 ? `${val / 1000000}M` : `${val / 1000}k`}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* 3. Monthly Capacity Slider */}
+                <div className="space-y-2">
+                  <div className="flex justify-between items-center text-xs font-bold">
+                    <label className="text-slate-700 dark:text-slate-300 flex items-center gap-1.5">
+                      <Clock size={14} className="text-purple-500" />
+                      {t.advisor_monthly_capacity_label || (isRtl ? 'القدرة على القسط الشهري' : 'Max Monthly Installment Capacity')}
+                    </label>
+                    <span className="text-purple-600 dark:text-purple-400 font-black">
+                      {profile.monthlyCapacity > 0 ? `${profile.monthlyCapacity.toLocaleString()} ${profile.currency || 'EGP'}/ش` : (isRtl ? 'مرن / غير محدد' : 'Flexible')}
+                    </span>
+                  </div>
+                  <input
+                    type="range"
+                    min={0}
+                    max={250000}
+                    step={10000}
+                    value={profile.monthlyCapacity}
+                    onChange={(e) => setProfile(prev => ({ ...prev, monthlyCapacity: Number(e.target.value) }))}
+                    className="w-full accent-purple-500 cursor-pointer h-2 bg-slate-200 dark:bg-slate-700 rounded-lg appearance-none"
+                    aria-label={t.advisor_monthly_capacity_label || 'Max Monthly Installment Capacity'}
+                  />
+                  <div className="flex gap-1.5 flex-wrap pt-1">
+                    {[25000, 50000, 80000, 120000, 200000].map(val => (
+                      <button
+                        key={val}
+                        type="button"
+                        onClick={() => setProfile(prev => ({ ...prev, monthlyCapacity: val }))}
+                        className={`px-2 py-0.5 text-[10px] font-bold rounded-md transition-all cursor-pointer ${profile.monthlyCapacity === val ? 'bg-purple-600 text-white' : 'bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-300 border border-slate-200 dark:border-slate-700 hover:border-purple-400'}`}
+                      >
+                        {val >= 1000 ? `${val / 1000}k` : val}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </div>
             </div>
 
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-5">
@@ -944,6 +1064,118 @@ Disclaimer: Provided by HETTETY Smart Real Estate Advisor for property selection
             </div>
           </div>
 
+          {/* Section 2.5: Dedicated User Budget, ROI & Annual Yield Dashboard */}
+          <div className="bg-gradient-to-br from-slate-900 via-brand-950 to-slate-900 text-white rounded-2xl p-6 border border-brand-800/40 shadow-xl space-y-6">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-white/10 pb-4">
+              <div>
+                <div className="flex items-center gap-2">
+                  <span className="p-1.5 rounded-lg bg-emerald-500/20 text-emerald-400">
+                    <PieChart size={18} />
+                  </span>
+                  <h3 className="font-heading font-black text-base sm:text-lg">
+                    {isRtl ? 'لوحة التقييم المالي والعائد الاستثماري لميزانيتك' : 'Personalized Budget & Investment Yield Dashboard'}
+                  </h3>
+                </div>
+                <p className="text-xs text-slate-300 mt-1">
+                  {isRtl ? 'تحليل مباشر لمدى توافق قدرتك الشرائية وحساب العائد السنوي المتوقع' : 'Live analysis of your financial capacity, projected annual yield, and portfolio fit'}
+                </p>
+              </div>
+
+              <div className="flex items-center gap-2">
+                <span className="px-3 py-1 rounded-full text-xs font-black bg-brand-500/20 text-brand-300 border border-brand-500/30">
+                  {profile.preferredLocation === 'all' ? (isRtl ? 'عموم السوق المصري' : 'Market-wide') : profile.preferredLocation}
+                </span>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+              {/* Metric 1: Budget Allocation */}
+              <div className="bg-white/5 rounded-xl p-4 border border-white/5">
+                <span className="text-[11px] font-bold text-slate-400 block mb-1 flex items-center gap-1.5">
+                  <Landmark size={13} className="text-emerald-400" />
+                  {isRtl ? 'الميزانية المعتمدة' : 'Allocated Budget'}
+                </span>
+                <div className="text-xl font-black text-emerald-400">
+                  {profile.budget > 0 ? `${profile.budget.toLocaleString()} ${profile.currency || 'EGP'}` : (isRtl ? 'مرن / غير محدد' : 'Flexible')}
+                </div>
+                <div className="text-[10px] text-slate-300 mt-1.5 space-y-0.5">
+                  <div>{isRtl ? 'المقدم المتاح:' : 'Down payment:'} <span className="font-bold text-white">{profile.downPayment > 0 ? `${profile.downPayment.toLocaleString()} ${profile.currency || 'EGP'}` : (isRtl ? 'مرن' : 'Flexible')}</span></div>
+                  <div>{isRtl ? 'القسط الشهري:' : 'Monthly:'} <span className="font-bold text-white">{profile.monthlyCapacity > 0 ? `${profile.monthlyCapacity.toLocaleString()} ${profile.currency || 'EGP'}` : (isRtl ? 'مرن' : 'Flexible')}</span></div>
+                </div>
+              </div>
+
+              {/* Metric 2: Annual Rental Yield */}
+              <div className="bg-white/5 rounded-xl p-4 border border-white/5">
+                <span className="text-[11px] font-bold text-slate-400 block mb-1 flex items-center gap-1.5">
+                  <PieChart size={13} className="text-cyan-400" />
+                  {isRtl ? 'العائد الإيجاري السنوي' : 'Annual Rental Yield'}
+                </span>
+                <div className="text-xl font-black text-cyan-400">
+                  {getDistrictBenchmark(profile.preferredLocation, profile.propertyType).rentalYield}%
+                </div>
+                <p className="text-[10px] text-slate-300 mt-1.5">
+                  {profile.budget > 0 
+                    ? (isRtl 
+                        ? `دخل إيجاري تقديري ~${Math.round((profile.budget * getDistrictBenchmark(profile.preferredLocation, profile.propertyType).rentalYield) / 100).toLocaleString()} ${profile.currency || 'EGP'} سنوياً`
+                        : `Estimated ~${Math.round((profile.budget * getDistrictBenchmark(profile.preferredLocation, profile.propertyType).rentalYield) / 100).toLocaleString()} ${profile.currency || 'EGP'}/year`)
+                    : (isRtl ? 'متوسط العائد الإيجاري بالمنطقة' : 'Average area rental return')}
+                </p>
+              </div>
+
+              {/* Metric 3: Capital Appreciation */}
+              <div className="bg-white/5 rounded-xl p-4 border border-white/5">
+                <span className="text-[11px] font-bold text-slate-400 block mb-1 flex items-center gap-1.5">
+                  <Sparkles size={13} className="text-amber-400" />
+                  {isRtl ? 'النمو الرأسمالي السنوي' : 'Annual Capital Growth'}
+                </span>
+                <div className="text-xl font-black text-amber-400">
+                  +{getDistrictBenchmark(profile.preferredLocation, profile.propertyType).capitalGrowth}%
+                </div>
+                <p className="text-[10px] text-slate-300 mt-1.5">
+                  {isRtl 
+                    ? `إجمالي العائد المركب: ${(getDistrictBenchmark(profile.preferredLocation, profile.propertyType).rentalYield + getDistrictBenchmark(profile.preferredLocation, profile.propertyType).capitalGrowth)}% سنوياً`
+                    : `Total combined return: ${(getDistrictBenchmark(profile.preferredLocation, profile.propertyType).rentalYield + getDistrictBenchmark(profile.preferredLocation, profile.propertyType).capitalGrowth)}%/year`}
+                </p>
+              </div>
+
+              {/* Metric 4: Fit Breakdown */}
+              <div className="bg-white/5 rounded-xl p-4 border border-white/5">
+                <span className="text-[11px] font-bold text-slate-400 block mb-1 flex items-center gap-1.5">
+                  <CheckCircle2 size={13} className="text-emerald-400" />
+                  {isRtl ? 'تطابق العقارات مع ميزانيتك' : 'Property Budget Fit'}
+                </span>
+                <div className="text-xl font-black text-emerald-400 flex items-center gap-2">
+                  <span>{stats.perfectCount}</span>
+                  <span className="text-xs font-normal text-slate-400">
+                    {isRtl ? `من أصل ${evaluatedProperties.length}` : `of ${evaluatedProperties.length}`}
+                  </span>
+                </div>
+                <div className="text-[10px] text-slate-300 mt-1.5 flex items-center gap-2 flex-wrap">
+                  <span className="text-emerald-400 font-bold">{stats.perfectCount} {isRtl ? 'مناسب' : 'Perfect'}</span>
+                  <span>•</span>
+                  <span className="text-amber-400 font-bold">{stats.stretchCount} {isRtl ? 'فرص قريبة' : 'Stretch'}</span>
+                  <span>•</span>
+                  <span className="text-red-400 font-bold">{stats.mismatchCount} {isRtl ? 'أعلى من الميزانية' : 'Mismatch'}</span>
+                </div>
+              </div>
+            </div>
+
+            {/* Top Developers Matching */}
+            <div className="pt-2 border-t border-white/10 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs">
+              <span className="text-slate-400 font-bold flex items-center gap-1.5">
+                <Building2 size={13} className="text-brand-400" />
+                {isRtl ? 'أبرز المطورين المتوافقين مع معاييرك:' : 'Top Compatible Developers:'}
+              </span>
+              <div className="flex items-center gap-2 flex-wrap">
+                {['Hyde Park Developments', 'Mountain View', 'SODIC', 'Emaar Misr'].map(dev => (
+                  <span key={dev} className="px-2.5 py-1 rounded-lg bg-white/10 text-white font-bold text-[11px] border border-white/10">
+                    {dev}
+                  </span>
+                ))}
+              </div>
+            </div>
+          </div>
+
           {/* Section 3: Property Matching & Due Diligence Review */}
           <div className="space-y-4">
             <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
@@ -1094,7 +1326,7 @@ Disclaimer: Provided by HETTETY Smart Real Estate Advisor for property selection
                           <div>
                             <span className="block text-[9px] text-slate-400 font-bold">{isRtl ? 'جاهزية الاستلام' : 'Handover'}</span>
                             <span className="text-xs font-black text-emerald-600 dark:text-emerald-400 block truncate">
-                              {property.deliveryDate || (isRtl ? 'غير محدد' : 'Not stated')}
+                              {property.deliveryDate || property.deliveryTimeline || (isRtl ? 'غير محدد' : 'Not stated')}
                             </span>
                           </div>
                         </div>

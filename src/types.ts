@@ -13,6 +13,7 @@ export interface Property {
   compound?: string;       // Project / compound name (Egyptian primary market)
   developer?: string;      // Developer / company
   deliveryDate?: string;   // Handover date, or "Ready"
+  deliveryTimeline?: string; // Delivery timeline (e.g. "ready", "1-2years", "3+years")
   finishing?: string;      // Not Finished / Semi Finished / Finished / Fully Finished
   floor?: string;          // Floor number / "Ground" / "Roof"
   view?: string;           // Garden / Sea / Pool / Street ...

@@ -966,7 +966,7 @@ Return ONLY valid JSON (no markdown), omitting any key you can't find:
 
       <div className="mb-8 flex flex-col md:flex-row gap-4 justify-between relative" role="tablist" aria-label={isRtl ? 'خطوات إضافة العقار' : 'Listing creation steps'}>
          <div className="absolute top-1/2 left-0 w-full h-1 bg-slate-200 dark:bg-slate-800 -z-10 hidden md:block rounded-full"></div>
-         <div className={`absolute top-1/2 ${isRtl ? 'right-0' : 'left-0'} h-1 bg-brand-500 transition-all duration-500 -z-10 hidden md:block rounded-full`} style={{ width: `${(step - 1) * 50}%`}}></div>
+         <div className="absolute top-1/2 start-0 h-1 bg-brand-500 transition-all duration-500 -z-10 hidden md:block rounded-full" style={{ width: `${(step - 1) * 50}%`}}></div>
          {steps.map(s => (
              <div
                key={s.id}
@@ -985,7 +985,7 @@ Return ONLY valid JSON (no markdown), omitting any key you can't find:
              >
                  <s.icon size={18} aria-hidden="true" />
                  <span className="font-bold text-sm">{s.title}</span>
-                 {step > s.id && <CheckCircle size={16} className={isRtl ? 'mr-2' : 'ml-2'} aria-hidden="true" />}
+                 {step > s.id && <CheckCircle size={16} className="ms-2" aria-hidden="true" />}
              </div>
          ))}
       </div>
@@ -1316,18 +1316,18 @@ Return ONLY valid JSON (no markdown), omitting any key you can't find:
                                       if (formData.imageUrl === removed) {
                                         setFormData(prev => ({ ...prev, imageUrl: next[0] || '' }));
                                       }
-                                  }} aria-label={isRtl ? `حذف الصورة ${i + 1}` : `Delete image ${i + 1}`} className="absolute top-2 right-2 bg-red-500 text-white p-1.5 rounded-full opacity-0 group-hover:opacity-100 focus:opacity-100 transition-opacity shadow-md hover:bg-red-600 min-w-[32px] min-h-[32px] flex items-center justify-center cursor-pointer">
+                                  }} aria-label={isRtl ? `حذف الصورة ${i + 1}` : `Delete image ${i + 1}`} className="absolute top-2 end-2 bg-red-500 text-white p-1.5 rounded-full opacity-0 group-hover:opacity-100 focus:opacity-100 transition-opacity shadow-md hover:bg-red-600 min-w-[32px] min-h-[32px] flex items-center justify-center cursor-pointer">
                                       <X size={14} aria-hidden="true" />
                                   </button>
                                   {i === 0 ? (
-                                    <span className="absolute bottom-2 left-2 bg-brand-600 text-white text-[10px] uppercase font-bold px-2 py-0.5 rounded shadow">{isRtl ? 'الرئيسية' : 'Main'}</span>
+                                    <span className="absolute bottom-2 start-2 bg-brand-600 text-white text-[10px] uppercase font-bold px-2 py-0.5 rounded shadow">{isRtl ? 'الرئيسية' : 'Main'}</span>
                                   ) : (
                                     <button
                                       onClick={() => {
                                         setImages(prev => { const arr = [...prev]; const [it] = arr.splice(i, 1); arr.unshift(it); return arr; });
                                         setFormData(prev => ({ ...prev, imageUrl: img }));
                                       }}
-                                      className="absolute bottom-2 left-2 bg-black/70 hover:bg-brand-600 text-white text-[10px] font-bold px-2 py-0.5 rounded shadow opacity-0 group-hover:opacity-100 transition-opacity"
+                                      className="absolute bottom-2 start-2 bg-black/70 hover:bg-brand-600 text-white text-[10px] font-bold px-2 py-0.5 rounded shadow opacity-0 group-hover:opacity-100 transition-opacity"
                                     >
                                       {isRtl ? 'اجعلها الرئيسية' : 'Set as cover'}
                                     </button>
@@ -1406,8 +1406,8 @@ Return ONLY valid JSON (no markdown), omitting any key you can't find:
                       {panoramas.map((img, i) => (
                         <div key={i} className="relative aspect-video rounded-xl overflow-hidden border border-slate-200 dark:border-slate-700 group">
                           <img src={img} className="w-full h-full object-cover" alt="Panorama" />
-                          <span className="absolute top-1.5 left-1.5 bg-brand-600 text-white text-[9px] font-black px-1.5 py-0.5 rounded">360°</span>
-                          <button onClick={() => setPanoramas(panoramas.filter((_, idx) => idx !== i))} aria-label={isRtl ? `حذف صورة 360 رقم ${i + 1}` : `Delete 360 photo ${i + 1}`} className="absolute top-1.5 right-1.5 bg-red-500 text-white p-1 rounded-full opacity-0 group-hover:opacity-100 focus:opacity-100 transition-opacity hover:bg-red-600 cursor-pointer">
+                          <span className="absolute top-1.5 start-1.5 bg-brand-600 text-white text-[9px] font-black px-1.5 py-0.5 rounded">360°</span>
+                          <button onClick={() => setPanoramas(panoramas.filter((_, idx) => idx !== i))} aria-label={isRtl ? `حذف صورة 360 رقم ${i + 1}` : `Delete 360 photo ${i + 1}`} className="absolute top-1.5 end-1.5 bg-red-500 text-white p-1 rounded-full opacity-0 group-hover:opacity-100 focus:opacity-100 transition-opacity hover:bg-red-600 cursor-pointer">
                             <X size={14} aria-hidden="true" />
                           </button>
                         </div>
@@ -1460,7 +1460,7 @@ Return ONLY valid JSON (no markdown), omitting any key you can't find:
                    <div className="relative group">
                        <input type="file" accept="image/*,application/pdf" onChange={handleDocumentUpload} className="hidden" id="legal-upload" disabled={extractingOCR}/>
                        <label htmlFor="legal-upload" className="inline-flex cursor-pointer items-center justify-center bg-white dark:bg-slate-800 px-6 py-3 rounded-xl border border-orange-200 dark:border-orange-500/30 hover:border-orange-400 text-orange-700 dark:text-orange-300 font-bold transition-all shadow-sm">
-                           {extractingOCR ? <Loader2 size={18} className="animate-spin mr-2" /> : <Wand2 size={18} className="mr-2" />}
+                           {extractingOCR ? <Loader2 size={18} className="animate-spin me-2" /> : <Wand2 size={18} className="me-2" />}
                            {isRtl ? 'استخراج ذكي (OCR)' : 'Smart OCR Extract'}
                        </label>
                    </div>

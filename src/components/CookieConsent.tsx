@@ -227,7 +227,7 @@ const CookieConsent: React.FC<CookieConsentProps> = ({ t, isRtl, onNavigateToLeg
                     />
                     <div className="w-12 h-6 bg-slate-300 dark:bg-slate-600 rounded-full peer-checked:bg-[#047857] dark:peer-checked:bg-[#10B981] transition-colors relative">
                       <div
-                        className={`absolute top-1 ${isRtl ? 'right-1' : 'left-1'} bg-white w-4 h-4 rounded-full transition-transform ${
+                        className={`absolute top-1 start-1 bg-white w-4 h-4 rounded-full transition-transform ${
                           preferences.analytics ? (isRtl ? '-translate-x-6' : 'translate-x-6') : ''
                         }`}
                       ></div>
@@ -250,7 +250,7 @@ const CookieConsent: React.FC<CookieConsentProps> = ({ t, isRtl, onNavigateToLeg
                     />
                     <div className="w-12 h-6 bg-slate-300 dark:bg-slate-600 rounded-full peer-checked:bg-[#047857] dark:peer-checked:bg-[#10B981] transition-colors relative">
                       <div
-                        className={`absolute top-1 ${isRtl ? 'right-1' : 'left-1'} bg-white w-4 h-4 rounded-full transition-transform ${
+                        className={`absolute top-1 start-1 bg-white w-4 h-4 rounded-full transition-transform ${
                           preferences.marketing ? (isRtl ? '-translate-x-6' : 'translate-x-6') : ''
                         }`}
                       ></div>

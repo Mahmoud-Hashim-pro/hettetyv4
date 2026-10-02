@@ -89,6 +89,47 @@ service cloud.firestore {
     //   - createdAt: string/timestamp (required) - Creation timestamp
     //   - updatedAt: string/timestamp (optional) - Last update timestamp
     //
+    // Collection: agents
+    // Document ID: agentId (Agent UID)
+    // Fields:
+    //   - id: string (optional) - Agent profile ID
+    //   - name: string (required) - Full name
+    //   - nameAr: string (optional) - Arabic display name
+    //   - agencyName: string (optional) - Brokerage or agency name
+    //   - licenseNumber: string (optional) - Certified broker license number
+    //   - phone: string (optional) - Contact phone number
+    //   - whatsapp: string (optional) - WhatsApp messaging number
+    //   - email: string (optional) - Contact email address
+    //   - rating: number (optional) - Agent rating (1 to 5)
+    //   - reviewCount: number (optional) - Total review count
+    //   - activeListingsCount: number (optional) - Count of currently managed listings
+    //   - closedDealsCount: number (optional) - Count of completed transactions
+    //   - specializations: list (optional) - Geographic areas or property types
+    //   - verificationBadge: bool (optional) - Verified advisor status
+    //   - commissionRatePercent: number (optional) - Commission rate percentage
+    //
+    // Collection: crm_leads
+    // Document ID: leadId
+    // Fields:
+    //   - id: string (optional) - Lead identifier
+    //   - propertyId: string (required) - Associated property listing ID
+    //   - propertyTitle: string (required) - Listing headline/title
+    //   - propertyLocation: string (optional) - Property location/compound
+    //   - buyerId: string (optional) - Prospective buyer UID if signed in
+    //   - buyerName: string (required) - Prospective buyer full name
+    //   - buyerPhone: string (required) - Prospective buyer contact phone
+    //   - buyerEmail: string (optional) - Prospective buyer email
+    //   - assignedAgentId: string (required) - Designated broker/agent UID
+    //   - assignedAgentName: string (optional) - Designated broker display name
+    //   - status: string (required, enum: ['new_inquiry', 'contacted', 'viewing_scheduled', 'viewing_completed', 'negotiating', 'closed_won', 'closed_lost'])
+    //   - priority: string (required, enum: ['hot', 'warm', 'cold'])
+    //   - budget: number (optional) - Buyer budget
+    //   - currency: string (optional, enum: ['EGP', 'USD'])
+    //   - viewingAppointment: map (optional) - Scheduled viewing details (date, time, type)
+    //   - notes: list (optional) - Interaction audit log & status history
+    //   - createdAt: string/timestamp (required) - Lead creation timestamp
+    //   - updatedAt: string/timestamp (optional) - Last modification timestamp
+    //
     // ===============================================================
 
     // ===============================================================
@@ -532,6 +573,30 @@ service cloud.firestore {
                     && request.resource.data.rating >= 1 && request.resource.data.rating <= 5
                     && request.resource.data.comment is string && request.resource.data.comment.size() < 1000;
       allow delete: if isAdmin() || (isAuthenticated() && resource.data.userId == request.auth.uid);
+    }
+
+    // Phase 8: Agent Ecosystem & Broker Profiles
+    match /agents/{agentId} {
+      allow read: if true; // Public agent directories / broker profiles
+      allow create, update: if isAuthenticated() && (request.auth.uid == agentId || isAdmin());
+      allow delete: if isAdmin();
+    }
+
+    // Phase 9: Broker CRM Leads Pipeline & Viewing Management
+    match /crm_leads/{leadId} {
+      allow read: if isAuthenticated() && (
+        resource.data.assignedAgentId == request.auth.uid ||
+        ('buyerId' in resource.data && resource.data.buyerId == request.auth.uid) ||
+        isAdmin()
+      );
+      allow create: if isAuthenticated() &&
+                    request.resource.data.keys().hasAll(['propertyId', 'propertyTitle', 'buyerName', 'buyerPhone', 'assignedAgentId', 'status', 'priority', 'createdAt']) &&
+                    request.resource.data.status in ['new_inquiry', 'contacted'];
+      allow update: if isAuthenticated() && (
+        isAdmin() ||
+        (resource.data.assignedAgentId == request.auth.uid && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'priority', 'viewingAppointment', 'notes', 'updatedAt']))
+      );
+      allow delete: if isAdmin();
     }
   }
 }

@@ -1,0 +1,38 @@
+# HETTETY 3D Reconstruction Worker Configuration
+worker:
+  id: "gpu-worker-01"
+  concurrency: 1
+  working_dir: "/tmp/hettety_3d"
+  log_level: "INFO"
+
+queue:
+  provider: "redis"
+  redis_url: "redis://localhost:6379/0"
+  queue_name: "hettety:3d:reconstruction"
+
+storage:
+  provider: "gcs" # or "s3" / "local"
+  bucket_name: "hettety-spatial-assets"
+  endpoint_url: ""
+  public_cdn_url: "https://storage.googleapis.com/hettety-spatial-assets"
+
+pipeline:
+  min_images: 15
+  recommended_images_min: 30
+  blur_threshold: 60.0
+  colmap:
+    camera_model: "OPENCV"
+    use_gpu: true
+  training:
+    iterations: 30000
+    save_iterations: [7000, 30000]
+    densify_until_iter: 15000
+    sh_degree: 3
+  compression:
+    format: "spz" # Niantic SPZ progressive format
+    quantize_positions: 16
+    quantize_scales: 8
+    target_max_mb: 15.0
+  mesh:
+    generate_glb: true
+    poisson_depth: 9

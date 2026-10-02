@@ -1,3 +1,7 @@
+export * from './types/three-d-tour';
+export * from './types/reconstruction';
+import { ThreeDTour, ThreeDTourAsset } from './types/three-d-tour';
+
 export type Page = 'home' | 'listings' | '3d-experience' | 'legal' | 'ai-chat' | 'login' | 'register' | 'contact' | '3d' | 'about' | 'buy' | 'verification' | 'tours' | 'terms' | 'privacy' | 'cookie-policy' | 'profile' | 'add-listing' | 'payment' | 'manage-users' | 'property' | 'yalla-sahel' | 'project' | 'edit-listing';
 
 export interface Property {
@@ -187,36 +191,3 @@ export interface AdvisorPropertyFit {
 }
 
 
-export interface TourRoomWaypoint {
-  id: string;
-  name: string;
-  nameAr?: string;
-  position: [number, number, number];
-  camera?: {
-    position: [number, number, number];
-    target?: [number, number, number];
-    rotation?: [number, number, number];
-  };
-}
-
-export interface ThreeDTourQualityReport {
-  coverageScore: number;     // 0-100%
-  cameraMotionScore: number; // 0-100%
-  blurScore: number;         // 0-100%
-  lightingScore: number;     // 0-100%
-  roomCompleteness: number;  // 0-100%
-  warnings?: string[];
-  warningsAr?: string[];
-}
-
-export interface ThreeDTourAsset {
-  status: 'none' | 'processing' | 'ready' | 'failed';
-  provider: 'hettety' | 'matterport' | 'polycam' | 'kuula';
-  assetUrl?: string;
-  format?: 'spz' | 'ply' | 'glb';
-  thumbnailUrl?: string;
-  duration?: number;
-  rooms?: TourRoomWaypoint[];
-  processingJobId?: string;
-  qualityReport?: ThreeDTourQualityReport;
-}

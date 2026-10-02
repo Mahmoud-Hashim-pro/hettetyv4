@@ -6,6 +6,7 @@ import imageCompression from 'browser-image-compression';
 import { generateContentResilient, aiErrorMessage } from '../ai';
 import { storage, ref, uploadBytes, getDownloadURL, deleteObject, auth } from '../firebase';
 import { Property, ThreeDTourAsset, TourRoomWaypoint } from '../types';
+import { CaptureWizard } from '../features/reconstruction/CaptureWizard';
 
 /**
  * Fields whose change invalidates a previous review. Mirrors materialListingKeys()
@@ -294,6 +295,7 @@ export const AddListingPage = ({ onAdd, onAddMany, onUpdate, mode = 'create', in
   const [panoramas, setPanoramas] = useState<string[]>(seed?.panoramas || []);
   const [threeDTour, setThreeDTour] = useState<ThreeDTourAsset | undefined>(seed?.threeDTour);
   const [showScanQualityAudit, setShowScanQualityAudit] = useState(!!seed?.threeDTour?.qualityReport);
+  const [useCaptureWizard, setUseCaptureWizard] = useState(false);
 
   const PRESET_ROOM_WAYPOINTS = [
     { id: 'reception', name: 'Reception & Living Hall', nameAr: 'الريسبشن ومنطقة المعيشة', position: [0, 0.4, 0] as [number, number, number] },
@@ -1510,6 +1512,47 @@ Return ONLY valid JSON (no markdown), omitting any key you can't find:
                       ? 'تقنية المسح الفراغي ثلاثي الأبعاد الحقيقي تحوّل فيديو التجوال بالموبايل أو سحابة النقاط إلى نموذج تفاعلي كامل يمكن للمشتري التنقل فيه بحرية بين الغرف مع محاكاة واقعية للإضاءة والأبعاد.'
                       : 'Real 3D Spatial Reconstruction transforms continuous walkthrough video or point clouds into an interactive 3D model with true perspective and room-to-room navigation.'}
                   </p>
+
+                  {/* Mode switcher: Direct Config vs Guided Capture Wizard */}
+                  <div className="flex items-center gap-2 mb-4">
+                    <button
+                      type="button"
+                      onClick={() => setUseCaptureWizard(false)}
+                      className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer ${
+                        !useCaptureWizard
+                          ? 'bg-brand-600 text-white shadow-sm'
+                          : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-200'
+                      }`}
+                    >
+                      {isRtl ? 'الضبط المباشر والمحطات' : 'Direct Config & Waypoints'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setUseCaptureWizard(true)}
+                      className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer ${
+                        useCaptureWizard
+                          ? 'bg-brand-600 text-white shadow-sm'
+                          : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-200'
+                      }`}
+                    >
+                      <Sparkles size={13} />
+                      <span>{isRtl ? 'معالج الرفع والمعالجة الفراغية (Wizard)' : 'Interactive Capture Wizard'}</span>
+                    </button>
+                  </div>
+
+                  {useCaptureWizard && (
+                    <div className="mb-6">
+                      <CaptureWizard
+                        propertyId={seed?.id || 'new-property'}
+                        initialTour={threeDTour}
+                        onTourGenerated={(t) => {
+                          setThreeDTour(t);
+                          setUseCaptureWizard(false);
+                        }}
+                        isRtl={isRtl}
+                      />
+                    </div>
+                  )}
 
                   {/* Phone Video Capture Guidelines */}
                   <div className="bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700 rounded-2xl p-4 mb-4">

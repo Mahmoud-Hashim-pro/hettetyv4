@@ -49,8 +49,24 @@ export const PREMIER_LANDMARK_PROPERTIES: Property[] = [
     threeDTour: {
       status: 'ready',
       provider: 'hettety',
+      source: 'hettety_capture',
       format: 'spz',
       assetUrl: 'https://cdn.hettety.com/tours/hp-ohp-v09/scene.spz',
+      representation: {
+        gaussianSplat: {
+          format: 'spz',
+          url: 'https://cdn.hettety.com/tours/hp-ohp-v09/scene.spz',
+          sizeBytes: 8.7 * 1024 * 1024,
+          splatCount: 1250000,
+        },
+        mesh: {
+          format: 'glb',
+          url: 'https://cdn.hettety.com/tours/hp-ohp-v09/mesh.glb',
+          sizeBytes: 12.3 * 1024 * 1024,
+          isCalibratedMetric: true,
+        },
+      },
+      bounds: { min: [-6, 0, -8], max: [6, 6, 4] },
       rooms: [
         { id: 'reception', name: 'Grand Reception Salon', nameAr: 'صالون الاستقبال الرئيسي', position: [0, 1.6, 0] },
         { id: 'master_suite', name: 'Master Suite & Dressing', nameAr: 'جناح الماستر وغرفة الملابس', position: [4.2, 4.8, -2.1] },
@@ -114,8 +130,24 @@ export const PREMIER_LANDMARK_PROPERTIES: Property[] = [
     threeDTour: {
       status: 'ready',
       provider: 'hettety',
+      source: 'hettety_capture',
       format: 'spz',
       assetUrl: 'https://cdn.hettety.com/tours/mv-icity-lagoon-1/scene.spz',
+      representation: {
+        gaussianSplat: {
+          format: 'spz',
+          url: 'https://cdn.hettety.com/tours/mv-icity-lagoon-1/scene.spz',
+          sizeBytes: 9.1 * 1024 * 1024,
+          splatCount: 1380000,
+        },
+        mesh: {
+          format: 'glb',
+          url: 'https://cdn.hettety.com/tours/mv-icity-lagoon-1/mesh.glb',
+          sizeBytes: 13.8 * 1024 * 1024,
+          isCalibratedMetric: true,
+        },
+      },
+      bounds: { min: [-5, 0, -6], max: [5, 8, 4] },
       rooms: [
         { id: 'living', name: 'Lagoon View Living Area', nameAr: 'صالة المعيشة بإطلالة اللاجون', position: [0, 1.6, 0] },
         { id: 'sky_roof', name: 'Panoramic Sky Roof Terrace', nameAr: 'روف التراس البانورامي', position: [0, 7.2, -3.0] },

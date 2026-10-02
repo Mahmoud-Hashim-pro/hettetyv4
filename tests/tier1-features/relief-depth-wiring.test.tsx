@@ -47,6 +47,7 @@ const open3D = async (p: Property) => {
 
 describe('Tier 1 — the property page hands the viewer everything it has', () => {
   beforeEach(() => {
+    window.location.hash = '';
     localStorage.clear();
     localStorage.setItem('hettety_consent', JSON.stringify({ necessary: true }));
   });
@@ -55,18 +56,18 @@ describe('Tier 1 — the property page hands the viewer everything it has', () =
     // displacementScale falls to 0 when depth is absent, so omitting these did
     // not fail loudly — it silently turned the relief off. The order matters as
     // much as the presence: map [1] belongs to photo [1].
-    const props = await open3D(unit());
+    const props = await open3D(unit({ id: 'p_relief_1' }));
     expect(props.depthMaps).toEqual(['data:image/png;base64,DDDD', 'data:image/png;base64,EEEE']);
     expect(props.depthMaps).toHaveLength(props.images.length);
   }, 20000);
 
   it('passes a real walkthrough through so the viewer can offer it', async () => {
-    const props = await open3D(unit({ digitalTwinUrl: 'https://my.matterport.com/show/?m=abc' }));
+    const props = await open3D(unit({ id: 'p_relief_2', digitalTwinUrl: 'https://my.matterport.com/show/?m=abc' }));
     expect(props.tourUrl).toBe('https://my.matterport.com/show/?m=abc');
   }, 20000);
 
   it('passes no tour URL when the link is not one we allow', async () => {
-    const props = await open3D(unit({ digitalTwinUrl: 'javascript:alert(1)' }));
+    const props = await open3D(unit({ id: 'p_relief_3', digitalTwinUrl: 'javascript:alert(1)' }));
     expect(props.tourUrl).toBeFalsy();
   }, 20000);
 });

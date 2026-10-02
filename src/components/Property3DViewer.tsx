@@ -13,9 +13,12 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import { OrbitControls } from '@react-three/drei';
 import * as THREE from 'three';
-import { X, ChevronLeft, ChevronRight, Box, RotateCcw, Move3d, Layers, Loader2, Compass, MapPin, Sparkles } from 'lucide-react';
+import { X, ChevronLeft, ChevronRight, Box, RotateCcw, Move3d, Layers, Loader2, Compass, MapPin, Sparkles, Ruler } from 'lucide-react';
 import { useFocusTrap } from '../hooks/useFocusTrap';
 import { ThreeDTourAsset, TourRoomWaypoint } from '../types';
+import { FloorPlan } from './3d/FloorPlan';
+import { MeasurementTool } from './3d/MeasurementTool';
+export { TourViewer } from './3d/TourViewer';
 
 /**
  * Loads an image element for a texture.
@@ -509,6 +512,8 @@ const Property3DViewer: React.FC<Property3DViewerProps> = ({ images, depthMaps, 
   );
   const [activeRoomId, setActiveRoomId] = useState<string | null>(rooms[0]?.id || null);
   const activeRoom = useMemo(() => rooms.find(r => r.id === activeRoomId) || rooms[0], [rooms, activeRoomId]);
+  const [showFloorPlan, setShowFloorPlan] = useState(false);
+  const [showMeasure, setShowMeasure] = useState(false);
 
   const list = mode === 'pano' ? validPanoramas : validImages;
   const [index, setIndex] = useState(0);
@@ -679,6 +684,46 @@ const Property3DViewer: React.FC<Property3DViewerProps> = ({ images, depthMaps, 
               </button>
             );
           })}
+          <div className="w-[1px] h-4 bg-white/20 mx-1 shrink-0" />
+          <button
+            type="button"
+            onClick={() => setShowFloorPlan(!showFloorPlan)}
+            className={`px-3 py-1.5 rounded-xl text-xs font-bold whitespace-nowrap transition-all flex items-center gap-1.5 cursor-pointer ${
+              showFloorPlan ? 'bg-white/25 text-white' : 'bg-white/10 hover:bg-white/20 text-white/80'
+            }`}
+          >
+            <Compass size={12} />
+            <span>{isRtl ? 'المخطط' : 'Floor Plan'}</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => setShowMeasure(!showMeasure)}
+            className={`px-3 py-1.5 rounded-xl text-xs font-bold whitespace-nowrap transition-all flex items-center gap-1.5 cursor-pointer ${
+              showMeasure ? 'bg-white/25 text-white' : 'bg-white/10 hover:bg-white/20 text-white/80'
+            }`}
+          >
+            <Ruler size={12} />
+            <span>{isRtl ? 'قياس' : 'Measure'}</span>
+          </button>
+        </div>
+      )}
+
+      {/* Floating Floor Plan */}
+      {showFloorPlan && rooms.length > 0 && (
+        <div className="absolute bottom-24 start-6 z-30 animate-fade-in">
+          <FloorPlan
+            rooms={rooms}
+            activeRoomId={activeRoomId || undefined}
+            onSelectRoom={(id) => setActiveRoomId(id)}
+            isRtl={isRtl}
+          />
+        </div>
+      )}
+
+      {/* Floating Measurement Tool */}
+      {showMeasure && (
+        <div className="absolute bottom-24 end-6 z-30 animate-fade-in">
+          <MeasurementTool isRtl={isRtl} />
         </div>
       )}
 

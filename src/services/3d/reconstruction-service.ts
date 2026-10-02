@@ -91,3 +91,24 @@ export const cancelReconstructionJob = (jobId: string): boolean => {
   activeJobs.set(jobId, { ...job });
   return true;
 };
+
+export const retryReconstructionJob = (jobId: string): ReconstructionJob | null => {
+  const job = activeJobs.get(jobId);
+  if (!job || (job.status !== 'FAILED' && job.status !== 'CANCELLED')) {
+    return null;
+  }
+
+  job.status = 'QUEUED';
+  job.progress = 5;
+  job.stage = 'QUEUED';
+  job.errorCode = undefined;
+  job.errorMessage = undefined;
+  job.errorMessageAr = undefined;
+  job.completedAt = undefined;
+  job.startedAt = new Date().toISOString();
+  job.retryCount = (job.retryCount || 0) + 1;
+
+  activeJobs.set(jobId, { ...job });
+  return job;
+};
+

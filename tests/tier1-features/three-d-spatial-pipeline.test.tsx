@@ -2,7 +2,13 @@ import React from 'react';
 import { describe, it, expect, vi } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
 import { validatePhotoCapture, validateVideoCapture } from '../../src/features/reconstruction/CaptureValidator';
-import { createReconstructionJob, updateJobStatus } from '../../src/services/3d/reconstruction-service';
+import {
+  createReconstructionJob,
+  updateJobStatus,
+  cancelReconstructionJob,
+  retryReconstructionJob,
+  getReconstructionJob,
+} from '../../src/services/3d/reconstruction-service';
 import { calculateDistanceMeters, formatDistance } from '../../src/lib/3d/coordinates';
 import { detectSpatialCapabilities } from '../../src/lib/3d/capabilities';
 import { resolveOptimalSpatialAsset } from '../../src/lib/3d/lod';
@@ -116,6 +122,89 @@ describe('Tier 1 — HETTETY Real 3D Reconstruction Pipeline & Architecture', ()
       expect(updated?.status).toBe('READY');
       expect(updated?.progress).toBe(100);
       expect(updated?.completedAt).toBeDefined();
+    });
+
+    it('cancels an in-flight reconstruction job and marks completion timestamp', () => {
+      const job = createReconstructionJob({
+        propertyId: 'prop-cancel-01',
+        ownerId: 'owner-cancel',
+        type: 'photos',
+        sourceCount: 25,
+      });
+
+      updateJobStatus(job.id, 'RECONSTRUCTING', 45, 'COLMAP feature matching');
+      const cancelled = cancelReconstructionJob(job.id);
+      expect(cancelled).toBe(true);
+
+      const retrieved = getReconstructionJob(job.id);
+      expect(retrieved?.status).toBe('CANCELLED');
+      expect(retrieved?.completedAt).toBeDefined();
+    });
+
+    it('retries a failed reconstruction job, resetting status to QUEUED and incrementing retryCount', () => {
+      const job = createReconstructionJob({
+        propertyId: 'prop-retry-01',
+        ownerId: 'owner-retry',
+        type: 'photos',
+        sourceCount: 20,
+      });
+
+      updateJobStatus(job.id, 'FAILED', 50, 'Training Failed', 'GPU_ERROR', 'CUDA out of memory');
+      const failedJob = getReconstructionJob(job.id);
+      expect(failedJob?.status).toBe('FAILED');
+      expect(failedJob?.errorCode).toBe('GPU_ERROR');
+
+      const retried = retryReconstructionJob(job.id);
+      expect(retried).not.toBeNull();
+      expect(retried?.status).toBe('QUEUED');
+      expect(retried?.progress).toBe(5);
+      expect(retried?.errorCode).toBeUndefined();
+      expect(retried?.retryCount).toBe(1);
+    });
+
+    it('handles concurrent reconstruction jobs for distinct properties independently', () => {
+      const jobA = createReconstructionJob({
+        propertyId: 'villa-concurrent-a',
+        ownerId: 'owner-a',
+        type: 'photos',
+        sourceCount: 50,
+      });
+      const jobB = createReconstructionJob({
+        propertyId: 'apt-concurrent-b',
+        ownerId: 'owner-b',
+        type: 'video',
+        sourceCount: 1,
+      });
+
+      expect(jobA.id).not.toBe(jobB.id);
+
+      updateJobStatus(jobA.id, 'TRAINING', 75, 'Gaussian optimization');
+      updateJobStatus(jobB.id, 'VALIDATING', 15, 'Keyframe analysis');
+
+      expect(getReconstructionJob(jobA.id)?.status).toBe('TRAINING');
+      expect(getReconstructionJob(jobB.id)?.status).toBe('VALIDATING');
+    });
+
+    it('processes massive capture sets (120+ photos) for large luxury villas with maximum coverage', () => {
+      const massiveSet = Array.from({ length: 120 }).map((_, i) => ({
+        name: `villa_room_${i}.jpg`,
+        size: 3.5 * 1024 * 1024,
+        type: 'image/jpeg',
+      }));
+
+      const res = validatePhotoCapture(massiveSet);
+      expect(res.valid).toBe(true);
+      expect(res.coverageScore).toBeGreaterThanOrEqual(95);
+      expect(res.overlapScore).toBeGreaterThanOrEqual(90);
+      expect(res.errors).toHaveLength(0);
+    });
+
+    it('detects spatial rendering capabilities and returns appropriate hardware budget tier', () => {
+      const caps = detectSpatialCapabilities();
+      expect(caps).toBeDefined();
+      expect(['high', 'medium', 'low']).toContain(caps.tier);
+      expect(caps.maxSplats).toBeGreaterThan(0);
+      expect(caps.recommendedTarget).toBeDefined();
     });
   });
 

@@ -71,6 +71,7 @@ export interface Property {
   panoramas?: string[]; // Equirectangular 360° photos for the immersive look-around viewer
   videoUrl?: string;
   digitalTwinUrl?: string; // For 3D Digital Twin or Polycam/Matterport walkthrough link
+  threeDTour?: ThreeDTourAsset; // Real 3D Reconstruction Asset (3DGS / SPZ / GLB) with waypoints
   status: 'For Sale' | 'For Rent';
   // Listing lifecycle: still on the market, taken, or reserved.
   availability?: 'Available' | 'Sold' | 'Reserved';
@@ -185,3 +186,37 @@ export interface AdvisorPropertyFit {
   paybackYears: number;
 }
 
+
+export interface TourRoomWaypoint {
+  id: string;
+  name: string;
+  nameAr?: string;
+  position: [number, number, number];
+  camera?: {
+    position: [number, number, number];
+    target?: [number, number, number];
+    rotation?: [number, number, number];
+  };
+}
+
+export interface ThreeDTourQualityReport {
+  coverageScore: number;     // 0-100%
+  cameraMotionScore: number; // 0-100%
+  blurScore: number;         // 0-100%
+  lightingScore: number;     // 0-100%
+  roomCompleteness: number;  // 0-100%
+  warnings?: string[];
+  warningsAr?: string[];
+}
+
+export interface ThreeDTourAsset {
+  status: 'none' | 'processing' | 'ready' | 'failed';
+  provider: 'hettety' | 'matterport' | 'polycam' | 'kuula';
+  assetUrl?: string;
+  format?: 'spz' | 'ply' | 'glb';
+  thumbnailUrl?: string;
+  duration?: number;
+  rooms?: TourRoomWaypoint[];
+  processingJobId?: string;
+  qualityReport?: ThreeDTourQualityReport;
+}

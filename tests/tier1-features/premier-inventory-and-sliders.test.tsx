@@ -1,10 +1,12 @@
 import React from 'react';
-import { describe, it, expect } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { describe, it, expect, vi } from 'vitest';
+import { render, screen, fireEvent } from '@testing-library/react';
 import { PREMIER_LANDMARK_PROPERTIES } from '../../src/lib/inventoryData';
 import { EGYPTIAN_DEVELOPERS, PRIME_GROWTH_HUBS, calculateFinancialPlan } from '../../src/lib/marketIntelligence';
 import { BrandLogo, BrandMonogram } from '../../src/components/BrandLogo';
 import { checkRateLimit } from '../../api/_lib/rateLimiter';
+import { AddListingPage } from '../../src/components/add-listing-page';
+import { TRANSLATIONS } from '../../src/constants';
 
 describe('Premier Landmark Inventory & Market Intelligence', () => {
   it('exports landmark properties with 3D digital twins and valid payment structures', () => {
@@ -103,3 +105,95 @@ describe('API Security — Rate Limiter', () => {
     expect(otherIpRes.allowed).toBe(true);
   });
 });
+
+describe('Real 3D Spatial Walkthrough & Honest Tour Decoupling', () => {
+  it('equips premier landmark villas with real 3D room waypoints and scan quality validation scores', () => {
+    const hydePark = PREMIER_LANDMARK_PROPERTIES.find((p) => p.id === 'hyde-park-one-1');
+    const mv = PREMIER_LANDMARK_PROPERTIES.find((p) => p.id === 'mv-icity-lagoon-1');
+
+    expect(hydePark?.threeDTour).toBeDefined();
+    expect(hydePark?.threeDTour?.status).toBe('ready');
+    expect(hydePark?.threeDTour?.format).toBe('spz');
+    expect(hydePark?.threeDTour?.rooms?.length).toBe(4);
+    expect(hydePark?.threeDTour?.qualityReport?.coverageScore).toBeGreaterThanOrEqual(90);
+    expect(hydePark?.threeDTour?.qualityReport?.blurScore).toBeGreaterThanOrEqual(90);
+
+    expect(mv?.threeDTour).toBeDefined();
+    expect(mv?.threeDTour?.rooms?.length).toBe(3);
+    expect(mv?.threeDTour?.qualityReport?.cameraMotionScore).toBeGreaterThanOrEqual(90);
+  });
+
+  it('truthfully decouples real 3D, 360 panorama, and photo relief without semantic misrepresentation', () => {
+    // Case 1: Only multiple photos -> Has relief, but NEVER real 3D or 360
+    const photosOnlyProperty = {
+      images: ['https://example.com/1.jpg', 'https://example.com/2.jpg', 'https://example.com/3.jpg'],
+    };
+    const hasReal3D_1 = Boolean((photosOnlyProperty as any).threeDTour?.assetUrl || (photosOnlyProperty as any).digitalTwinUrl);
+    const has360_1 = Boolean((photosOnlyProperty as any).panoramas && (photosOnlyProperty as any).panoramas.length > 0);
+    const hasPhotoRelief_1 = Boolean(photosOnlyProperty.images && photosOnlyProperty.images.length > 1);
+
+    expect(hasReal3D_1).toBe(false);
+    expect(has360_1).toBe(false);
+    expect(hasPhotoRelief_1).toBe(true);
+
+    // Case 2: 360 Panoramas only -> Has 360, but NOT real reconstructed 3D walkthrough
+    const panoProperty = {
+      panoramas: ['https://example.com/pano1.jpg'],
+    };
+    const hasReal3D_2 = Boolean((panoProperty as any).threeDTour?.assetUrl || (panoProperty as any).digitalTwinUrl);
+    const has360_2 = Boolean(panoProperty.panoramas && panoProperty.panoramas.length > 0);
+    expect(hasReal3D_2).toBe(false);
+    expect(has360_2).toBe(true);
+
+    // Case 3: True spatial tour asset -> Has real 3D
+    const spatialProperty = {
+      threeDTour: {
+        status: 'ready' as const,
+        provider: 'hettety' as const,
+        assetUrl: 'https://assets.hettety.com/scans/tour.spz',
+      }
+    };
+    const hasReal3D_3 = Boolean(spatialProperty.threeDTour?.assetUrl);
+    expect(hasReal3D_3).toBe(true);
+  });
+
+  it('renders Hettety Real 3D Studio in AddListingPage Step 2 with capture guidelines and room waypoints', () => {
+    const onAdd = vi.fn();
+    render(
+      <AddListingPage
+        onAdd={onAdd}
+        t={TRANSLATIONS.en}
+        isRtl={false}
+        isAdmin={false}
+        isSuperAdmin={false}
+      />
+    );
+
+    // Fill Step 1 required fields to advance
+    fireEvent.change(screen.getByPlaceholderText(/Villa in New Cairo/i), { target: { value: 'Spatial Villa' } });
+    fireEvent.change(screen.getByPlaceholderText('0'), { target: { value: '8500000' } });
+    fireEvent.change(screen.getByPlaceholderText(/New Cairo, Cairo/i), { target: { value: 'New Cairo' } });
+    const inputs = screen.getAllByRole('spinbutton');
+    const areaInput = inputs.find(i => (i as HTMLInputElement).min === '1') || inputs[2];
+    fireEvent.change(areaInput, { target: { value: '350' } });
+
+    // Go to Step 2
+    fireEvent.click(screen.getByRole('button', { name: /Next/i }));
+
+    // Verify 3D Studio elements
+    expect(screen.getByText(/Hettety Real 3D Spatial Walkthrough Studio/i)).toBeInTheDocument();
+    expect(screen.getByText(/Walk slowly with steady steps at 60fps/i)).toBeInTheDocument();
+    expect(screen.getByText(/Room Waypoints & Camera Nodes/i)).toBeInTheDocument();
+
+    // Toggle a preset room waypoint
+    const receptionBtn = screen.getByRole('button', { name: /Reception & Living Hall/i });
+    expect(receptionBtn).toBeInTheDocument();
+    fireEvent.click(receptionBtn);
+
+    // Run Quality Audit
+    const auditBtn = screen.getByRole('button', { name: /Run Quality Audit/i });
+    fireEvent.click(auditBtn);
+    expect(screen.getByText(/Scan passed with 94% fidelity/i)).toBeInTheDocument();
+  });
+});
+

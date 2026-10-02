@@ -142,11 +142,20 @@ export const calculatePropertyFit = (
     reasons.push(isRtl ? 'بيئة سكنية متكاملة الخدمات مناسبة للأسرة والاستقرار' : 'Family-oriented community with comprehensive amenities');
   }
 
-  // Interactive 3D Tour Check
-  const has3D = !!(property.panoramas?.length || property.digitalTwinUrl || (property.images && property.images.length > 1));
-  if (has3D) {
-    score += 5;
-    reasons.push(isRtl ? 'متوفر جولة افتراضية 3D لمعاينة تفاصيل الوحدة' : 'Interactive 3D virtual tour available');
+  // Real 3D / 360 Panorama / Spatial Media Evaluation
+  const hasReal3D = !!(property.threeDTour?.assetUrl || property.digitalTwinUrl);
+  const has360 = !!(property.panoramas && property.panoramas.length > 0);
+  const hasPhotoRelief = !!(property.images && property.images.length > 1);
+
+  if (hasReal3D) {
+    score += 6;
+    reasons.push(isRtl ? 'متوفر جولة افتراضية تفاعلية ثلاثية الأبعاد (3D Walkthrough)' : 'Interactive 3D digital walkthrough available');
+  } else if (has360) {
+    score += 4;
+    reasons.push(isRtl ? 'متوفر جولة بانوراما 360° استعراضية' : '360° immersive panorama available');
+  } else if (hasPhotoRelief) {
+    score += 2;
+    reasons.push(isRtl ? 'معاينة مجسمة للصور متعددة الزوايا' : 'Multi-angle relief preview available');
   }
 
   // Budget comparison (when explicitly provided)
@@ -398,7 +407,10 @@ ${JSON.stringify(properties.map(p => ({
   bedrooms: p.bedrooms,
   area: p.area,
   paymentPlans: p.paymentPlans,
-  has3D: !!(p.panoramas?.length || p.digitalTwinUrl || (p.images && p.images.length > 1))
+  hasReal3D: !!(p.threeDTour?.assetUrl || p.digitalTwinUrl),
+  has360: !!(p.panoramas?.length),
+  hasPhotoRelief: !!(p.images && p.images.length > 1),
+  has3D: !!(p.threeDTour?.assetUrl || p.digitalTwinUrl || p.panoramas?.length || (p.images && p.images.length > 1))
 })), null, 2)}
 `;
 
@@ -1240,7 +1252,10 @@ Disclaimer: Provided by HETTETY Smart Real Estate Advisor for property selection
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 {filteredProperties.map(fit => {
                   const { property, matchScore, category, reasons } = fit;
-                  const has3D = !!(property.panoramas?.length || property.digitalTwinUrl || (property.images && property.images.length > 1));
+                  const hasReal3D = !!(property.threeDTour?.assetUrl || property.digitalTwinUrl);
+                  const has360 = !!(property.panoramas && property.panoramas.length > 0);
+                  const hasPhotoRelief = !!(property.images && property.images.length > 1);
+                  const canOpenSpatialViewer = hasReal3D || has360 || hasPhotoRelief;
 
                   return (
                     <div
@@ -1280,11 +1295,19 @@ Disclaimer: Provided by HETTETY Smart Real Estate Advisor for property selection
                                 </span>
                               )}
 
-                              {has3D && (
-                                <span className="text-[10px] font-bold bg-indigo-50 dark:bg-indigo-900/30 text-indigo-700 dark:text-indigo-300 px-2 py-0.5 rounded flex items-center gap-1">
-                                  <Box size={10} /> 3D
+                              {hasReal3D ? (
+                                <span className="text-[10px] font-bold bg-emerald-50 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-300 px-2 py-0.5 rounded flex items-center gap-1">
+                                  <Box size={10} /> 3D Tour
                                 </span>
-                              )}
+                              ) : has360 ? (
+                                <span className="text-[10px] font-bold bg-blue-50 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300 px-2 py-0.5 rounded flex items-center gap-1">
+                                  <Box size={10} /> 360°
+                                </span>
+                              ) : hasPhotoRelief ? (
+                                <span className="text-[10px] font-bold bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400 px-2 py-0.5 rounded flex items-center gap-1">
+                                  <Box size={10} /> {isRtl ? 'مجسم' : 'Relief'}
+                                </span>
+                              ) : null}
                             </div>
 
                             <h3 
@@ -1341,11 +1364,19 @@ Disclaimer: Provided by HETTETY Smart Real Estate Advisor for property selection
                               <span>{isRtl ? 'أنظمة سداد مرنة متاحة' : 'Flexible Payment Plans'}</span>
                             )}
                           </span>
-                          {has3D && (
-                            <span className="text-brand-600 dark:text-brand-400 flex items-center gap-1 text-[10px]">
-                              <Box size={12} /> {isRtl ? 'معاينة 3D متوفرة' : '3D Tour Ready'}
+                          {hasReal3D ? (
+                            <span className="text-emerald-600 dark:text-emerald-400 flex items-center gap-1 text-[10px] font-bold">
+                              <Box size={12} /> {isRtl ? 'جولة 3D تفاعلية' : '3D Walkthrough'}
                             </span>
-                          )}
+                          ) : has360 ? (
+                            <span className="text-blue-600 dark:text-blue-400 flex items-center gap-1 text-[10px] font-semibold">
+                              <Box size={12} /> {isRtl ? 'بانوراما 360°' : '360° Tour'}
+                            </span>
+                          ) : hasPhotoRelief ? (
+                            <span className="text-slate-500 dark:text-slate-400 flex items-center gap-1 text-[10px]">
+                              <Box size={12} /> {isRtl ? 'معاينة مجسمة للصورة' : 'Photo Relief'}
+                            </span>
+                          ) : null}
                         </div>
 
                         {/* Evaluation Reasons Checklist */}
@@ -1376,12 +1407,12 @@ Disclaimer: Provided by HETTETY Smart Real Estate Advisor for property selection
                           {t.advisor_ask_ai_unit || (isRtl ? 'استشر المستشار العقاري' : 'Ask Advisor')}
                         </button>
 
-                        {onShow3D && has3D && (
+                        {onShow3D && canOpenSpatialViewer && (
                           <button
                             type="button"
                             onClick={() => onShow3D(property.id)}
                             className="p-2 rounded-xl bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 transition-colors cursor-pointer shrink-0"
-                            title={isRtl ? 'معاينة 3D' : '3D Tour'}
+                            title="3D Tour"
                           >
                             <Box size={16} />
                           </button>

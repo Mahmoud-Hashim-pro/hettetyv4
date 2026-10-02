@@ -46,6 +46,25 @@ export const PREMIER_LANDMARK_PROPERTIES: Property[] = [
       'https://images.unsplash.com/photo-1600585154340-be6161a56a0c?auto=format&fit=crop&w=1600&q=80'
     ],
     digitalTwinUrl: 'https://my.matterport.com/show/?m=hydepark_one_sample',
+    threeDTour: {
+      status: 'ready',
+      provider: 'hettety',
+      format: 'spz',
+      assetUrl: 'https://cdn.hettety.com/tours/hp-ohp-v09/scene.spz',
+      rooms: [
+        { id: 'reception', name: 'Grand Reception Salon', nameAr: 'صالون الاستقبال الرئيسي', position: [0, 1.6, 0] },
+        { id: 'master_suite', name: 'Master Suite & Dressing', nameAr: 'جناح الماستر وغرفة الملابس', position: [4.2, 4.8, -2.1] },
+        { id: 'kitchen', name: 'Open Island Kitchen', nameAr: 'المطبخ الأمريكي المفتوح', position: [-3.5, 1.6, 1.8] },
+        { id: 'garden_pool', name: 'Private Garden & Pool Deck', nameAr: 'حديقة الفيلا وحمام السباحة', position: [0.5, 0.2, -6.5] }
+      ],
+      qualityReport: {
+        coverageScore: 96,
+        cameraMotionScore: 92,
+        blurScore: 94,
+        lightingScore: 95,
+        roomCompleteness: 98
+      }
+    },
     unitCode: 'HP-OHP-V09',
     registrationNumber: 'HP-MIN-2022/98',
     courtSignatureValidity: true,
@@ -92,6 +111,24 @@ export const PREMIER_LANDMARK_PROPERTIES: Property[] = [
       'https://images.unsplash.com/photo-1545324418-cc1a3fa10c00?auto=format&fit=crop&w=1600&q=80'
     ],
     digitalTwinUrl: 'https://my.matterport.com/show/?m=mv_icity_sample',
+    threeDTour: {
+      status: 'ready',
+      provider: 'hettety',
+      format: 'spz',
+      assetUrl: 'https://cdn.hettety.com/tours/mv-icity-lagoon-1/scene.spz',
+      rooms: [
+        { id: 'living', name: 'Lagoon View Living Area', nameAr: 'صالة المعيشة بإطلالة اللاجون', position: [0, 1.6, 0] },
+        { id: 'sky_roof', name: 'Panoramic Sky Roof Terrace', nameAr: 'روف التراس البانورامي', position: [0, 7.2, -3.0] },
+        { id: 'master_bedroom', name: 'Master Bedroom', nameAr: 'غرفة النوم الرئيسية', position: [3.2, 4.5, 1.2] }
+      ],
+      qualityReport: {
+        coverageScore: 94,
+        cameraMotionScore: 90,
+        blurScore: 92,
+        lightingScore: 91,
+        roomCompleteness: 95
+      }
+    },
     unitCode: 'MV-IC-IV42',
     registrationNumber: 'MV-NUCA-2023/15',
     courtSignatureValidity: true,

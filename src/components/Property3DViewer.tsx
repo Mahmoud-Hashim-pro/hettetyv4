@@ -13,8 +13,9 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import { OrbitControls } from '@react-three/drei';
 import * as THREE from 'three';
-import { X, ChevronLeft, ChevronRight, Box, RotateCcw, Move3d, Layers, Loader2 } from 'lucide-react';
+import { X, ChevronLeft, ChevronRight, Box, RotateCcw, Move3d, Layers, Loader2, Compass, MapPin, Sparkles } from 'lucide-react';
 import { useFocusTrap } from '../hooks/useFocusTrap';
+import { ThreeDTourAsset, TourRoomWaypoint } from '../types';
 
 /**
  * Loads an image element for a texture.
@@ -429,6 +430,60 @@ const Scene = ({ url, depthUrl, autoRotate, onState }: { url: string; depthUrl?:
   );
 };
 
+const SpatialTourScene: React.FC<{
+  rooms: TourRoomWaypoint[];
+  activeRoomId: string | null;
+  onSelectRoom: (id: string) => void;
+}> = ({ rooms, activeRoomId, onSelectRoom }) => {
+  const { camera } = useThree();
+  const activeRoom = rooms.find(r => r.id === activeRoomId) || rooms[0];
+
+  useFrame(() => {
+    if (activeRoom) {
+      const targetPos = new THREE.Vector3(
+        activeRoom.camera?.position?.[0] ?? activeRoom.position[0],
+        activeRoom.camera?.position?.[1] ?? activeRoom.position[1] + 1.2,
+        activeRoom.camera?.position?.[2] ?? activeRoom.position[2] + 2.5
+      );
+      camera.position.lerp(targetPos, 0.05);
+    }
+  });
+
+  return (
+    <>
+      <ambientLight intensity={0.8} />
+      <directionalLight position={[10, 15, 10]} intensity={1.2} />
+      <gridHelper args={[24, 24, '#ff5722', '#334155']} position={[0, -0.01, 0]} />
+
+      {rooms.map((room) => {
+        const isSelected = room.id === activeRoomId;
+        return (
+          <group key={room.id} position={room.position}>
+            <mesh onClick={() => onSelectRoom(room.id)}>
+              <sphereGeometry args={[isSelected ? 0.35 : 0.22, 24, 24]} />
+              <meshStandardMaterial
+                color={isSelected ? '#ff5722' : '#38bdf8'}
+                emissive={isSelected ? '#ff5722' : '#0284c7'}
+                emissiveIntensity={isSelected ? 0.8 : 0.3}
+              />
+            </mesh>
+            <mesh position={[0, -0.75, 0]}>
+              <cylinderGeometry args={[0.02, 0.02, 1.5]} />
+              <meshBasicMaterial color={isSelected ? '#ff5722' : '#0ea5e9'} transparent opacity={0.6} />
+            </mesh>
+          </group>
+        );
+      })}
+
+      <OrbitControls
+        enableDamping
+        dampingFactor={0.05}
+        target={activeRoom ? new THREE.Vector3(...activeRoom.position) : new THREE.Vector3(0, 1.5, 0)}
+      />
+    </>
+  );
+};
+
 export interface Property3DViewerProps {
   images: string[];
   /** Predicted depth maps, index-matched to images. */
@@ -436,15 +491,25 @@ export interface Property3DViewerProps {
   panoramas?: string[];
   /** A Matterport/Polycam scan, already passed through the URL allowlist. */
   tourUrl?: string | null;
+  /** Hettety reconstructed 3D spatial tour asset (Gaussian Splat / SPZ / GLB) */
+  threeDTour?: ThreeDTourAsset;
   title?: string;
   onClose: () => void;
   isRtl?: boolean;
 }
 
-const Property3DViewer: React.FC<Property3DViewerProps> = ({ images, depthMaps, panoramas, tourUrl, title, onClose, isRtl }) => {
+const Property3DViewer: React.FC<Property3DViewerProps> = ({ images, depthMaps, panoramas, tourUrl, threeDTour, title, onClose, isRtl }) => {
   const validImages = useMemo(() => images.filter(Boolean), [images]);
   const validPanoramas = useMemo(() => (panoramas || []).filter(Boolean), [panoramas]);
-  const [mode, setMode] = useState<'pano' | 'depth'>(validPanoramas.length ? 'pano' : 'depth');
+  const rooms = useMemo(() => threeDTour?.rooms || [], [threeDTour]);
+  const hasTourAsset = Boolean(threeDTour?.assetUrl || rooms.length > 0);
+
+  const [mode, setMode] = useState<'tour' | 'pano' | 'depth'>(
+    hasTourAsset ? 'tour' : validPanoramas.length ? 'pano' : 'depth'
+  );
+  const [activeRoomId, setActiveRoomId] = useState<string | null>(rooms[0]?.id || null);
+  const activeRoom = useMemo(() => rooms.find(r => r.id === activeRoomId) || rooms[0], [rooms, activeRoomId]);
+
   const list = mode === 'pano' ? validPanoramas : validImages;
   const [index, setIndex] = useState(0);
   const [autoRotate, setAutoRotate] = useState(true);
@@ -457,7 +522,7 @@ const Property3DViewer: React.FC<Property3DViewerProps> = ({ images, depthMaps, 
 
   const next = () => { setIndex((i) => (i + 1) % list.length); setAutoRotate(true); };
   const prev = () => { setIndex((i) => (i === 0 ? list.length - 1 : i - 1)); setAutoRotate(true); };
-  const switchMode = (m: 'pano' | 'depth') => { setMode(m); setIndex(0); setAutoRotate(true); };
+  const switchMode = (m: 'tour' | 'pano' | 'depth') => { setMode(m); setIndex(0); setAutoRotate(true); };
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -469,7 +534,7 @@ const Property3DViewer: React.FC<Property3DViewerProps> = ({ images, depthMaps, 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [list.length, mode]);
 
-  if (validImages.length === 0 && validPanoramas.length === 0) {
+  if (validImages.length === 0 && validPanoramas.length === 0 && !hasTourAsset) {
     return (
       <div
         ref={containerRef}
@@ -508,9 +573,17 @@ const Property3DViewer: React.FC<Property3DViewerProps> = ({ images, depthMaps, 
         <div className="text-white pointer-events-auto">
           <h3 className="font-bold text-base sm:text-lg flex items-center gap-2">
             <Box size={20} className="text-accent-500" aria-hidden="true" />
-            {mode === 'pano' ? (isRtl ? 'جولة 360°' : '360° Tour') : (isRtl ? 'معاينة مجسّمة للصورة' : 'Photo relief view')}
+            {mode === 'tour'
+              ? (isRtl ? 'جولة 3D تفاعلية (Waypoints)' : '3D Spatial Walkthrough')
+              : mode === 'pano'
+              ? (isRtl ? 'جولة 360°' : '360° Tour')
+              : (isRtl ? 'معاينة مجسّمة للصورة' : 'Photo relief view')}
           </h3>
-          {title && <p className="text-xs sm:text-sm text-white/80">{title}</p>}
+          {title && (
+            <p className="text-xs sm:text-sm text-white/80">
+              {title} {activeRoom ? `• ${isRtl ? (activeRoom.nameAr || activeRoom.name) : activeRoom.name}` : ''}
+            </p>
+          )}
         </div>
         <button
           type="button"
@@ -534,34 +607,87 @@ const Property3DViewer: React.FC<Property3DViewerProps> = ({ images, depthMaps, 
         </a>
       )}
 
-      {validPanoramas.length > 0 && validImages.length > 0 && !tourUrl && (
+      {/* Mode Switcher */}
+      {((hasTourAsset ? 1 : 0) + (validPanoramas.length > 0 ? 1 : 0) + (validImages.length > 0 ? 1 : 0)) > 1 && !tourUrl && (
         <div className="absolute top-20 landscape:top-14 left-1/2 -translate-x-1/2 z-10 flex bg-white/10 backdrop-blur border border-white/20 rounded-full p-1 shadow-lg">
-          <button
-            type="button"
-            onClick={() => switchMode('pano')}
-            aria-pressed={mode === 'pano'}
-            aria-label={isRtl ? 'التبديل إلى جولة 360°' : 'Switch to 360° Tour'}
-            className={`min-h-[40px] px-4 py-2 rounded-full text-xs font-bold transition-colors flex items-center gap-1.5 cursor-pointer focus:outline-none focus:ring-2 focus:ring-brand-400 ${
-              mode === 'pano' ? 'bg-brand-600 text-white' : 'text-white/80 hover:text-white'
-            }`}
-          >
-            <Box size={14} aria-hidden="true" /> {isRtl ? 'جولة 360°' : '360° Tour'}
-          </button>
-          <button
-            type="button"
-            onClick={() => switchMode('depth')}
-            aria-pressed={mode === 'depth'}
-            aria-label={isRtl ? 'التبديل إلى الصور المجسّمة' : 'Switch to photo relief'}
-            className={`min-h-[40px] px-4 py-2 rounded-full text-xs font-bold transition-colors flex items-center gap-1.5 cursor-pointer focus:outline-none focus:ring-2 focus:ring-brand-400 ${
-              mode === 'depth' ? 'bg-brand-600 text-white' : 'text-white/80 hover:text-white'
-            }`}
-          >
-            <Layers size={14} aria-hidden="true" /> {isRtl ? 'صور مجسّمة' : 'Photo relief'}
-          </button>
+          {hasTourAsset && (
+            <button
+              type="button"
+              onClick={() => switchMode('tour')}
+              aria-pressed={mode === 'tour'}
+              aria-label={isRtl ? 'التبديل إلى جولة الغرف 3D' : 'Switch to 3D Room Tour'}
+              className={`min-h-[40px] px-4 py-2 rounded-full text-xs font-bold transition-colors flex items-center gap-1.5 cursor-pointer focus:outline-none focus:ring-2 focus:ring-brand-400 ${
+                mode === 'tour' ? 'bg-brand-600 text-white' : 'text-white/80 hover:text-white'
+              }`}
+            >
+              <Compass size={14} aria-hidden="true" /> {isRtl ? 'جولة الغرف 3D' : '3D Spatial'}
+            </button>
+          )}
+          {validPanoramas.length > 0 && (
+            <button
+              type="button"
+              onClick={() => switchMode('pano')}
+              aria-pressed={mode === 'pano'}
+              aria-label={isRtl ? 'التبديل إلى جولة 360°' : 'Switch to 360° Tour'}
+              className={`min-h-[40px] px-4 py-2 rounded-full text-xs font-bold transition-colors flex items-center gap-1.5 cursor-pointer focus:outline-none focus:ring-2 focus:ring-brand-400 ${
+                mode === 'pano' ? 'bg-brand-600 text-white' : 'text-white/80 hover:text-white'
+              }`}
+            >
+              <Box size={14} aria-hidden="true" /> {isRtl ? 'جولة 360°' : '360° Tour'}
+            </button>
+          )}
+          {validImages.length > 0 && (
+            <button
+              type="button"
+              onClick={() => switchMode('depth')}
+              aria-pressed={mode === 'depth'}
+              aria-label={isRtl ? 'التبديل إلى الصور المجسّمة' : 'Switch to photo relief'}
+              className={`min-h-[40px] px-4 py-2 rounded-full text-xs font-bold transition-colors flex items-center gap-1.5 cursor-pointer focus:outline-none focus:ring-2 focus:ring-brand-400 ${
+                mode === 'depth' ? 'bg-brand-600 text-white' : 'text-white/80 hover:text-white'
+              }`}
+            >
+              <Layers size={14} aria-hidden="true" /> {isRtl ? 'صور مجسّمة' : 'Photo relief'}
+            </button>
+          )}
         </div>
       )}
 
-      {mode === 'pano' ? (
+      {/* Room Waypoint Navigator Bar */}
+      {rooms.length > 0 && (
+        <div className="absolute top-32 sm:top-28 start-1/2 -translate-x-1/2 z-20 flex items-center gap-2 max-w-[92vw] overflow-x-auto p-1.5 bg-black/60 backdrop-blur-md border border-white/20 rounded-2xl scrollbar-none shadow-xl">
+          <div className="text-[10px] uppercase font-black text-amber-400 px-2 flex items-center gap-1 shrink-0">
+            <Compass size={12} /> {isRtl ? 'نقاط الغرف' : 'Rooms'}
+          </div>
+          {rooms.map((room) => {
+            const isSelected = room.id === activeRoomId;
+            return (
+              <button
+                key={room.id}
+                type="button"
+                onClick={() => {
+                  setActiveRoomId(room.id);
+                  if (mode !== 'tour' && hasTourAsset) setMode('tour');
+                }}
+                className={`px-3 py-1.5 rounded-xl text-xs font-bold whitespace-nowrap transition-all flex items-center gap-1.5 cursor-pointer ${
+                  isSelected
+                    ? 'bg-brand-600 text-white shadow-md scale-105'
+                    : 'bg-white/10 hover:bg-white/20 text-white/90 hover:text-white'
+                }`}
+              >
+                <MapPin size={12} className={isSelected ? 'text-amber-300' : 'text-slate-400'} />
+                <span>{isRtl ? (room.nameAr || room.name) : room.name}</span>
+              </button>
+            );
+          })}
+        </div>
+      )}
+
+      {mode === 'tour' ? (
+        <Canvas camera={{ position: [0, 2, 5], fov: 60 }} className="flex-1" gl={{ antialias: true }}>
+          <color attach="background" args={['#05080f']} />
+          <SpatialTourScene rooms={rooms} activeRoomId={activeRoomId} onSelectRoom={setActiveRoomId} />
+        </Canvas>
+      ) : mode === 'pano' ? (
         <Canvas camera={{ position: [0, 0, 0.1], fov: 75 }} className="flex-1" gl={{ antialias: true }}>
           <color attach="background" args={['#05080f']} />
           <PanoramaScene url={current} onState={setLoadState} />

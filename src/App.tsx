@@ -307,7 +307,7 @@ const PropertyImage = ({ src, alt, className, iconSize = 24 }: { src?: string; a
  *  single      — one flat photo; there is nothing to tour
  */
 export const tourKind = (p: Property): 'walkthrough' | 'pano' | 'gallery' | 'single' => {
-  if (p.digitalTwinUrl && safeTourUrl(p.digitalTwinUrl)) return 'walkthrough';
+  if (p.threeDTour?.assetUrl || (p.digitalTwinUrl && safeTourUrl(p.digitalTwinUrl))) return 'walkthrough';
   if ((p.panoramas || []).length > 0) return 'pano';
   const shots = (p.images || []).filter(Boolean);
   return shots.length > 1 ? 'gallery' : 'single';
@@ -1775,6 +1775,7 @@ const Viewer3D = ({ property, onClose, isRtl }: { property: Property | undefined
           depthMaps={property?.depthMaps}
           panoramas={property?.panoramas}
           tourUrl={property?.digitalTwinUrl ? safeTourUrl(property.digitalTwinUrl) : null}
+          threeDTour={property?.threeDTour}
           title={property?.title}
           onClose={onClose}
           isRtl={isRtl}
@@ -2586,6 +2587,7 @@ Images: ${property.images?.length ? property.images.join(', ') : property.imageU
               depthMaps={property.depthMaps}
               panoramas={property.panoramas}
               tourUrl={property.digitalTwinUrl ? safeTourUrl(property.digitalTwinUrl) : null}
+              threeDTour={property.threeDTour}
               title={property.title}
               onClose={() => setShow3D(false)}
               isRtl={isRtl}

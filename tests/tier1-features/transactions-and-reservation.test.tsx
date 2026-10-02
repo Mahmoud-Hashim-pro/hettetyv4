@@ -164,6 +164,7 @@ describe('Tier 1 — Phase 7: Transactions & Reservation Domain', () => {
       imageUrl: 'https://cdn.hettety.com/waterway.jpg',
       authorUid: 'seller-ww',
       developer: 'Equity Real Estate',
+      status: 'For Sale',
       isVerified: true,
     };
 

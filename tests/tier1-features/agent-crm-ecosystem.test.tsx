@@ -60,6 +60,7 @@ describe('Tier 1 — Phase 8 & 9: Agent Ecosystem, Lead Assignment & Broker CRM'
     bathrooms: 3,
     area: 195,
     imageUrl: 'https://cdn.hettety.com/mivida-88.jpg',
+    status: 'For Sale',
     isVerified: true,
   };
 

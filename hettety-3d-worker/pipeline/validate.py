@@ -1,12 +1,47 @@
 """
 HETTETY 3D GPU Worker — Stage 1: Validation
-Checks input keyframes for blur, minimum resolution, file integrity, and sufficient count.
+Checks input keyframes for blur (Laplacian variance), minimum resolution, file integrity, and sufficient count.
 """
 
 import os
+import logging
 from typing import Dict, Any, List
 
-def validate_keyframes(input_dir: str, min_images: int = 15) -> Dict[str, Any]:
+logger = logging.getLogger("hettety-3d-worker.validate")
+
+def compute_image_laplacian_variance(img_path: str) -> float:
+    """
+    Computes genuine discrete Laplacian gradient variance over pixel intensities.
+    High variance indicates sharp, high-frequency edges; low variance indicates optical motion blur.
+    """
+    try:
+        from PIL import Image
+        import numpy as np
+
+        with Image.open(img_path) as img:
+            # Resize large images to a uniform analysis box for high-speed deterministic evaluation
+            img_thumb = img.convert('L')
+            if img_thumb.width > 1280 or img_thumb.height > 720:
+                img_thumb.thumbnail((1280, 720), Image.Resampling.BILINEAR)
+
+            gray = np.array(img_thumb, dtype=np.float32)
+            if gray.shape[0] < 16 or gray.shape[1] < 16:
+                return 0.0
+
+            # 2D Discrete Laplacian kernel: [[0, 1, 0], [1, -4, 1], [0, 1, 0]]
+            lap = (
+                -4.0 * gray[1:-1, 1:-1]
+                + gray[:-2, 1:-1]
+                + gray[2:, 1:-1]
+                + gray[1:-1, :-2]
+                + gray[1:-1, 2:]
+            )
+            return float(np.var(lap))
+    except Exception as e:
+        logger.warning(f"Could not compute Laplacian variance for {img_path}: {e}")
+        return 0.0
+
+def validate_keyframes(input_dir: str, min_images: int = 12) -> Dict[str, Any]:
     valid_exts = ('.jpg', '.jpeg', '.png')
     if not os.path.exists(input_dir):
         return {
@@ -28,6 +63,7 @@ def validate_keyframes(input_dir: str, min_images: int = 15) -> Dict[str, Any]:
     corrupt_files = []
     too_small = 0
     total_bytes = 0
+    variances: List[float] = []
 
     for img_path in images:
         sz = os.path.getsize(img_path)
@@ -35,6 +71,9 @@ def validate_keyframes(input_dir: str, min_images: int = 15) -> Dict[str, Any]:
         if sz < 10240: # < 10KB is likely corrupt thumbnail
             too_small += 1
             corrupt_files.append(os.path.basename(img_path))
+        else:
+            var = compute_image_laplacian_variance(img_path)
+            variances.append(var)
 
     if too_small > len(images) * 0.3:
         return {
@@ -43,14 +82,28 @@ def validate_keyframes(input_dir: str, min_images: int = 15) -> Dict[str, Any]:
             "message": f"Over 30% of captures appear corrupted or below minimum resolution (<10KB)."
         }
 
-    # Derive sharpness score
-    avg_size_kb = (total_bytes / len(images)) / 1024
-    blur_score = min(100, max(50, int((avg_size_kb / 400.0) * 100)))
+    # Derive genuine sharpness score from average Laplacian variance
+    # Baseline: sharp photos typically exhibit variance 200-500+. Blurry captures fall below 70.
+    avg_var = sum(variances) / len(variances) if variances else 0.0
+    sharpness_score = min(100, max(10, int((avg_var / 350.0) * 100)))
+
+    # Reject if overall capture set is severely blurred (avg variance < 35 or score < 25)
+    if avg_var < 35.0 and len(images) >= min_images:
+        logger.warning(f"Keyframe dataset rejected due to severe motion blur: average Laplacian variance={avg_var:.1f}")
+        return {
+            "valid": False,
+            "error_code": "HIGH_MOTION_BLUR",
+            "blur_score": sharpness_score,
+            "avg_laplacian_variance": round(avg_var, 2),
+            "message": f"Keyframe set rejected: average sharpness variance ({avg_var:.1f}) is below acceptable threshold (35.0). Please recapture steadily."
+        }
 
     return {
         "valid": True,
         "image_count": len(images),
-        "blur_score": blur_score,
-        "avg_size_kb": avg_size_kb,
+        "sharpness_score": sharpness_score,
+        "blur_score": sharpness_score,
+        "avg_laplacian_variance": round(avg_var, 2),
+        "avg_size_kb": (total_bytes / len(images)) / 1024,
         "message": "Keyframes validated successfully"
     }

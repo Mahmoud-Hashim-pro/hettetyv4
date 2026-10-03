@@ -644,7 +644,8 @@ service cloud.firestore {
       allow create: if isAuthenticated() &&
                     request.resource.data.ownerId == request.auth.uid &&
                     request.resource.data.keys().hasAll(['propertyId', 'ownerId', 'status', 'type', 'createdAt']) &&
-                    request.resource.data.status in ['QUEUED', 'UPLOADING'];
+                    request.resource.data.status in ['QUEUED', 'UPLOADING'] &&
+                    (isAdmin() || !exists(/databases/$(database)/documents/properties/$(request.resource.data.propertyId)) || get(/databases/$(database)/documents/properties/$(request.resource.data.propertyId)).data.authorUid == request.auth.uid);
       allow update: if isAuthenticated() && (
         isAdmin() ||
         (resource.data.ownerId == request.auth.uid && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'progress', 'stage', 'errorCode', 'errorMessage', 'completedAt', 'startedAt', 'retryCount', 'updatedAt']))
@@ -653,14 +654,14 @@ service cloud.firestore {
     }
 
     match /capture_assets/{assetId} {
-      allow read: if isAuthenticated();
-      allow create: if isAuthenticated() && request.resource.data.keys().hasAll(['jobId', 'type', 'storagePath', 'sizeBytes', 'createdAt']);
+      allow read: if isAuthenticated() && (isAdmin() || (exists(/databases/$(database)/documents/reconstruction_jobs/$(resource.data.jobId)) && get(/databases/$(database)/documents/reconstruction_jobs/$(resource.data.jobId)).data.ownerId == request.auth.uid));
+      allow create: if isAuthenticated() && request.resource.data.keys().hasAll(['jobId', 'type', 'storagePath', 'sizeBytes', 'createdAt']) && (isAdmin() || (exists(/databases/$(database)/documents/reconstruction_jobs/$(request.resource.data.jobId)) && get(/databases/$(database)/documents/reconstruction_jobs/$(request.resource.data.jobId)).data.ownerId == request.auth.uid));
       allow update, delete: if isAdmin();
     }
 
     match /three_d_assets/{assetId} {
       allow read: if true; // Public spatial assets (SPZ / GLB) for property viewer
-      allow create, update: if isAuthenticated() && request.resource.data.keys().hasAll(['propertyId', 'jobId', 'type', 'format', 'storagePath', 'publicUrl', 'sizeBytes', 'version', 'createdAt']);
+      allow create, update: if isAuthenticated() && request.resource.data.keys().hasAll(['propertyId', 'jobId', 'type', 'format', 'storagePath', 'publicUrl', 'sizeBytes', 'version', 'createdAt']) && (isAdmin() || (exists(/databases/$(database)/documents/reconstruction_jobs/$(request.resource.data.jobId)) && get(/databases/$(database)/documents/reconstruction_jobs/$(request.resource.data.jobId)).data.ownerId == request.auth.uid));
       allow delete: if isAdmin();
     }
   }

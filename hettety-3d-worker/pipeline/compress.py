@@ -142,45 +142,60 @@ def convert_ply_to_spz(
 
 def generate_metric_mesh_glb(
     colmap_sparse_dir: str,
-    output_glb: str
+    output_glb: str,
+    scale_factor: float = 1.0
 ) -> Dict[str, Any]:
     """
     Generates a genuine compliant binary GLB mesh from reconstructed spatial points.
-    Extracts 3D coordinates, computes bounding geometry, Delaunay / Poisson triangles,
+    Extracts 3D coordinates, applies metric scale factor, computes bounding geometry,
     normals, and packages a valid binary glTF 2.0 container.
     """
-    logger.info(f"Extracting metric collision GLB mesh to: {output_glb}")
+    logger.info(f"Extracting metric collision GLB mesh to: {output_glb} (scale_factor={scale_factor})")
     os.makedirs(os.path.dirname(output_glb), exist_ok=True)
 
-    # 1. Gather 3D points from sparse reconstruction (points3D.txt or points3D.ply)
+    # 1. Gather 3D points from sparse reconstruction (check points3D.txt/ply across root and sub-models)
     points: List[Tuple[float, float, float]] = []
-    points3d_txt = os.path.join(colmap_sparse_dir, "points3D.txt")
-    points3d_ply = os.path.join(colmap_sparse_dir, "sparse_points.ply")
+    candidate_paths = [
+        os.path.join(colmap_sparse_dir, "0", "points3D.txt"),
+        os.path.join(colmap_sparse_dir, "points3D.txt"),
+        os.path.join(colmap_sparse_dir, "0", "sparse_points.ply"),
+        os.path.join(colmap_sparse_dir, "sparse_points.ply"),
+    ]
 
-    if os.path.exists(points3d_txt):
-        try:
-            with open(points3d_txt, "r") as f:
-                for line in f:
-                    if line.startswith("#") or not line.strip():
-                        continue
-                    parts = line.split()
-                    if len(parts) >= 4:
-                        points.append((float(parts[1]), float(parts[2]), float(parts[3])))
-        except Exception as e:
-            logger.warning(f"Could not parse points3D.txt: {e}")
+    for p_path in candidate_paths:
+        if os.path.exists(p_path) and os.path.getsize(p_path) > 0:
+            try:
+                with open(p_path, "r", encoding="utf-8", errors="ignore") as f:
+                    for line in f:
+                        if line.startswith("#") or not line.strip():
+                            continue
+                        parts = line.split()
+                        if len(parts) >= 4:
+                            try:
+                                px, py, pz = float(parts[1]), float(parts[2]), float(parts[3])
+                                if abs(px) < 1000 and abs(py) < 1000 and abs(pz) < 1000:
+                                    points.append((px, py, pz))
+                            except ValueError:
+                                continue
+                if len(points) >= 8:
+                    break
+            except Exception as e:
+                logger.warning(f"Could not parse candidate sparse points at {p_path}: {e}")
 
-    # If empty, construct calibrated architectural room boundary geometry based on room envelope
+    # STRICT INVARIANT: Never synthesize a fake room. Fail explicitly if geometry was not reconstructed.
     if len(points) < 8:
-        # Standard verified architectural metric bounds: [width=6.0m, height=3.0m, length=7.0m]
-        w, h, l = 3.0, 1.5, 3.5
-        points = [
-            (-w, -h, -l), (w, -h, -l), (w, h, -l), (-w, h, -l),
-            (-w, -h,  l), (w, -h,  l), (w, h,  l), (-w, h,  l),
-            (0.0, -h, 0.0), (0.0, h, 0.0), (-w, 0.0, 0.0), (w, 0.0, 0.0)
-        ]
+        logger.error(f"Cannot generate metric mesh: sparse reconstruction in '{colmap_sparse_dir}' produced only {len(points)} valid 3D points.")
+        return {
+            "success": False,
+            "error_code": "INSUFFICIENT_GEOMETRY_FOR_MESH",
+            "message": f"COLMAP sparse reconstruction produced only {len(points)} points (minimum 8 required). Real mesh extraction cannot proceed without reconstructed geometry."
+        }
 
-    # 2. Build vertices, normals, and triangulated faces
-    # Use bounding box and reconstructed hull
+    # Apply calibrated metric scale transform if present
+    if abs(scale_factor - 1.0) > 1e-5:
+        points = [(p[0] * scale_factor, p[1] * scale_factor, p[2] * scale_factor) for p in points]
+
+    # 2. Build vertices, normals, and triangulated faces from genuine point cloud boundaries
     min_x = min(p[0] for p in points)
     max_x = max(p[0] for p in points)
     min_y = min(p[1] for p in points)
@@ -188,16 +203,20 @@ def generate_metric_mesh_glb(
     min_z = min(p[2] for p in points)
     max_z = max(p[2] for p in points)
 
-    # Form a watertight architectural metric mesh (floor, walls, ceiling)
+    # Form a complete 6-plane enclosure derived strictly from reconstructed points
     vertices = [
         # Floor (y = min_y)
-        (min_x, min_y, min_z), (max_x, min_y, min_z), (max_x, min_y, max_z), (-max_x, min_y, max_z),
+        (min_x, min_y, min_z), (max_x, min_y, min_z), (max_x, min_y, max_z), (min_x, min_y, max_z),
         # Ceiling (y = max_y)
-        (min_x, max_y, min_z), (max_x, max_y, min_z), (max_x, max_y, max_z), (-max_x, max_y, max_z),
+        (min_x, max_y, min_z), (max_x, max_y, min_z), (max_x, max_y, max_z), (min_x, max_y, max_z),
         # Back wall (z = min_z)
         (min_x, min_y, min_z), (max_x, min_y, min_z), (max_x, max_y, min_z), (min_x, max_y, min_z),
         # Front wall (z = max_z)
         (min_x, min_y, max_z), (max_x, min_y, max_z), (max_x, max_y, max_z), (min_x, max_y, max_z),
+        # Left wall (x = min_x)
+        (min_x, min_y, min_z), (min_x, min_y, max_z), (min_x, max_y, max_z), (min_x, max_y, min_z),
+        # Right wall (x = max_x)
+        (max_x, min_y, min_z), (max_x, min_y, max_z), (max_x, max_y, max_z), (max_x, max_y, min_z),
     ]
 
     normals = [
@@ -209,6 +228,10 @@ def generate_metric_mesh_glb(
         (0.0, 0.0, 1.0), (0.0, 0.0, 1.0), (0.0, 0.0, 1.0), (0.0, 0.0, 1.0),
         # Front wall backward
         (0.0, 0.0, -1.0), (0.0, 0.0, -1.0), (0.0, 0.0, -1.0), (0.0, 0.0, -1.0),
+        # Left wall right
+        (1.0, 0.0, 0.0), (1.0, 0.0, 0.0), (1.0, 0.0, 0.0), (1.0, 0.0, 0.0),
+        # Right wall left
+        (-1.0, 0.0, 0.0), (-1.0, 0.0, 0.0), (-1.0, 0.0, 0.0), (-1.0, 0.0, 0.0),
     ]
 
     indices = [
@@ -216,6 +239,8 @@ def generate_metric_mesh_glb(
         4, 6, 5,  4, 7, 6,        # ceiling
         8, 10, 9, 8, 11, 10,      # back wall
         12, 13, 14, 12, 14, 15,   # front wall
+        16, 17, 18, 16, 18, 19,   # left wall
+        20, 22, 21, 20, 23, 22,   # right wall
     ]
 
     # 3. Serialize into glTF 2.0 Binary Buffer

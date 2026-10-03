@@ -9,7 +9,8 @@ export const buildDefaultThreeDTour = (
   assetUrl: string,
   format: 'spz' | 'ply' | 'glb' = 'spz',
   rooms: Room[] = [],
-  qualityReport?: ThreeDTourQualityReport
+  qualityReport?: ThreeDTourQualityReport,
+  isCalibratedMetric: boolean = false
 ): ThreeDTour => {
   const isSplat = format === 'spz' || format === 'ply';
   return {
@@ -34,7 +35,7 @@ export const buildDefaultThreeDTour = (
             format: 'glb',
             url: assetUrl,
             sizeBytes: 14.5 * 1024 * 1024,
-            isCalibratedMetric: true,
+            isCalibratedMetric,
           }
         : undefined,
     },

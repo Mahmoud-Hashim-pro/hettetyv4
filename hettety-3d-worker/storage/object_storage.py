@@ -66,7 +66,7 @@ class ObjectStorageClient:
         with open(local_path, "rb") as f:
             source_sha = hashlib.sha256(f.read()).hexdigest()
 
-        if self.provider == "gcs":
+        if self.provider in ("gcs", "google"):
             try:
                 from google.cloud import storage
                 client = storage.Client()
@@ -76,9 +76,10 @@ class ObjectStorageClient:
                 logger.info(f"Successfully uploaded {local_path} to gs://{self.bucket_name}/{remote_path} (size={source_size})")
                 return f"https://storage.googleapis.com/{self.bucket_name}/{remote_path}"
             except Exception as e:
-                logger.error(f"GCS upload failed: {e}. Falling back to verified local persistence.")
+                logger.error(f"STRICT PRODUCTION FAILURE: GCS upload to gs://{self.bucket_name}/{remote_path} failed: {e}")
+                raise RuntimeError(f"GCS_UPLOAD_FAILED: Cloud storage write failed for {remote_path}: {e}")
 
-        elif self.provider == "s3":
+        elif self.provider in ("s3", "aws"):
             try:
                 import boto3
                 s3 = boto3.client("s3")
@@ -86,9 +87,10 @@ class ObjectStorageClient:
                 logger.info(f"Successfully uploaded {local_path} to s3://{self.bucket_name}/{remote_path}")
                 return f"https://{self.bucket_name}.s3.amazonaws.com/{remote_path}"
             except Exception as e:
-                logger.error(f"S3 upload failed: {e}. Falling back to verified local persistence.")
+                logger.error(f"STRICT PRODUCTION FAILURE: S3 upload to s3://{self.bucket_name}/{remote_path} failed: {e}")
+                raise RuntimeError(f"S3_UPLOAD_FAILED: Cloud storage write failed for {remote_path}: {e}")
 
-        # Verified Local Object Storage Mirror
+        # Verified Local Development Storage Provider
         target_path = os.path.join(self.local_root, remote_path)
         os.makedirs(os.path.dirname(target_path), exist_ok=True)
         shutil.copy2(local_path, target_path)
@@ -107,5 +109,6 @@ class ObjectStorageClient:
         if target_sha != source_sha:
             raise IOError(f"Target storage checksum corruption: {target_sha} != {source_sha}")
 
-        logger.info(f"Verified artifact stored at {target_path} (SHA-256: {target_sha[:8]}..., size: {target_size} bytes)")
-        return f"https://storage.googleapis.com/{self.bucket_name}/{remote_path}"
+        logger.info(f"Verified artifact stored locally at {target_path} (SHA-256: {target_sha[:8]}..., size: {target_size} bytes)")
+        # Return truthful local serving path instead of fake GCS url
+        return f"/storage/spatial_assets/{remote_path}"

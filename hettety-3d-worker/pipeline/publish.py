@@ -23,6 +23,9 @@ def publish_tour_assets(
     api_key: str,
     storage_client: Optional[Any] = None,
     image_count: int = 30,
+    splat_count: int = 0,
+    sharpness_score: int = 85,
+    registered_cameras: int = 0,
     mesh_vertex_count: int = 0,
     mesh_face_count: int = 0,
     is_calibrated_metric: bool = False
@@ -60,14 +63,18 @@ def publish_tour_assets(
     glb_size = os.path.getsize(glb_path) if os.path.exists(glb_path) else 0
 
     # Grounded quality metrics calculated from actual reconstruction telemetry
-    # Coverage: ratio of verified camera views (30-80 images recommended)
-    coverage_score = min(100, max(25, int((min(image_count, 60) / 50.0) * 100)))
-    # Density: based on compressed payload size (roughly 12 bytes/splat in SPZ)
-    estimated_splats = max(1000, spz_size // 12)
-    density_score = min(100, max(20, int((min(estimated_splats, 600000) / 450000.0) * 100)))
-    mesh_score = min(100, max(30, int((min(mesh_face_count, 500) / 200.0) * 100))) if mesh_face_count > 0 else 50
-    sharpness_score = 90 if image_count >= 30 else 75
-    overall_score = int(coverage_score * 0.35 + density_score * 0.35 + mesh_score * 0.2 + sharpness_score * 0.1)
+    effective_reg = registered_cameras if registered_cameras > 0 else image_count
+    reg_ratio = min(1.0, effective_reg / max(1, image_count))
+    coverage_score = int(min(100, max(20, reg_ratio * 70.0 + min(30.0, (image_count / 40.0) * 30.0))))
+
+    # Density based on exact surviving splat count from PLY header
+    effective_splats = splat_count if splat_count > 0 else max(1000, spz_size // 12)
+    density_score = min(100, max(20, int((min(effective_splats, 600000) / 400000.0) * 100)))
+
+    # Mesh score evaluated from real face topology and metric calibration state
+    mesh_score = min(100, max(25, int((min(mesh_face_count, 500) / 200.0) * 60 + (40 if is_calibrated_metric else 10)))) if mesh_face_count > 0 else 40
+    
+    overall_score = int(coverage_score * 0.35 + density_score * 0.35 + mesh_score * 0.15 + sharpness_score * 0.15)
     
     payload = {
         "jobId": job_id,
@@ -78,7 +85,7 @@ def publish_tour_assets(
                 "format": "spz",
                 "url": spz_url,
                 "sizeBytes": spz_size,
-                "splatCount": estimated_splats
+                "splatCount": effective_splats
             },
             "mesh": {
                 "format": "glb",
@@ -96,7 +103,10 @@ def publish_tour_assets(
                 "coverage": coverage_score,
                 "sharpness": sharpness_score,
                 "density": density_score,
-                "meshCompleteness": mesh_score
+                "meshCompleteness": mesh_score,
+                "registeredCameras": effective_reg,
+                "totalCameras": image_count,
+                "isCalibratedMetric": is_calibrated_metric
             }
         }
     }

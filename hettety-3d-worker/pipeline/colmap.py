@@ -7,11 +7,69 @@ Optimizes matching strategy: sequential for video captures, exhaustive for <=50 
 import subprocess
 import os
 import logging
-from typing import Optional
+from typing import Optional, Tuple, Dict, Any
 
 logger = logging.getLogger("hettety-3d-worker.colmap")
 
-def run_sfm(image_dir: str, output_dir: str, is_video: bool = False) -> bool:
+class SfMResult(dict):
+    """Result object supporting dictionary access and boolean truthiness."""
+    def __bool__(self):
+        return bool(self.get("success", False))
+
+def parse_colmap_reconstruction_metrics(sparse_dir: str) -> Tuple[int, int, str]:
+    """
+    Parses sparse reconstruction directory to extract number of registered images
+    and 3D points. Checks sub-folder 0 first, then root.
+    """
+    candidate_dirs = [os.path.join(sparse_dir, "0"), sparse_dir]
+    target_dir = ""
+    for c_dir in candidate_dirs:
+        if os.path.exists(c_dir):
+            if any(os.path.exists(os.path.join(c_dir, f)) for f in ["images.txt", "images.bin", "cameras.bin", "cameras.txt"]):
+                target_dir = c_dir
+                break
+
+    if not target_dir:
+        return 0, 0, ""
+
+    # Convert binary to TXT if TXT files do not exist
+    images_txt = os.path.join(target_dir, "images.txt")
+    points_txt = os.path.join(target_dir, "points3D.txt")
+    images_bin = os.path.join(target_dir, "images.bin")
+
+    if not os.path.exists(images_txt) and os.path.exists(images_bin):
+        try:
+            cmd_convert = [
+                "colmap", "model_converter",
+                "--input_path", target_dir,
+                "--output_path", target_dir,
+                "--output_type", "TXT"
+            ]
+            subprocess.run(cmd_convert, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        except Exception as e:
+            logger.warning(f"colmap model_converter note: {e}")
+
+    registered_images = 0
+    if os.path.exists(images_txt):
+        try:
+            with open(images_txt, "r", encoding="utf-8", errors="ignore") as f:
+                # In COLMAP images.txt, each registered image has 2 non-comment lines
+                non_comment = sum(1 for line in f if not line.startswith("#") and line.strip())
+                registered_images = non_comment // 2
+        except Exception as e:
+            logger.warning(f"Could not parse images.txt: {e}")
+
+    points_count = 0
+    if os.path.exists(points_txt):
+        try:
+            with open(points_txt, "r", encoding="utf-8", errors="ignore") as f:
+                points_count = sum(1 for line in f if not line.startswith("#") and line.strip())
+        except Exception as e:
+            logger.warning(f"Could not parse points3D.txt: {e}")
+
+    return registered_images, points_count, target_dir
+
+def run_sfm(image_dir: str, output_dir: str, is_video: bool = False) -> SfMResult:
     db_path = os.path.join(output_dir, "database.db")
     sparse_dir = os.path.join(output_dir, "sparse")
     os.makedirs(sparse_dir, exist_ok=True)
@@ -19,6 +77,15 @@ def run_sfm(image_dir: str, output_dir: str, is_video: bool = False) -> bool:
     images = [f for f in os.listdir(image_dir) if f.lower().endswith(('.jpg', '.jpeg', '.png'))]
     image_count = len(images)
     logger.info(f"Running COLMAP SfM on {image_count} images (is_video={is_video})")
+
+    if image_count < 8:
+        return SfMResult({
+            "success": False,
+            "error_code": "TOO_FEW_IMAGES",
+            "registered_images": 0,
+            "points_count": 0,
+            "message": f"COLMAP requires at least 8 images, but only {image_count} were provided."
+        })
 
     # 1. Feature extraction
     cmd_extract = [
@@ -30,9 +97,9 @@ def run_sfm(image_dir: str, output_dir: str, is_video: bool = False) -> bool:
     ]
     subprocess.run(cmd_extract, check=True)
 
-    # 2. Adaptive matching
+    # 2. Adaptive matching: sequential for video captures or >100 images, exhaustive for photo clusters
     if is_video or image_count > 100:
-        logger.info("Using Sequential Matcher for linear spatial sequence...")
+        logger.info("Using Sequential Matcher for continuous spatial sequence...")
         cmd_match = [
             "colmap", "sequential_matcher",
             "--database_path", db_path,
@@ -58,10 +125,50 @@ def run_sfm(image_dir: str, output_dir: str, is_video: bool = False) -> bool:
     ]
     subprocess.run(cmd_mapper, check=True)
 
-    # Check that sparse reconstruction produced camera poses
-    cameras_bin = os.path.join(sparse_dir, "0", "cameras.bin")
-    cameras_txt = os.path.join(sparse_dir, "0", "cameras.txt")
-    if not (os.path.exists(cameras_bin) or os.path.exists(cameras_txt) or os.path.exists(os.path.join(sparse_dir, "cameras.bin"))):
-        logger.warning("COLMAP mapper did not yield a sub-folder 0; checking root sparse dir.")
+    # 4. Quantitative verification of registered cameras and sparse point cloud
+    registered_images, points_count, valid_sparse = parse_colmap_reconstruction_metrics(sparse_dir)
+    logger.info(f"COLMAP SfM finished: {registered_images}/{image_count} images registered, {points_count} 3D points created.")
 
-    return True
+    # Strict quantitative quality gates:
+    # A. Minimum registered cameras
+    if registered_images < 8:
+        logger.error(f"COLMAP failed to register sufficient cameras: {registered_images} registered (min 8 required).")
+        return SfMResult({
+            "success": False,
+            "error_code": "INSUFFICIENT_REGISTERED_CAMERAS",
+            "registered_images": registered_images,
+            "points_count": points_count,
+            "message": f"COLMAP registered only {registered_images} out of {image_count} images (minimum 8 required for 3D reconstruction)."
+        })
+
+    # B. Registration ratio (at least 35% of input photos must be registered)
+    reg_ratio = registered_images / max(1, image_count)
+    if reg_ratio < 0.35:
+        logger.error(f"Low registration ratio: {registered_images}/{image_count} ({reg_ratio*100:.1f}%).")
+        return SfMResult({
+            "success": False,
+            "error_code": "LOW_CAMERA_REGISTRATION_RATIO",
+            "registered_images": registered_images,
+            "points_count": points_count,
+            "message": f"Only {registered_images}/{image_count} images ({reg_ratio*100:.1f}%) could be spatially aligned. Minimum 35% overlap required."
+        })
+
+    # C. Minimum sparse point cloud density
+    if points_count < 50:
+        logger.error(f"Degenerate sparse point cloud: only {points_count} points created.")
+        return SfMResult({
+            "success": False,
+            "error_code": "INSUFFICIENT_SPARSE_POINTS",
+            "registered_images": registered_images,
+            "points_count": points_count,
+            "message": f"COLMAP produced only {points_count} 3D sparse points (minimum 50 required)."
+        })
+
+    return SfMResult({
+        "success": True,
+        "registered_images": registered_images,
+        "points_count": points_count,
+        "sparse_dir": valid_sparse or sparse_dir,
+        "registration_ratio": round(reg_ratio, 3),
+        "total_images": image_count
+    })

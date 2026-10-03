@@ -271,6 +271,20 @@ describe('Tier 1 — HETTETY Real 3D Reconstruction Pipeline & Architecture', ()
       expect(hydePark?.threeDTour?.representation?.mesh?.isCalibratedMetric).toBe(true);
       expect(hydePark?.threeDTour?.bounds).toBeDefined();
     });
+
+    it('defaults mesh isCalibratedMetric to false unless verified by calibration anchors', () => {
+      const uncalibratedTour = buildDefaultThreeDTour('https://cdn.hettety.com/tours/uncal/mesh.glb', 'glb');
+      expect(uncalibratedTour.representation.mesh?.isCalibratedMetric).toBe(false);
+
+      const calibratedTour = buildDefaultThreeDTour(
+        'https://cdn.hettety.com/tours/cal/mesh.glb',
+        'glb',
+        [],
+        undefined,
+        true
+      );
+      expect(calibratedTour.representation.mesh?.isCalibratedMetric).toBe(true);
+    });
   });
 
   describe('SPZ & 3DGS Binary Parser Integrity', () => {

@@ -24,7 +24,7 @@ def publish_tour_assets(
     storage_client: Optional[Any] = None,
     image_count: int = 30,
     splat_count: int = 0,
-    sharpness_score: int = 85,
+    sharpness_score: Optional[int] = None,
     registered_cameras: int = 0,
     mesh_vertex_count: int = 0,
     mesh_face_count: int = 0,

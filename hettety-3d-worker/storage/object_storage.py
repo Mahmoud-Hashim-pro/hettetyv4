@@ -43,42 +43,101 @@ class ObjectStorageClient:
         except Exception:
             return False
 
+    def download_object(self, storage_path: str, local_destination: str) -> bool:
+        """
+        Downloads a storage object (cloud blob, http URL, or local path) to local destination.
+        Handles GCS paths (properties/... or gs://...), HTTP URLs, and local files.
+        """
+        os.makedirs(os.path.dirname(os.path.abspath(local_destination)), exist_ok=True)
+        MAX_FRAME_SIZE = 50 * 1024 * 1024
+
+        # 1. HTTP / HTTPS URL
+        if storage_path.startswith("http://") or storage_path.startswith("https://"):
+            if not self._is_safe_download_url(storage_path):
+                logger.error(f"SECURITY ALERT: Blocked untrusted/private network download URL: {storage_path}")
+                return False
+            try:
+                import requests
+                with requests.get(storage_path, stream=True, timeout=25) as res:
+                    res.raise_for_status()
+                    total_bytes = 0
+                    with open(local_destination, "wb") as f:
+                        for chunk in res.iter_content(chunk_size=65536):
+                            total_bytes += len(chunk)
+                            if total_bytes > MAX_FRAME_SIZE:
+                                raise ValueError(f"Payload exceeded {MAX_FRAME_SIZE} bytes limit.")
+                            f.write(chunk)
+                return True
+            except Exception as e:
+                logger.warning(f"Failed to fetch HTTP object {storage_path}: {e}")
+                return False
+
+        # 2. Local direct path
+        if os.path.exists(storage_path):
+            shutil.copy2(storage_path, local_destination)
+            return True
+
+        # Clean cloud path (strip gs://bucket_name/ or s3://bucket_name/ if present)
+        clean_path = storage_path
+        if clean_path.startswith("gs://"):
+            parts = clean_path[5:].split("/", 1)
+            clean_path = parts[1] if len(parts) > 1 else parts[0]
+        elif clean_path.startswith("s3://"):
+            parts = clean_path[5:].split("/", 1)
+            clean_path = parts[1] if len(parts) > 1 else parts[0]
+
+        # 3. Google Cloud Storage
+        if self.provider in ("gcs", "google"):
+            try:
+                from google.cloud import storage
+                client = storage.Client()
+                bucket = client.bucket(self.bucket_name)
+                blob = bucket.blob(clean_path)
+                blob.download_to_filename(local_destination)
+                if os.path.exists(local_destination) and os.path.getsize(local_destination) > 0:
+                    logger.info(f"Downloaded GCS object gs://{self.bucket_name}/{clean_path} -> {local_destination}")
+                    return True
+                raise IOError(f"Downloaded GCS blob {clean_path} was 0 bytes.")
+            except Exception as e:
+                logger.warning(f"GCS download failed for {clean_path}: {e}. Checking local fallback.")
+
+        # 4. Amazon S3
+        elif self.provider in ("s3", "aws"):
+            try:
+                import boto3
+                s3 = boto3.client("s3")
+                s3.download_file(self.bucket_name, clean_path, local_destination)
+                if os.path.exists(local_destination) and os.path.getsize(local_destination) > 0:
+                    logger.info(f"Downloaded S3 object s3://{self.bucket_name}/{clean_path} -> {local_destination}")
+                    return True
+                raise IOError(f"Downloaded S3 object {clean_path} was 0 bytes.")
+            except Exception as e:
+                logger.warning(f"S3 download failed for {clean_path}: {e}. Checking local fallback.")
+
+        # 5. Local storage root fallback
+        local_cand = os.path.join(self.local_root, clean_path)
+        if os.path.exists(local_cand):
+            shutil.copy2(local_cand, local_destination)
+            return True
+
+        logger.warning(f"Capture path does not exist in any storage provider: {storage_path}")
+        return False
+
     def download_capture_files(self, capture_urls: List[str], dest_dir: str) -> List[str]:
         """
         Downloads uploaded images or video keyframes into the local working directory.
-        Hardened against SSRF and oversized response payloads.
+        Supports GCS storage paths, gs:// URIs, HTTP/HTTPS URLs, and local files.
         """
         os.makedirs(dest_dir, exist_ok=True)
         local_files = []
-        MAX_FRAME_SIZE = 50 * 1024 * 1024 # 50 MB ceiling per photo
 
         for i, url in enumerate(capture_urls):
             filename = f"frame_{i:04d}.jpg"
             dest_path = os.path.join(dest_dir, filename)
-
-            if url.startswith("http://") or url.startswith("https://"):
-                if not self._is_safe_download_url(url):
-                    logger.error(f"SECURITY ALERT: Blocked untrusted/private network download URL: {url}")
-                    continue
-                try:
-                    import requests
-                    with requests.get(url, stream=True, timeout=25) as res:
-                        res.raise_for_status()
-                        total_bytes = 0
-                        with open(dest_path, "wb") as f:
-                            for chunk in res.iter_content(chunk_size=65536):
-                                total_bytes += len(chunk)
-                                if total_bytes > MAX_FRAME_SIZE:
-                                    raise ValueError(f"Frame {url} exceeded 50MB payload limit.")
-                                f.write(chunk)
-                    local_files.append(dest_path)
-                except Exception as e:
-                    logger.warning(f"Failed to fetch {url}: {e}")
-            elif os.path.exists(url):
-                shutil.copy2(url, dest_path)
+            if self.download_object(url, dest_path):
                 local_files.append(dest_path)
             else:
-                logger.warning(f"Capture path does not exist: {url}")
+                logger.warning(f"Failed to retrieve capture path: {url}")
 
         logger.info(f"Downloaded {len(local_files)} files to {dest_dir}")
         return local_files

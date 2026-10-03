@@ -9,7 +9,7 @@ import os
 import shutil
 import logging
 import argparse
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, Tuple, List
 
 from pipeline.validate import validate_keyframes
 from pipeline.colmap import run_sfm, run_dense_stereo
@@ -78,8 +78,8 @@ class ReconstructionWorker:
             capture_urls = job.get("captureUrls", [])
 
         reference_anchors = job.get("referenceAnchors") or job.get("scaleReferences") or []
-        callback_url = job.get("callbackUrl", "mock://callback")
-        api_key = job.get("apiKey", "")
+        callback_url = job.get("callbackUrl") or os.getenv("HETTETY_CONTROL_PLANE_URL", "mock://callback")
+        api_key = job.get("apiKey") or os.getenv("WORKER_SHARED_SECRET", "hettety-worker-secret-internal")
 
         job_dir = os.path.join(self.work_dir, job_id)
         raw_images_dir = os.path.join(job_dir, "images")
@@ -223,16 +223,15 @@ class ReconstructionWorker:
 
             # Stage 6: Metric Calibration & Compression
             self._report_stage(job_id, property_id, "OPTIMIZING", 90, "Calibrating scale and generating metric GLB mesh", callback_url, api_key)
-            sparse_pts = []
+            sparse_pts: List[Tuple[float, float, float]] = []
             sparse_map: Dict[int, Tuple[float, float, float]] = {}
-            candidate_pts_paths = [
-                os.path.join(dense_dir, "fused.ply"),
+            candidate_points3d_txt = [
                 os.path.join(colmap_dir, "sparse", "0", "points3D.txt"),
                 os.path.join(colmap_dir, "sparse", "points3D.txt"),
                 os.path.join(colmap_dir, "0", "points3D.txt"),
                 os.path.join(colmap_dir, "points3D.txt"),
             ]
-            for p_path in candidate_pts_paths:
+            for p_path in candidate_points3d_txt:
                 if os.path.exists(p_path) and os.path.getsize(p_path) > 0:
                     try:
                         with open(p_path, "r", encoding="utf-8", errors="ignore") as f:
@@ -250,7 +249,7 @@ class ReconstructionWorker:
                         if sparse_pts:
                             break
                     except Exception as ex:
-                        logger.debug(f"Could not read points for calibration from {p_path}: {ex}")
+                        logger.debug(f"Could not read points3D from {p_path}: {ex}")
 
             calib_res = calibrate_sparse_scale(sparse_pts, reference_anchors, point3d_map=sparse_map)
             scale_factor = calib_res.get("scale_factor", 1.0)

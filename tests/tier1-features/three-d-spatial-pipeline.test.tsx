@@ -730,6 +730,58 @@ NaN NaN NaN
       expect(jsonRes.success).toBe(true);
       expect(jsonRes.status).toBe('QUEUED');
       expect(jsonRes.verifiedAssets).toBe(2);
+
+      // 3. Worker updates stage via authenticated callback
+      await controlPlaneHandler(
+        {
+          method: 'POST',
+          query: { action: 'update-stage' },
+          headers: { authorization: 'Bearer hettety-worker-secret-internal' },
+          body: {
+            jobId,
+            propertyId: 'prop-api-101',
+            status: 'READY',
+            progress: 100,
+            stage: 'PUBLISHED',
+            representation: {
+              gaussianSplat: { format: 'spz', url: 'https://cdn.hettety.com/scene.spz', splatCount: 350000 },
+              mesh: { format: 'glb', url: 'https://cdn.hettety.com/mesh.glb', faceCount: 15000 },
+            },
+            qualityReport: { overallScore: 92 },
+          },
+        },
+        mockRes
+      );
+
+      expect(statusRes).toBe(200);
+      expect(jsonRes.success).toBe(true);
+      expect(jsonRes.status).toBe('READY');
+      expect(jsonRes.progress).toBe(100);
+    });
+
+    it('rejects update-stage when job is unknown', async () => {
+      const controlPlaneHandler = (await import('../../api/reconstruction')).default;
+      let statusRes = 200;
+      let jsonRes: any = null;
+      const mockRes = {
+        status: (s: number) => { statusRes = s; return { json: (d: any) => { jsonRes = d; } }; },
+      };
+
+      await controlPlaneHandler(
+        {
+          method: 'POST',
+          query: { action: 'update-stage' },
+          headers: { authorization: 'Bearer hettety-worker-secret-internal' },
+          body: {
+            jobId: 'non_existent_job_123',
+            status: 'TRAINING',
+          },
+        },
+        mockRes
+      );
+
+      expect(statusRes).toBe(404);
+      expect(jsonRes.error).toContain('JOB_NOT_FOUND');
     });
   });
 });

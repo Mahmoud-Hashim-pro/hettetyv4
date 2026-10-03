@@ -9,6 +9,7 @@ import { db } from '../../firebase';
 import { doc, getDoc, setDoc, updateDoc, collection, query, where, getDocs, onSnapshot } from 'firebase/firestore';
 
 export interface CreateJobParams {
+  id?: string;
   propertyId: string;
   ownerId: string;
   type: 'video' | 'photos' | 'hybrid';
@@ -119,7 +120,11 @@ export const subscribeToJob = (jobId: string, callback: (job: ReconstructionJob)
 };
 
 export const createReconstructionJob = (params: CreateJobParams): ReconstructionJob => {
-  const { propertyId, ownerId, type, sourceCount, idempotencyKey } = params;
+  const { id: explicitId, propertyId, ownerId, type, sourceCount, idempotencyKey } = params;
+
+  if (explicitId && activeJobs.has(explicitId)) {
+    return activeJobs.get(explicitId)!;
+  }
 
   // Idempotency check: if a job already exists with this key or active for this property, return it
   if (idempotencyKey) {
@@ -135,7 +140,7 @@ export const createReconstructionJob = (params: CreateJobParams): Reconstruction
   );
   if (existingActive) return existingActive;
 
-  const jobId = `job-3d-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+  const jobId = explicitId || `job_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
   const now = new Date().toISOString();
 
   const newJob: ReconstructionJob = {

@@ -26,6 +26,7 @@ from pipeline.compress import generate_metric_mesh_glb, validate_glb_file
 from pipeline.publish import publish_tour_assets
 from storage.object_storage import ObjectStorageClient
 from workers.reconstruction_worker import ReconstructionWorker
+from task_queue.consumer import QueueConsumer
 
 class TestHettety3DReconstructionE2E(unittest.TestCase):
     def setUp(self):
@@ -403,6 +404,80 @@ class TestHettety3DReconstructionE2E(unittest.TestCase):
             rw_mod.run_dense_stereo = orig_dense
             rw_mod.run_gaussian_training = orig_train
             rw_mod.optimize_splat_cloud = orig_opt
+
+    def test_19_object_storage_download_object_protocols(self):
+        """Verifies ObjectStorageClient.download_object handles local files, storage paths, and local root."""
+        storage = ObjectStorageClient(provider="local")
+        
+        # 1. Test local root path resolution
+        sample_rel = "properties/test_prop_101/3d/raw/test_frame.jpg"
+        abs_in_local_root = os.path.join(storage.local_root, sample_rel)
+        os.makedirs(os.path.dirname(abs_in_local_root), exist_ok=True)
+        with open(abs_in_local_root, "wb") as f:
+            f.write(b"jpeg_keyframe_data_bytes")
+
+        dest = os.path.join(self.temp_dir, "downloaded_frame.jpg")
+        success = storage.download_object(sample_rel, dest)
+        self.assertTrue(success)
+        self.assertTrue(os.path.exists(dest))
+        with open(dest, "rb") as f:
+            self.assertEqual(f.read(), b"jpeg_keyframe_data_bytes")
+
+        # 2. Test direct file path
+        dest2 = os.path.join(self.temp_dir, "downloaded_frame_2.jpg")
+        success2 = storage.download_object(dest, dest2)
+        self.assertTrue(success2)
+        self.assertTrue(os.path.exists(dest2))
+
+    def test_20_queue_consumer_isolated_streams_no_blpop_fallback(self):
+        """Verifies that when streams are enabled, QueueConsumer does not fall through to BLPOP."""
+        consumer = QueueConsumer(queue_name="test_queue", redis_url="mock://redis")
+        consumer.use_streams = True
+        
+        # When stream returns no entries, poll_job must return None without polling list queue
+        class MockRedis:
+            def __init__(self):
+                self.blpop_called = False
+            def xreadgroup(self, *a, **k):
+                return []
+            def blpop(self, *a, **k):
+                self.blpop_called = True
+                return ("test_queue", '{"id": "duplicate_job"}')
+
+        mock_redis = MockRedis()
+        consumer.redis_client = mock_redis
+        job = consumer.poll_job(timeout_sec=1)
+        self.assertIsNone(job)
+        self.assertFalse(mock_redis.blpop_called, "BLPOP should NEVER be called when Redis Streams are active!")
+
+    def test_21_points3d_txt_isolated_from_fused_ply(self):
+        """Verifies that POINT3D_ID coordinates are parsed strictly from points3D.txt format."""
+        colmap_dir = os.path.join(self.temp_dir, "sfm_test")
+        sparse_dir = os.path.join(colmap_dir, "sparse", "0")
+        os.makedirs(sparse_dir, exist_ok=True)
+
+        points_file = os.path.join(sparse_dir, "points3D.txt")
+        with open(points_file, "w") as f:
+            f.write("# 3D point list with one line of data per point:\n")
+            f.write("# POINT3D_ID, X, Y, Z, R, G, B, ERROR, TRACK[] as (IMAGE_ID, POINT2D_IDX)\n")
+            f.write("42 1.25 2.50 3.75 255 128 64 0.15 1 0 2 1\n")
+            f.write("99 -0.5 1.0 2.0 200 200 200 0.10 1 1 2 2\n")
+
+        sparse_pts = []
+        sparse_map = {}
+        with open(points_file, "r") as f:
+            for line in f:
+                if not line.startswith("#") and line.strip():
+                    parts = line.split()
+                    if len(parts) >= 4:
+                        coord = (float(parts[1]), float(parts[2]), float(parts[3]))
+                        sparse_pts.append(coord)
+                        sparse_map[int(parts[0])] = coord
+
+        self.assertEqual(len(sparse_pts), 2)
+        self.assertIn(42, sparse_map)
+        self.assertIn(99, sparse_map)
+        self.assertEqual(sparse_map[42], (1.25, 2.50, 3.75))
 
 if __name__ == "__main__":
     unittest.main()

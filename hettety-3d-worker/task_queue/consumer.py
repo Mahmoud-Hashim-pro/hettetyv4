@@ -103,25 +103,27 @@ class QueueConsumer:
                                 "stream_msg_id": msg_id
                             }
                             return job
+                    return None
                 except Exception as e:
-                    logger.debug(f"Error reading from Redis Stream: {e}. Falling back to list queue.")
-
-            # 2. Redis List BLPOP path
-            try:
-                item = self.redis_client.blpop(self.queue_name, timeout=timeout_sec)
-                if item:
-                    _, raw_data = item
-                    job = json.loads(raw_data)
-                    job_id = job.get("id", f"job-{time.time()}")
-                    self._in_flight[job_id] = {
-                        "job": job,
-                        "leased_at": time.time(),
-                        "raw_data": raw_data,
-                        "stream": False
-                    }
-                    return job
-            except Exception as e:
-                logger.error(f"Error polling Redis queue '{self.queue_name}': {e}")
+                    logger.debug(f"Error reading from Redis Stream: {e}")
+                    return None
+            else:
+                # 2. Redis List BLPOP path ONLY when streams are unavailable
+                try:
+                    item = self.redis_client.blpop(self.queue_name, timeout=timeout_sec)
+                    if item:
+                        _, raw_data = item
+                        job = json.loads(raw_data)
+                        job_id = job.get("id", f"job-{time.time()}")
+                        self._in_flight[job_id] = {
+                            "job": job,
+                            "leased_at": time.time(),
+                            "raw_data": raw_data,
+                            "stream": False
+                        }
+                        return job
+                except Exception as e:
+                    logger.error(f"Error polling Redis queue '{self.queue_name}': {e}")
         return None
 
     def ack_job(self, job_id: str) -> None:

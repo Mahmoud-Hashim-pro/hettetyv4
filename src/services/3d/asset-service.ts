@@ -8,6 +8,8 @@ import { CaptureAsset, ThreeDAsset } from '../../types';
 import { db } from '../../firebase';
 import { doc, setDoc } from 'firebase/firestore';
 
+import { generateV4SignedUploadUrl } from '../../../api/reconstruction';
+
 const captureAssetsRegistry = new Map<string, CaptureAsset[]>();
 const threeDAssetsRegistry = new Map<string, ThreeDAsset[]>();
 
@@ -25,33 +27,22 @@ export interface UploadSessionResponse {
   }>;
 }
 
+/**
+ * Authoritative upload session generation: delegates directly to genuine GCS V4 signing algorithm
+ */
 export const createUploadSession = (request: UploadSessionRequest): UploadSessionResponse => {
-  const sessionId = `session-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
-  const now = new Date();
-  const dateStr = now.toISOString().replace(/[:-]|\.\d{3}/g, '');
-  const dateOnly = dateStr.slice(0, 8);
-  const clientEmail = 'hettety-storage-signer@hettety-prod.iam.gserviceaccount.com';
+  const sessionId = `session_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+  const bucket = 'hettety-spatial-assets';
 
   const signedUploadUrls = request.files.map(f => {
     const safeName = f.name.replace(/[^a-zA-Z0-9._-]/g, '_');
-    const storagePath = `properties/${request.propertyId}/3d/raw/${Date.now()}_${safeName}`;
-    const credential = `${clientEmail}/${dateOnly}/auto/storage/goog4_request`;
-    const host = 'storage.googleapis.com';
-
-    // Build genuine Google Cloud Storage V4 signed URL query parameters
-    const queryParams = new URLSearchParams({
-      'X-Goog-Algorithm': 'GOOG4-RSA-SHA256',
-      'X-Goog-Credential': credential,
-      'X-Goog-Date': dateStr,
-      'X-Goog-Expires': '900',
-      'X-Goog-SignedHeaders': 'content-type;host',
-      'X-Goog-Signature': 'mock_sha256_sig_' + Math.random().toString(16).slice(2) + Math.random().toString(16).slice(2),
-    });
+    const storagePath = `properties/${request.propertyId}/3d/raw/${sessionId}/${safeName}`;
+    const signed = generateV4SignedUploadUrl(bucket, storagePath, f.mimeType || 'image/jpeg');
 
     return {
       fileName: f.name,
-      uploadUrl: `https://${host}/hettety-spatial-assets/${storagePath}?${queryParams.toString()}`,
-      storagePath,
+      uploadUrl: signed.uploadUrl,
+      storagePath: signed.storagePath,
     };
   });
 

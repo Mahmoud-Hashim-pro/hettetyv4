@@ -186,6 +186,10 @@ export const parseGaussianPly = (buffer: ArrayBuffer): ParsedGaussianCloud => {
     }
   }
 
+  if (!isFinite(minX) || !isFinite(maxX) || !isFinite(minY) || !isFinite(maxY) || !isFinite(minZ) || !isFinite(maxZ)) {
+    throw new InvalidGaussianDataError('CANNOT_DETERMINE_BOUNDS: Parsed PLY vertices contained no finite coordinates.');
+  }
+
   return {
     count,
     positions,
@@ -194,8 +198,8 @@ export const parseGaussianPly = (buffer: ArrayBuffer): ParsedGaussianCloud => {
     scales,
     rotations,
     bounds: {
-      min: [isFinite(minX) ? minX : -4.0, isFinite(minY) ? minY : 0.0, isFinite(minZ) ? minZ : -4.0],
-      max: [isFinite(maxX) ? maxX : 4.0, isFinite(maxY) ? maxY : 3.0, isFinite(maxZ) ? maxZ : 4.0],
+      min: [minX, minY, minZ],
+      max: [maxX, maxY, maxZ],
     },
   };
 };
@@ -309,10 +313,14 @@ export const parseGaussianSpz = async (buffer: ArrayBuffer): Promise<ParsedGauss
       offset += hasFullStride ? stride : 12;
     }
 
-    // Dynamic bounding calculation
+    if (!isFinite(minX) || !isFinite(maxX) || !isFinite(minY) || !isFinite(maxY) || !isFinite(minZ) || !isFinite(maxZ)) {
+      throw new InvalidGaussianDataError('CANNOT_DETERMINE_BOUNDS: Parsed SPZ primitives contained no finite coordinates.');
+    }
+
+    // Dynamic bounding calculation from verified spatial primitives
     const bounds = {
-      min: [isFinite(minX) ? minX : -4.0, isFinite(minY) ? minY : 0.0, isFinite(minZ) ? minZ : -4.0] as [number, number, number],
-      max: [isFinite(maxX) ? maxX : 4.0, isFinite(maxY) ? maxY : 3.0, isFinite(maxZ) ? maxZ : 4.0] as [number, number, number],
+      min: [minX, minY, minZ] as [number, number, number],
+      max: [maxX, maxY, maxZ] as [number, number, number],
     };
 
     return {

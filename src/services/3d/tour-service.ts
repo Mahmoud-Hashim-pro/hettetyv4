@@ -10,7 +10,8 @@ export const buildDefaultThreeDTour = (
   format: 'spz' | 'ply' | 'glb' = 'spz',
   rooms: Room[] = [],
   qualityReport?: ThreeDTourQualityReport,
-  isCalibratedMetric: boolean = false
+  isCalibratedMetric: boolean = false,
+  lodUrls?: { high?: string; medium?: string; low?: string }
 ): ThreeDTour => {
   const isSplat = format === 'spz' || format === 'ply';
   return {
@@ -22,8 +23,7 @@ export const buildDefaultThreeDTour = (
         ? {
             format,
             url: assetUrl,
-            sizeBytes: 9.2 * 1024 * 1024,
-            lodUrls: {
+            lodUrls: lodUrls || {
               high: assetUrl,
               medium: assetUrl.replace(/\.spz$/, '_med.spz'),
               low: assetUrl.replace(/\.spz$/, '_low.spz'),
@@ -34,7 +34,6 @@ export const buildDefaultThreeDTour = (
         ? {
             format: 'glb',
             url: assetUrl,
-            sizeBytes: 14.5 * 1024 * 1024,
             isCalibratedMetric,
           }
         : undefined,

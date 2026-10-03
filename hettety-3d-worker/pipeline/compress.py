@@ -63,9 +63,13 @@ def validate_glb_file(glb_path: str) -> Tuple[bool, str, int, int]:
             return False, "GLB contains 0 vertices", 0, 0
 
         face_count = 0
-        if len(accessors) > 2:
-            index_accessor = accessors[2]
-            face_count = index_accessor.get("count", 0) // 3
+        meshes = gltf_json.get("meshes", [])
+        if meshes and "primitives" in meshes[0] and meshes[0]["primitives"]:
+            idx_accessor_id = meshes[0]["primitives"][0].get("indices")
+            if idx_accessor_id is not None and idx_accessor_id < len(accessors):
+                face_count = accessors[idx_accessor_id].get("count", 0) // 3
+        if face_count == 0 and len(accessors) > 2:
+            face_count = accessors[-1].get("count", 0) // 3
 
         # Chunk 1: BIN
         chunk1_header = f.read(8)
@@ -146,20 +150,23 @@ def generate_metric_mesh_glb(
     scale_factor: float = 1.0
 ) -> Dict[str, Any]:
     """
-    Generates a genuine compliant binary GLB mesh from reconstructed spatial points.
-    Extracts 3D coordinates, applies metric scale factor, computes bounding geometry,
-    normals, and packages a valid binary glTF 2.0 container.
+    Generates a genuine compliant binary GLB surface mesh from reconstructed spatial points.
+    Applies 3D Alpha-Shape / Concave Hull triangulation on real reconstructed points,
+    calculates physical surface normals, applies calibrated metric scaling, and produces
+    a compliant glTF 2.0 binary container.
+    STRICTLY NON-SYNTHETIC: Vertices are direct reconstructed points, not a bounding box cuboid.
     """
-    logger.info(f"Extracting metric collision GLB mesh to: {output_glb} (scale_factor={scale_factor})")
+    logger.info(f"Extracting true metric surface GLB mesh to: {output_glb} (scale_factor={scale_factor})")
     os.makedirs(os.path.dirname(output_glb), exist_ok=True)
 
-    # 1. Gather 3D points from sparse reconstruction (check points3D.txt/ply across root and sub-models)
+    # 1. Gather 3D points from sparse/dense reconstruction
     points: List[Tuple[float, float, float]] = []
     candidate_paths = [
         os.path.join(colmap_sparse_dir, "0", "points3D.txt"),
         os.path.join(colmap_sparse_dir, "points3D.txt"),
         os.path.join(colmap_sparse_dir, "0", "sparse_points.ply"),
         os.path.join(colmap_sparse_dir, "sparse_points.ply"),
+        os.path.join(colmap_sparse_dir, "fused.ply"),
     ]
 
     for p_path in candidate_paths:
@@ -180,7 +187,7 @@ def generate_metric_mesh_glb(
                 if len(points) >= 8:
                     break
             except Exception as e:
-                logger.warning(f"Could not parse candidate sparse points at {p_path}: {e}")
+                logger.warning(f"Could not parse candidate points at {p_path}: {e}")
 
     # STRICT INVARIANT: Never synthesize a fake room. Fail explicitly if geometry was not reconstructed.
     if len(points) < 8:
@@ -195,66 +202,130 @@ def generate_metric_mesh_glb(
     if abs(scale_factor - 1.0) > 1e-5:
         points = [(p[0] * scale_factor, p[1] * scale_factor, p[2] * scale_factor) for p in points]
 
-    # 2. Build vertices, normals, and triangulated faces from genuine point cloud boundaries
-    min_x = min(p[0] for p in points)
-    max_x = max(p[0] for p in points)
-    min_y = min(p[1] for p in points)
-    max_y = max(p[1] for p in points)
-    min_z = min(p[2] for p in points)
-    max_z = max(p[2] for p in points)
+    # 2. Genuine Surface Reconstruction via 3D Alpha Shape / Concave Hull
+    import numpy as np
+    from scipy.spatial import Delaunay, ConvexHull, distance
+    from collections import Counter
 
-    # Form a complete 6-plane enclosure derived strictly from reconstructed points
-    vertices = [
-        # Floor (y = min_y)
-        (min_x, min_y, min_z), (max_x, min_y, min_z), (max_x, min_y, max_z), (min_x, min_y, max_z),
-        # Ceiling (y = max_y)
-        (min_x, max_y, min_z), (max_x, max_y, min_z), (max_x, max_y, max_z), (min_x, max_y, max_z),
-        # Back wall (z = min_z)
-        (min_x, min_y, min_z), (max_x, min_y, min_z), (max_x, max_y, min_z), (min_x, max_y, min_z),
-        # Front wall (z = max_z)
-        (min_x, min_y, max_z), (max_x, min_y, max_z), (max_x, max_y, max_z), (min_x, max_y, max_z),
-        # Left wall (x = min_x)
-        (min_x, min_y, min_z), (min_x, min_y, max_z), (min_x, max_y, max_z), (min_x, max_y, min_z),
-        # Right wall (x = max_x)
-        (max_x, min_y, min_z), (max_x, min_y, max_z), (max_x, max_y, max_z), (max_x, max_y, min_z),
-    ]
+    pts_arr = np.array(points, dtype=np.float32)
+    # Remove duplicates
+    unique_pts = np.unique(pts_arr, axis=0)
 
-    normals = [
-        # Floor up
-        (0.0, 1.0, 0.0), (0.0, 1.0, 0.0), (0.0, 1.0, 0.0), (0.0, 1.0, 0.0),
-        # Ceiling down
-        (0.0, -1.0, 0.0), (0.0, -1.0, 0.0), (0.0, -1.0, 0.0), (0.0, -1.0, 0.0),
-        # Back wall forward
-        (0.0, 0.0, 1.0), (0.0, 0.0, 1.0), (0.0, 0.0, 1.0), (0.0, 0.0, 1.0),
-        # Front wall backward
-        (0.0, 0.0, -1.0), (0.0, 0.0, -1.0), (0.0, 0.0, -1.0), (0.0, 0.0, -1.0),
-        # Left wall right
-        (1.0, 0.0, 0.0), (1.0, 0.0, 0.0), (1.0, 0.0, 0.0), (1.0, 0.0, 0.0),
-        # Right wall left
-        (-1.0, 0.0, 0.0), (-1.0, 0.0, 0.0), (-1.0, 0.0, 0.0), (-1.0, 0.0, 0.0),
-    ]
+    if len(unique_pts) < 4:
+        return {
+            "success": False,
+            "error_code": "DEGENERATE_POINT_CLOUD",
+            "message": "Reconstructed points are coplanar or degenerate (<4 unique spatial coordinates)."
+        }
 
-    indices = [
-        0, 1, 2,  0, 2, 3,        # floor
-        4, 6, 5,  4, 7, 6,        # ceiling
-        8, 10, 9, 8, 11, 10,      # back wall
-        12, 13, 14, 12, 14, 15,   # front wall
-        16, 17, 18, 16, 18, 19,   # left wall
-        20, 22, 21, 20, 23, 22,   # right wall
-    ]
+    boundary_triangles = []
+    try:
+        tri = Delaunay(unique_pts)
+        sample_subset = unique_pts[:min(len(unique_pts), 300)]
+        dists = distance.pdist(sample_subset)
+        med_dist = float(np.median(dists)) if len(dists) > 0 else 1.0
+        alpha = max(med_dist * 2.2, 1.2)
+
+        tetra_pts = unique_pts[tri.simplices] # (N, 4, 3)
+        A = tetra_pts[:, 0]
+        B = tetra_pts[:, 1]
+        C = tetra_pts[:, 2]
+        D = tetra_pts[:, 3]
+
+        a = A - D
+        b = B - D
+        c = C - D
+
+        b_cross_c = np.cross(b, c)
+        c_cross_a = np.cross(c, a)
+        a_cross_b = np.cross(a, b)
+
+        det = 2.0 * np.abs(np.einsum('ij,ij->i', a, b_cross_c))
+        valid_det = det > 1e-6
+
+        a_sq = np.sum(a*a, axis=1, keepdims=True)
+        b_sq = np.sum(b*b, axis=1, keepdims=True)
+        c_sq = np.sum(c*c, axis=1, keepdims=True)
+
+        num = a_sq * b_cross_c + b_sq * c_cross_a + c_sq * a_cross_b
+        R = np.full(len(tri.simplices), np.inf)
+        R[valid_det] = np.linalg.norm(num[valid_det], axis=1) / det[valid_det]
+
+        valid_tetra = np.where(R <= alpha)[0]
+        faces = []
+        for s_idx in valid_tetra:
+            s = tri.simplices[s_idx]
+            for i in range(4):
+                faces.append(tuple(sorted([int(s[j]) for j in range(4) if j != i])))
+
+        counts = Counter(faces)
+        boundary_triangles = [f for f, cnt in counts.items() if cnt == 1]
+    except Exception as alpha_err:
+        logger.warning(f"Alpha shape extraction note: {alpha_err}, falling back to geometric hull boundary.")
+
+    if len(boundary_triangles) < 4:
+        hull = ConvexHull(unique_pts)
+        boundary_triangles = [tuple(int(x) for x in s) for s in hull.simplices]
+
+    # Re-orient triangles outward from point cloud centroid
+    centroid = np.mean(unique_pts, axis=0)
+    oriented_triangles = []
+    for tri_indices in boundary_triangles:
+        i0, i1, i2 = tri_indices
+        v0, v1, v2 = unique_pts[i0], unique_pts[i1], unique_pts[i2]
+        tri_center = (v0 + v1 + v2) / 3.0
+        face_normal = np.cross(v1 - v0, v2 - v0)
+        norm_len = np.linalg.norm(face_normal)
+        if norm_len > 1e-6:
+            face_normal = face_normal / norm_len
+            # Outward check: dot product with (tri_center - centroid) should be positive
+            if np.dot(tri_center - centroid, face_normal) < 0:
+                oriented_triangles.append((i0, i2, i1)) # flip winding
+            else:
+                oriented_triangles.append((i0, i1, i2))
+        else:
+            oriented_triangles.append((i0, i1, i2))
+
+    # Map referenced vertices
+    used_indices = sorted(list(set(idx for t in oriented_triangles for idx in t)))
+    old_to_new = {old_idx: new_idx for new_idx, old_idx in enumerate(used_indices)}
+    mesh_vertices = [tuple(float(x) for x in unique_pts[idx]) for idx in used_indices]
+    mesh_indices = [old_to_new[idx] for t in oriented_triangles for idx in t]
+
+    # Compute smoothed vertex normals
+    vertex_normals = np.zeros((len(mesh_vertices), 3), dtype=np.float32)
+    for i in range(0, len(mesh_indices), 3):
+        i0, i1, i2 = mesh_indices[i], mesh_indices[i+1], mesh_indices[i+2]
+        v0 = np.array(mesh_vertices[i0])
+        v1 = np.array(mesh_vertices[i1])
+        v2 = np.array(mesh_vertices[i2])
+        fn = np.cross(v1 - v0, v2 - v0)
+        vertex_normals[i0] += fn
+        vertex_normals[i1] += fn
+        vertex_normals[i2] += fn
+
+    norm_lengths = np.linalg.norm(vertex_normals, axis=1, keepdims=True)
+    norm_lengths[norm_lengths < 1e-6] = 1.0
+    vertex_normals = vertex_normals / norm_lengths
+    normals_list = [tuple(float(x) for x in n) for n in vertex_normals]
 
     # 3. Serialize into glTF 2.0 Binary Buffer
     pos_bytes = bytearray()
-    for vx, vy, vz in vertices:
+    for vx, vy, vz in mesh_vertices:
         pos_bytes.extend(struct.pack("<fff", vx, vy, vz))
 
     norm_bytes = bytearray()
-    for nx, ny, nz in normals:
+    for nx, ny, nz in normals_list:
         norm_bytes.extend(struct.pack("<fff", nx, ny, nz))
 
+    use_short_indices = len(mesh_vertices) < 65535
     idx_bytes = bytearray()
-    for idx in indices:
-        idx_bytes.extend(struct.pack("<H", idx))
+    if use_short_indices:
+        for idx in mesh_indices:
+            idx_bytes.extend(struct.pack("<H", idx))
+    else:
+        for idx in mesh_indices:
+            idx_bytes.extend(struct.pack("<I", idx))
 
     # Pad each buffer to 4 bytes boundary
     def pad4(b: bytearray, pad_byte: int = 0) -> bytearray:
@@ -285,11 +356,11 @@ def generate_metric_mesh_glb(
     gltf_dict = {
         "asset": {
             "version": "2.0",
-            "generator": "Hettety Metric Spatial Engine 2.0"
+            "generator": "Hettety Metric Surface Reconstruction Engine 2.0"
         },
         "scene": 0,
         "scenes": [{"nodes": [0]}],
-        "nodes": [{"mesh": 0, "name": "ReconstructedMetricGeometry"}],
+        "nodes": [{"mesh": 0, "name": "ReconstructedSurfaceGeometry"}],
         "meshes": [{
             "name": "ArchitecturalMetricMesh",
             "primitives": [{
@@ -305,21 +376,21 @@ def generate_metric_mesh_glb(
             {
                 "bufferView": 0,
                 "componentType": 5126, # FLOAT
-                "count": len(vertices),
+                "count": len(mesh_vertices),
                 "type": "VEC3",
-                "min": [min(v[0] for v in vertices), min(v[1] for v in vertices), min(v[2] for v in vertices)],
-                "max": [max(v[0] for v in vertices), max(v[1] for v in vertices), max(v[2] for v in vertices)]
+                "min": [min(v[0] for v in mesh_vertices), min(v[1] for v in mesh_vertices), min(v[2] for v in mesh_vertices)],
+                "max": [max(v[0] for v in mesh_vertices), max(v[1] for v in mesh_vertices), max(v[2] for v in mesh_vertices)]
             },
             {
                 "bufferView": 1,
                 "componentType": 5126, # FLOAT
-                "count": len(normals),
+                "count": len(normals_list),
                 "type": "VEC3"
             },
             {
                 "bufferView": 2,
-                "componentType": 5123, # UNSIGNED_SHORT
-                "count": len(indices),
+                "componentType": 5123 if use_short_indices else 5125, # UNSIGNED_SHORT or UNSIGNED_INT
+                "count": len(mesh_indices),
                 "type": "SCALAR"
             }
         ],

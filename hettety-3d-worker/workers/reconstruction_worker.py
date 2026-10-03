@@ -132,7 +132,27 @@ class ReconstructionWorker:
 
             # Stage 6: Metric Calibration & Compression
             self._report_stage(job_id, property_id, "OPTIMIZING", 90, "Calibrating scale and generating metric GLB mesh", callback_url, api_key)
-            calib_res = calibrate_sparse_scale([], reference_anchors)
+            sparse_pts = []
+            candidate_pts_paths = [
+                os.path.join(colmap_dir, "sparse", "0", "points3D.txt"),
+                os.path.join(colmap_dir, "sparse", "points3D.txt"),
+                os.path.join(colmap_dir, "0", "points3D.txt"),
+            ]
+            for p_path in candidate_pts_paths:
+                if os.path.exists(p_path):
+                    try:
+                        with open(p_path, "r", encoding="utf-8", errors="ignore") as f:
+                            for line in f:
+                                if not line.startswith("#") and line.strip():
+                                    parts = line.split()
+                                    if len(parts) >= 4:
+                                        sparse_pts.append((float(parts[1]), float(parts[2]), float(parts[3])))
+                        if sparse_pts:
+                            break
+                    except Exception as ex:
+                        logger.debug(f"Could not read sparse points for calibration: {ex}")
+
+            calib_res = calibrate_sparse_scale(sparse_pts, reference_anchors)
             scale_factor = calib_res.get("scale_factor", 1.0)
             is_calibrated = calib_res.get("is_calibrated", False)
 

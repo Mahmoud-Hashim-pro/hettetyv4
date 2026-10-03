@@ -123,7 +123,7 @@ const RealGaussianSplatMesh: React.FC<{ cloud: ParsedGaussianCloud; activeRoom?:
   const lastSortTime = useRef(0);
 
   // Instanced billboard geometry setup (quad: 4 vertices, 6 indices)
-  const { geometry, material, positionAttr } = useMemo(() => {
+  const { geometry, material, posAttr, colorAttr, opacityAttr, scaleAttr, rotAttr } = useMemo(() => {
     const baseGeo = new THREE.InstancedBufferGeometry();
 
     // Quad vertices (-2 to +2 for 2-sigma Gaussian extent)
@@ -168,7 +168,15 @@ const RealGaussianSplatMesh: React.FC<{ cloud: ParsedGaussianCloud; activeRoom?:
       side: THREE.DoubleSide,
     });
 
-    return { geometry: baseGeo, material: mat, positionAttr: posAttr };
+    return {
+      geometry: baseGeo,
+      material: mat,
+      posAttr,
+      colorAttr,
+      opacityAttr,
+      scaleAttr,
+      rotAttr
+    };
   }, [cloud]);
 
   useFrame((state) => {
@@ -178,11 +186,10 @@ const RealGaussianSplatMesh: React.FC<{ cloud: ParsedGaussianCloud; activeRoom?:
       state.camera.position.lerp(new THREE.Vector3(tx, ty, tz), 0.05);
     }
 
-    // Depth sorting trigger every 200ms or on significant camera rotation
+    // Depth sorting trigger every 200ms: back-to-front ordering for proper alpha composition
     const now = performance.now();
-    if (now - lastSortTime.current > 250 && cloud.count <= 250000) {
+    if (now - lastSortTime.current > 200 && cloud.count <= 100000) {
       lastSortTime.current = now;
-      // Back-to-front depth sorting for proper alpha composition
       const camPos = camera.position;
       const count = cloud.count;
       const indices = new Int32Array(count);
@@ -195,6 +202,49 @@ const RealGaussianSplatMesh: React.FC<{ cloud: ParsedGaussianCloud; activeRoom?:
         const dz = cloud.positions[i * 3 + 2] - camPos.z;
         distances[i] = dx * dx + dy * dy + dz * dz;
       }
+
+      // Sort descending: largest distance first (back to front)
+      indices.sort((a, b) => distances[b] - distances[a]);
+
+      const curPos = posAttr.array as Float32Array;
+      const curCol = colorAttr.array as Float32Array;
+      const curOp = opacityAttr.array as Float32Array;
+      const curSc = scaleAttr.array as Float32Array;
+      const curRot = rotAttr.array as Float32Array;
+
+      const srcPos = cloud.positions;
+      const srcCol = cloud.colors;
+      const srcOp = cloud.opacities;
+      const srcSc = cloud.scales;
+      const srcRot = cloud.rotations;
+
+      for (let i = 0; i < count; i++) {
+        const orig = indices[i];
+        curPos[i * 3] = srcPos[orig * 3];
+        curPos[i * 3 + 1] = srcPos[orig * 3 + 1];
+        curPos[i * 3 + 2] = srcPos[orig * 3 + 2];
+
+        curCol[i * 3] = srcCol[orig * 3];
+        curCol[i * 3 + 1] = srcCol[orig * 3 + 1];
+        curCol[i * 3 + 2] = srcCol[orig * 3 + 2];
+
+        curOp[i] = srcOp[orig];
+
+        curSc[i * 3] = srcSc[orig * 3];
+        curSc[i * 3 + 1] = srcSc[orig * 3 + 1];
+        curSc[i * 3 + 2] = srcSc[orig * 3 + 2];
+
+        curRot[i * 4] = srcRot[orig * 4];
+        curRot[i * 4 + 1] = srcRot[orig * 4 + 1];
+        curRot[i * 4 + 2] = srcRot[orig * 4 + 2];
+        curRot[i * 4 + 3] = srcRot[orig * 4 + 3];
+      }
+
+      posAttr.needsUpdate = true;
+      colorAttr.needsUpdate = true;
+      opacityAttr.needsUpdate = true;
+      scaleAttr.needsUpdate = true;
+      rotAttr.needsUpdate = true;
     }
   });
 

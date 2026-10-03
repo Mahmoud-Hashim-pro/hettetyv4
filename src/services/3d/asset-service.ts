@@ -49,45 +49,40 @@ export const uploadFileToSession = async (
   file: File | Blob,
   onProgress?: (percent: number) => void
 ): Promise<string> => {
-  // If the uploadUrl is a real endpoint, attempt fetch PUT
   if (uploadUrl.startsWith('http://') || uploadUrl.startsWith('https://')) {
-    try {
-      if (typeof XMLHttpRequest !== 'undefined') {
-        return await new Promise<string>((resolve, reject) => {
-          const xhr = new XMLHttpRequest();
-          xhr.open('PUT', uploadUrl, true);
-          if (xhr.upload && onProgress) {
-            xhr.upload.onprogress = (e) => {
-              if (e.lengthComputable) {
-                onProgress(Math.round((e.loaded / e.total) * 100));
-              }
-            };
-          }
-          xhr.onload = () => {
-            if (xhr.status >= 200 && xhr.status < 300) {
-              resolve(uploadUrl);
-            } else {
-              reject(new Error(`Storage upload failed with HTTP status ${xhr.status}: ${xhr.statusText || 'Upload Rejected'}`));
+    if (typeof XMLHttpRequest !== 'undefined') {
+      return await new Promise<string>((resolve, reject) => {
+        const xhr = new XMLHttpRequest();
+        xhr.open('PUT', uploadUrl, true);
+        if (xhr.upload && onProgress) {
+          xhr.upload.onprogress = (e) => {
+            if (e.lengthComputable) {
+              onProgress(Math.round((e.loaded / e.total) * 100));
             }
           };
-          xhr.onerror = () => reject(new Error('Network error during storage asset upload.'));
-          xhr.send(file);
-        });
-      }
-    } catch (err: any) {
-      if (!uploadUrl.includes('hettety-storage-bucket')) {
-        throw err;
-      }
+        }
+        xhr.onload = () => {
+          if (xhr.status >= 200 && xhr.status < 300) {
+            resolve(uploadUrl);
+          } else {
+            reject(new Error(`Storage upload failed with HTTP status ${xhr.status}: ${xhr.statusText || 'Upload Rejected'}`));
+          }
+        };
+        xhr.onerror = () => reject(new Error('Network error during storage asset upload.'));
+        xhr.send(file);
+      });
     }
   }
 
-  // Fallback simulator for offline/dev tests
-  if (onProgress) {
-    onProgress(50);
-    await new Promise(r => setTimeout(r, 50));
-    onProgress(100);
+  // Explicit test environment handling
+  if (uploadUrl.startsWith('mock://') || process.env.NODE_ENV === 'test') {
+    if (onProgress) {
+      onProgress(100);
+    }
+    return uploadUrl;
   }
-  return uploadUrl;
+
+  throw new Error(`STORAGE_UPLOAD_FAILED: Cannot upload to unreachable endpoint: ${uploadUrl}`);
 };
 
 export const registerCaptureAsset = (asset: CaptureAsset): void => {

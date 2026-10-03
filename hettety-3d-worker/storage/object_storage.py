@@ -20,24 +20,57 @@ class ObjectStorageClient:
         os.makedirs(self.local_root, exist_ok=True)
         logger.info(f"Initialized ObjectStorageClient (provider={self.provider}, bucket={self.bucket_name}, local_root={self.local_root})")
 
+    def _is_safe_download_url(self, url: str) -> bool:
+        """Validates that a URL does not target loopback, private networks, or metadata services."""
+        import ipaddress
+        from urllib.parse import urlparse
+        try:
+            parsed = urlparse(url)
+            if parsed.scheme not in ("http", "https"):
+                return False
+            hostname = parsed.hostname
+            if not hostname:
+                return False
+            if hostname.lower() in ("localhost", "127.0.0.1", "::1", "169.254.169.254", "metadata.google.internal"):
+                return False
+            try:
+                ip = ipaddress.ip_address(hostname)
+                if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved:
+                    return False
+            except ValueError:
+                pass
+            return True
+        except Exception:
+            return False
+
     def download_capture_files(self, capture_urls: List[str], dest_dir: str) -> List[str]:
         """
         Downloads uploaded images or video keyframes into the local working directory.
+        Hardened against SSRF and oversized response payloads.
         """
         os.makedirs(dest_dir, exist_ok=True)
         local_files = []
+        MAX_FRAME_SIZE = 50 * 1024 * 1024 # 50 MB ceiling per photo
 
         for i, url in enumerate(capture_urls):
             filename = f"frame_{i:04d}.jpg"
             dest_path = os.path.join(dest_dir, filename)
 
             if url.startswith("http://") or url.startswith("https://"):
+                if not self._is_safe_download_url(url):
+                    logger.error(f"SECURITY ALERT: Blocked untrusted/private network download URL: {url}")
+                    continue
                 try:
                     import requests
-                    res = requests.get(url, timeout=30)
-                    res.raise_for_status()
-                    with open(dest_path, "wb") as f:
-                        f.write(res.content)
+                    with requests.get(url, stream=True, timeout=25) as res:
+                        res.raise_for_status()
+                        total_bytes = 0
+                        with open(dest_path, "wb") as f:
+                            for chunk in res.iter_content(chunk_size=65536):
+                                total_bytes += len(chunk)
+                                if total_bytes > MAX_FRAME_SIZE:
+                                    raise ValueError(f"Frame {url} exceeded 50MB payload limit.")
+                                f.write(chunk)
                     local_files.append(dest_path)
                 except Exception as e:
                     logger.warning(f"Failed to fetch {url}: {e}")
@@ -53,7 +86,7 @@ class ObjectStorageClient:
     def upload_file(self, local_path: str, remote_path: str) -> str:
         """
         Uploads a local artifact to the target cloud storage bucket or verified local root.
-        Verifies byte count and integrity.
+        Verifies byte count and integrity via post-upload reload/HEAD checks.
         """
         if not os.path.exists(local_path):
             raise FileNotFoundError(f"Local file does not exist: {local_path}")
@@ -73,7 +106,11 @@ class ObjectStorageClient:
                 bucket = client.bucket(self.bucket_name)
                 blob = bucket.blob(remote_path)
                 blob.upload_from_filename(local_path)
-                logger.info(f"Successfully uploaded {local_path} to gs://{self.bucket_name}/{remote_path} (size={source_size})")
+                # Post-upload verification: reload blob metadata and verify byte count
+                blob.reload()
+                if blob.size != source_size:
+                    raise IOError(f"GCS post-upload size mismatch: source={source_size}, uploaded={blob.size}")
+                logger.info(f"Successfully uploaded and verified {local_path} to gs://{self.bucket_name}/{remote_path} (size={source_size})")
                 return f"https://storage.googleapis.com/{self.bucket_name}/{remote_path}"
             except Exception as e:
                 logger.error(f"STRICT PRODUCTION FAILURE: GCS upload to gs://{self.bucket_name}/{remote_path} failed: {e}")
@@ -84,7 +121,12 @@ class ObjectStorageClient:
                 import boto3
                 s3 = boto3.client("s3")
                 s3.upload_file(local_path, self.bucket_name, remote_path)
-                logger.info(f"Successfully uploaded {local_path} to s3://{self.bucket_name}/{remote_path}")
+                # Post-upload verification: HEAD object byte check
+                head = s3.head_object(Bucket=self.bucket_name, Key=remote_path)
+                remote_size = head.get("ContentLength", 0)
+                if remote_size != source_size:
+                    raise IOError(f"S3 post-upload size mismatch: source={source_size}, uploaded={remote_size}")
+                logger.info(f"Successfully uploaded and verified {local_path} to s3://{self.bucket_name}/{remote_path}")
                 return f"https://{self.bucket_name}.s3.amazonaws.com/{remote_path}"
             except Exception as e:
                 logger.error(f"STRICT PRODUCTION FAILURE: S3 upload to s3://{self.bucket_name}/{remote_path} failed: {e}")

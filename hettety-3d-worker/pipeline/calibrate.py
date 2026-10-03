@@ -22,8 +22,12 @@ def calibrate_sparse_scale(
     reference_anchors: Optional[List[Dict[str, Any]]] = None
 ) -> Dict[str, Any]:
     """
-    Evaluates physical scale from reference anchors (LiDAR, architectural standards, AR measurements).
-    Only awards is_calibrated = True when anchors yield consistent scale with error margin <= 5.0% and confidence >= 0.90.
+    Evaluates physical scale from reference anchors (LiDAR benchmarks, surveyor markers, or measured spatial correspondences).
+    STRICT METRIC INTEGRITY:
+    - Standard architectural assumptions (e.g. door 2.15m) alone do NOT award is_calibrated = True.
+    - True metric calibration requires explicit spatial endpoints (point_a, point_b) corresponding
+      to actual reconstructed geometry, or a verified lidar_benchmark/surveyor_marker, with
+      confidence >= 0.90 and error margin <= 5.0%.
     """
     if not reference_anchors or len(reference_anchors) == 0:
         logger.info("No metric scale reference anchors provided. Model scale remains relative visual (uncalibrated).")
@@ -39,17 +43,42 @@ def calibrate_sparse_scale(
     total_weight = 0.0
     weighted_scale = 0.0
     valid_scales = []
+    has_physical_ground_truth = False
+
+    # Scene bounding check if points provided
+    scene_has_points = len(sparse_points) > 0
 
     for ref in reference_anchors:
-        measured = ref.get("measured_units", 0.0)
-        known = ref.get("known_meters", 0.0)
         ref_type = ref.get("type", "custom")
+        known = ref.get("known_meters", 0.0)
+
+        # Check for explicit 3D endpoint correspondences
+        pt_a = ref.get("point_a")
+        pt_b = ref.get("point_b")
+        if pt_a and pt_b and len(pt_a) >= 3 and len(pt_b) >= 3:
+            dx = float(pt_b[0]) - float(pt_a[0])
+            dy = float(pt_b[1]) - float(pt_a[1])
+            dz = float(pt_b[2]) - float(pt_a[2])
+            measured = math.sqrt(dx * dx + dy * dy + dz * dz)
+            has_physical_ground_truth = True
+        else:
+            measured = ref.get("measured_units", 0.0)
 
         if measured <= 0.01 or known <= 0.01:
             continue
 
         scale = known / measured
-        weight = 3.0 if ref_type == "lidar_benchmark" else 2.0 if ref_type in ("door_standard", "surveyor_marker") else 1.0
+
+        # Only LiDAR benchmarks and surveyor markers with physical measurements qualify as ground truth
+        if ref_type in ("lidar_benchmark", "surveyor_marker"):
+            weight = 4.0
+            has_physical_ground_truth = True
+        elif ref_type == "ar_survey_measurement" or (pt_a and pt_b):
+            weight = 2.5
+            has_physical_ground_truth = True
+        else:
+            # Generic architectural assumption (e.g. assumed door 2.15m without spatial ground truth)
+            weight = 0.8
 
         weighted_scale += scale * weight
         total_weight += weight
@@ -77,11 +106,17 @@ def calibrate_sparse_scale(
     base_confidence = max(0.0, 1.0 - (error_margin_percent / 15.0))
     confidence_score = min(1.0, max(0.0, base_confidence + count_bonus))
 
-    is_calibrated = (confidence_score >= 0.90) and (error_margin_percent <= 5.0)
+    # STRICT GATE: is_calibrated requires BOTH quantitative consistency (confidence >= 0.90, error <= 5%)
+    # AND actual physical ground truth (not merely assumed standard door/ceiling dimensions)
+    is_calibrated = (
+        (confidence_score >= 0.90) and
+        (error_margin_percent <= 5.0) and
+        has_physical_ground_truth
+    )
 
     logger.info(
         f"Scale calibration evaluated: scale_factor={final_scale:.4f}, confidence={confidence_score:.2f}, "
-        f"error={error_margin_percent:.1f}%, is_calibrated={is_calibrated}"
+        f"error={error_margin_percent:.1f}%, ground_truth={has_physical_ground_truth}, is_calibrated={is_calibrated}"
     )
 
     return {
@@ -91,9 +126,9 @@ def calibrate_sparse_scale(
         "error_margin_percent": round(error_margin_percent, 1),
         "reference_summary": f"{len(valid_scales)} verified anchors ({', '.join(r.get('type', 'custom') for r in reference_anchors)})",
         "disclaimer": (
-            "Calibrated 1:1 Metric Scale from verified architectural reference markers."
+            "Calibrated 1:1 Metric Scale from verified physical reference markers."
             if is_calibrated else
-            "Uncalibrated: reference discrepancy exceeded 5% tolerance threshold. Approximations only."
+            "Uncalibrated: reference discrepancy exceeded 5% tolerance or lacked verified physical ground truth."
         )
     }
 

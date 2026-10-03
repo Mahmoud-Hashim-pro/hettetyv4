@@ -25,12 +25,20 @@ def parse_colmap_reconstruction_metrics(sparse_dir: str) -> Tuple[int, int, str]
     target_dir = ""
     for c_dir in candidate_dirs:
         if os.path.exists(c_dir):
-            if any(os.path.exists(os.path.join(c_dir, f)) for f in ["images.txt", "images.bin", "cameras.bin", "cameras.txt"]):
+            if any(os.path.exists(os.path.join(c_dir, f)) for f in ["images.txt", "images.bin", "cameras.bin", "cameras.txt", "points3D.txt", "points3D.bin"]):
                 target_dir = c_dir
                 break
 
     if not target_dir:
-        return 0, 0, ""
+        return 0, 0, "", {
+            "registered_images": 0,
+            "points_count": 0,
+            "sparse_dir": "",
+            "mean_reprojection_error": 0.0,
+            "median_reprojection_error": 0.0,
+            "max_reprojection_error": 0.0,
+            "mean_track_length": 0.0
+        }
 
     # Convert binary to TXT if TXT files do not exist
     images_txt = os.path.join(target_dir, "images.txt")
@@ -60,14 +68,44 @@ def parse_colmap_reconstruction_metrics(sparse_dir: str) -> Tuple[int, int, str]
             logger.warning(f"Could not parse images.txt: {e}")
 
     points_count = 0
+    errors = []
+    track_lengths = []
     if os.path.exists(points_txt):
         try:
             with open(points_txt, "r", encoding="utf-8", errors="ignore") as f:
-                points_count = sum(1 for line in f if not line.startswith("#") and line.strip())
+                for line in f:
+                    if line.startswith("#") or not line.strip():
+                        continue
+                    parts = line.split()
+                    if len(parts) >= 8:
+                        points_count += 1
+                        try:
+                            err = float(parts[7])
+                            errors.append(err)
+                            track_len = (len(parts) - 8) // 2
+                            track_lengths.append(track_len)
+                        except ValueError:
+                            pass
         except Exception as e:
             logger.warning(f"Could not parse points3D.txt: {e}")
 
-    return registered_images, points_count, target_dir
+    mean_reproj_error = sum(errors) / len(errors) if errors else 0.0
+    sorted_errors = sorted(errors)
+    median_reproj_error = sorted_errors[len(sorted_errors)//2] if sorted_errors else 0.0
+    max_reproj_error = max(errors) if errors else 0.0
+    mean_track_length = sum(track_lengths) / len(track_lengths) if track_lengths else 0.0
+
+    metrics = {
+        "registered_images": registered_images,
+        "points_count": points_count,
+        "sparse_dir": target_dir,
+        "mean_reprojection_error": round(mean_reproj_error, 3),
+        "median_reprojection_error": round(median_reproj_error, 3),
+        "max_reprojection_error": round(max_reproj_error, 3),
+        "mean_track_length": round(mean_track_length, 2)
+    }
+
+    return registered_images, points_count, target_dir, metrics
 
 def run_sfm(image_dir: str, output_dir: str, is_video: bool = False) -> SfMResult:
     db_path = os.path.join(output_dir, "database.db")
@@ -126,8 +164,11 @@ def run_sfm(image_dir: str, output_dir: str, is_video: bool = False) -> SfMResul
     subprocess.run(cmd_mapper, check=True)
 
     # 4. Quantitative verification of registered cameras and sparse point cloud
-    registered_images, points_count, valid_sparse = parse_colmap_reconstruction_metrics(sparse_dir)
-    logger.info(f"COLMAP SfM finished: {registered_images}/{image_count} images registered, {points_count} 3D points created.")
+    registered_images, points_count, valid_sparse, metrics = parse_colmap_reconstruction_metrics(sparse_dir)
+    logger.info(
+        f"COLMAP SfM finished: {registered_images}/{image_count} images registered, {points_count} 3D points created. "
+        f"Mean error: {metrics['mean_reprojection_error']}px, Track len: {metrics['mean_track_length']}"
+    )
 
     # Strict quantitative quality gates:
     # A. Minimum registered cameras
@@ -164,11 +205,36 @@ def run_sfm(image_dir: str, output_dir: str, is_video: bool = False) -> SfMResul
             "message": f"COLMAP produced only {points_count} 3D sparse points (minimum 50 required)."
         })
 
+    # D. Mean reprojection error gate (reconstruction alignment quality)
+    if metrics["mean_reprojection_error"] > 3.0:
+        logger.error(f"High reprojection error: {metrics['mean_reprojection_error']}px > 3.0px threshold.")
+        return SfMResult({
+            "success": False,
+            "error_code": "HIGH_REPROJECTION_ERROR",
+            "registered_images": registered_images,
+            "points_count": points_count,
+            "message": f"Reconstruction alignment error is too high ({metrics['mean_reprojection_error']}px). Maximum allowed is 3.0px.",
+            **metrics
+        })
+
+    # E. Mean track length gate (multiview triangulation quality)
+    if points_count > 0 and metrics["mean_track_length"] < 2.0:
+        logger.error(f"Low track length: {metrics['mean_track_length']} < 2.0 cameras per point.")
+        return SfMResult({
+            "success": False,
+            "error_code": "SHORT_TRACK_LENGTH",
+            "registered_images": registered_images,
+            "points_count": points_count,
+            "message": f"Average camera track length ({metrics['mean_track_length']}) is insufficient for reliable 3D triangulation.",
+            **metrics
+        })
+
     return SfMResult({
         "success": True,
         "registered_images": registered_images,
         "points_count": points_count,
         "sparse_dir": valid_sparse or sparse_dir,
         "registration_ratio": round(reg_ratio, 3),
-        "total_images": image_count
+        "total_images": image_count,
+        **metrics
     })

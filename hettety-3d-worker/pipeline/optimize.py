@@ -249,11 +249,17 @@ def optimize_splat_cloud(
                 out_f.writelines(retained_lines)
 
         else:
-            # Binary PLY pruning
-            # Read binary vertices chunk by chunk
-            bytes_per_vertex = sum(4 if p[0] in ("float", "int", "uint") else 1 for p in props)
-            if bytes_per_vertex == 0:
-                bytes_per_vertex = 62
+            # Binary PLY pruning: compute exact property byte offsets
+            prop_offsets = {}
+            curr_offset = 0
+            for p_type, p_name in props:
+                prop_offsets[p_name] = (curr_offset, p_type)
+                curr_offset += 4 if p_type in ("float", "int", "uint") else 1
+            bytes_per_vertex = curr_offset if curr_offset > 0 else 62
+
+            has_opacity = "opacity" in prop_offsets
+            op_offset = prop_offsets["opacity"][0] if has_opacity else -1
+            scale_offsets = [prop_offsets[name][0] for name in prop_offsets if name.startswith("scale_")]
 
             retained_binary = bytearray()
             with open(input_ply, "rb") as f:
@@ -273,6 +279,28 @@ def optimize_splat_cloud(
                     if abs(x) > 500 or abs(y) > 500 or abs(z) > 500:
                         floaters_pruned += 1
                         continue
+
+                    # Opacity filter (sigmoid activation)
+                    if has_opacity and op_offset + 4 <= len(v_chunk):
+                        raw_op = struct.unpack_from("<f", v_chunk, op_offset)[0]
+                        try:
+                            op = 1.0 / (1.0 + math.exp(-raw_op)) if raw_op < 20 else 1.0
+                        except OverflowError:
+                            op = 0.0
+                        if op < min_opacity:
+                            floaters_pruned += 1
+                            continue
+
+                    # Scale filter (exponential scale)
+                    if scale_offsets:
+                        try:
+                            scales = [math.exp(struct.unpack_from("<f", v_chunk, s_off)[0]) for s_off in scale_offsets if s_off + 4 <= len(v_chunk)]
+                            if scales and max(scales) > max_scale:
+                                floaters_pruned += 1
+                                continue
+                        except OverflowError:
+                            floaters_pruned += 1
+                            continue
 
                     retained_binary.extend(v_chunk)
                     retained_count += 1

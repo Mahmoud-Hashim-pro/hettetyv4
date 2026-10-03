@@ -356,6 +356,37 @@ property float x
       await expect(parseGaussianSpz(buffer)).rejects.toThrow(InvalidGaussianDataError);
       await expect(parseGaussianSpz(buffer)).rejects.toThrow(/zero Gaussian primitives/i);
     });
+
+    it('strictly throws InvalidGaussianDataError when PLY coordinates are non-finite (no synthetic room fallback)', () => {
+      const nonFinitePly = `ply
+format ascii 1.0
+element vertex 2
+property float x
+property float y
+property float z
+end_header
+NaN Infinity -Infinity
+NaN NaN NaN
+`;
+      const buffer = new TextEncoder().encode(nonFinitePly).buffer;
+      expect(() => parseGaussianPly(buffer)).toThrow(InvalidGaussianDataError);
+      expect(() => parseGaussianPly(buffer)).toThrow(/CANNOT_DETERMINE_BOUNDS/i);
+    });
+
+    it('strictly throws InvalidGaussianDataError when SPZ coordinates are non-finite (no synthetic room fallback)', async () => {
+      // Buffer with SPZ1 header and NaN positions
+      const buffer = new ArrayBuffer(16 + 24);
+      const view = new DataView(buffer);
+      view.setUint8(0, 0x53); view.setUint8(1, 0x50); view.setUint8(2, 0x5a); view.setUint8(3, 0x31);
+      view.setUint32(4, 1, true); // version
+      view.setUint32(8, 1, true); // count = 1
+      view.setFloat32(16, NaN, true);
+      view.setFloat32(20, NaN, true);
+      view.setFloat32(24, NaN, true);
+
+      await expect(parseGaussianSpz(buffer)).rejects.toThrow(InvalidGaussianDataError);
+      await expect(parseGaussianSpz(buffer)).rejects.toThrow(/CANNOT_DETERMINE_BOUNDS/i);
+    });
   });
 
   describe('MeasurementTool — Metric Calibration Awareness', () => {

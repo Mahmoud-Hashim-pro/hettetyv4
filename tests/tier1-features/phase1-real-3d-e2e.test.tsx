@@ -10,6 +10,8 @@ import controlPlaneHandler, {
 import { validatePhotoCapture } from '../../src/features/reconstruction/CaptureValidator';
 import { TourViewer } from '../../src/components/3d/TourViewer';
 import { ThreeDTour } from '../../src/types/three-d-tour';
+import zlib from 'zlib';
+import { parseGaussianSpz } from '../../src/lib/3d/spz-parser';
 
 describe('Tier 1 — Phase 1: Real Property Image -> Real 3D E2E Pipeline', () => {
   const propertyId = 'prop_villa_marassi_01';
@@ -176,8 +178,8 @@ describe('Tier 1 — Phase 1: Real Property Image -> Real 3D E2E Pipeline', () =
     // -------------------------------------------------------------------------
     // Step 5: Worker Completes with Verified Cryptographic Artifacts -> READY
     // -------------------------------------------------------------------------
-    const spzSha256 = '6b5b133c7d0845d2c93ad5d0dda2b25fde2ff462b163cc005b600b78420b3062';
-    const glbSha256 = 'f3d7825616df5e6bbb761c05c306f6dff2cddfb946c8ea686fe743af83d3a1dd';
+    const spzSha256 = '1fdaf9099c029b3c69a38b61756b98f4079b0994359dea2c26c7dcaa50b8ae08';
+    const glbSha256 = '83c912855fd23f0521c7231b4631f0aba8eb578d6f6115cb8312ae575b6aa624';
 
     await controlPlaneHandler(
       {
@@ -196,14 +198,14 @@ describe('Tier 1 — Phase 1: Real Property Image -> Real 3D E2E Pipeline', () =
             gaussianSplat: {
               format: 'spz',
               url: `https://cdn.hettety.com/properties/${propertyId}/tour/scene.spz`,
-              sizeBytes: 1818,
+              sizeBytes: 16904,
               splatCount: 520,
               sha256: spzSha256,
             },
             mesh: {
               format: 'glb',
               url: `https://cdn.hettety.com/properties/${propertyId}/tour/mesh.glb`,
-              sizeBytes: 19560,
+              sizeBytes: 31444,
               vertexCount: 520,
               faceCount: 1040,
               isCalibratedMetric: true,
@@ -246,14 +248,14 @@ describe('Tier 1 — Phase 1: Real Property Image -> Real 3D E2E Pipeline', () =
         gaussianSplat: {
           format: 'spz',
           url: `https://cdn.hettety.com/properties/${propertyId}/tour/scene.spz`,
-          sizeBytes: 1818,
+          sizeBytes: 16904,
           splatCount: 520,
           sha256: spzSha256,
         },
         mesh: {
           format: 'glb',
           url: `https://cdn.hettety.com/properties/${propertyId}/tour/mesh.glb`,
-          sizeBytes: 19560,
+          sizeBytes: 31444,
           vertexCount: 520,
           faceCount: 1040,
           isCalibratedMetric: true,
@@ -266,7 +268,7 @@ describe('Tier 1 — Phase 1: Real Property Image -> Real 3D E2E Pipeline', () =
       },
       rooms: [
         { id: 'room-living', name: 'Living Room', nameAr: 'غرفة المعيشة', type: 'living_room' },
-        { id: 'room-master', name: 'Master Suite', nameAr: 'جناح الماستر', type: 'master_bedroom' },
+        { id: 'room-master', name: 'Master Suite', nameAr: 'جناح الماستر', type: 'bedroom' },
         { id: 'room-terrace', name: 'Terrace & Pool', nameAr: 'التراس والمسبح', type: 'balcony' },
       ],
     };
@@ -288,5 +290,194 @@ describe('Tier 1 — Phase 1: Real Property Image -> Real 3D E2E Pipeline', () =
     const masterBtn = screen.getByText('Master Suite');
     fireEvent.click(masterBtn);
     expect(masterBtn.closest('button')).toHaveClass('bg-emerald-600');
+  });
+
+  it('strictly rejects READY state if artifact SHA-256 is missing or invalid format', async () => {
+    let statusRes = 200;
+    let jsonRes: any = null;
+    const mockRes = {
+      status: (s: number) => {
+        statusRes = s;
+        return {
+          json: (d: any) => {
+            jsonRes = d;
+          },
+        };
+      },
+    };
+
+    controlPlaneJobs.set('job_test_hash_fail', {
+      id: 'job_test_hash_fail',
+      propertyId,
+      ownerId,
+      type: 'photos' as const,
+      status: 'PUBLISHING',
+      attemptId: 'attempt_1',
+      manifest: [],
+      createdAt: new Date().toISOString(),
+      retryCount: 0,
+    });
+
+    await controlPlaneHandler(
+      {
+        method: 'POST',
+        query: { action: 'update-stage' },
+        headers: { authorization: 'Bearer hettety-worker-secret-internal' },
+        body: {
+          jobId: 'job_test_hash_fail',
+          attemptId: 'attempt_1',
+          propertyId,
+          status: 'READY',
+          representation: {
+            gaussianSplat: {
+              format: 'spz',
+              url: `https://cdn.hettety.com/properties/${propertyId}/tour/scene.spz`,
+              splatCount: 100,
+              sha256: 'not-a-valid-64-char-hash',
+            },
+            mesh: {
+              format: 'glb',
+              url: `https://cdn.hettety.com/properties/${propertyId}/tour/mesh.glb`,
+              faceCount: 50,
+              sha256: 'f3d7825616df5e6bbb761c05c306f6dff2cddfb946c8ea686fe743af83d3a1dd',
+            },
+          },
+          bounds: { min: [0, 0, 0], max: [1, 1, 1] },
+        },
+      },
+      mockRes
+    );
+
+    expect(statusRes).toBe(422);
+    expect(jsonRes.error).toContain('ARTIFACT_VALIDATION_FAILED');
+  });
+
+  it('strictly rejects READY state if artifact URL has path traversal or invalid prefix', async () => {
+    let statusRes = 200;
+    let jsonRes: any = null;
+    const mockRes = {
+      status: (s: number) => {
+        statusRes = s;
+        return {
+          json: (d: any) => {
+            jsonRes = d;
+          },
+        };
+      },
+    };
+
+    controlPlaneJobs.set('job_test_traversal_fail', {
+      id: 'job_test_traversal_fail',
+      propertyId,
+      ownerId,
+      type: 'photos' as const,
+      status: 'PUBLISHING',
+      attemptId: 'attempt_1',
+      manifest: [],
+      createdAt: new Date().toISOString(),
+      retryCount: 0,
+    });
+
+    // Foreign domain with query param smuggling
+    await controlPlaneHandler(
+      {
+        method: 'POST',
+        query: { action: 'update-stage' },
+        headers: { authorization: 'Bearer hettety-worker-secret-internal' },
+        body: {
+          jobId: 'job_test_traversal_fail',
+          attemptId: 'attempt_1',
+          propertyId,
+          status: 'READY',
+          representation: {
+            gaussianSplat: {
+              format: 'spz',
+              url: `https://attacker.com/evil.spz?prefix=properties/${propertyId}/tour/`,
+              splatCount: 100,
+              sha256: '6b5b133c7d0845d2c93ad5d0dda2b25fde2ff462b163cc005b600b78420b3062',
+            },
+            mesh: {
+              format: 'glb',
+              url: `https://cdn.hettety.com/properties/${propertyId}/tour/mesh.glb`,
+              faceCount: 50,
+              sha256: 'f3d7825616df5e6bbb761c05c306f6dff2cddfb946c8ea686fe743af83d3a1dd',
+            },
+          },
+          bounds: { min: [0, 0, 0], max: [1, 1, 1] },
+        },
+      },
+      mockRes
+    );
+
+    expect(statusRes).toBe(422);
+    expect(jsonRes.error).toContain('ARTIFACT_VALIDATION_FAILED');
+  });
+
+  it('verifies parseGaussianSpz decodes real binary SPZ container with valid bounds and counts', async () => {
+    // Construct authentic SPZ1 container buffer: 16-byte header + 2 * 44-byte primitives
+    const rawHeader = Buffer.alloc(16);
+    rawHeader.write('SPZ1', 0, 4, 'ascii');
+    rawHeader.writeUInt32LE(1, 4); // version 1
+    rawHeader.writeUInt32LE(2, 8); // count 2
+    rawHeader.writeUInt32LE(0, 12); // flags
+
+    const prim1 = Buffer.alloc(44);
+    // pos (1.0, 2.0, 3.0)
+    prim1.writeFloatLE(1.0, 0);
+    prim1.writeFloatLE(2.0, 4);
+    prim1.writeFloatLE(3.0, 8);
+    // rgba (200, 150, 100, 255)
+    prim1.writeUInt8(200, 12);
+    prim1.writeUInt8(150, 13);
+    prim1.writeUInt8(100, 14);
+    prim1.writeUInt8(255, 15);
+    // scale log (-3.0, -3.0, -3.0)
+    prim1.writeFloatLE(-3.0, 16);
+    prim1.writeFloatLE(-3.0, 20);
+    prim1.writeFloatLE(-3.0, 24);
+    // rot (qw=1, qx=0, qy=0, qz=0)
+    prim1.writeFloatLE(1.0, 28);
+    prim1.writeFloatLE(0.0, 32);
+    prim1.writeFloatLE(0.0, 36);
+    prim1.writeFloatLE(0.0, 40);
+
+    const prim2 = Buffer.alloc(44);
+    // pos (-1.0, -2.0, -3.0)
+    prim2.writeFloatLE(-1.0, 0);
+    prim2.writeFloatLE(-2.0, 4);
+    prim2.writeFloatLE(-3.0, 8);
+    // rgba (100, 150, 200, 128)
+    prim2.writeUInt8(100, 12);
+    prim2.writeUInt8(150, 13);
+    prim2.writeUInt8(200, 14);
+    prim2.writeUInt8(128, 15);
+    // scale log (-3.0, -3.0, -3.0)
+    prim2.writeFloatLE(-3.0, 16);
+    prim2.writeFloatLE(-3.0, 20);
+    prim2.writeFloatLE(-3.0, 24);
+    // rot (qw=1, qx=0, qy=0, qz=0)
+    prim2.writeFloatLE(1.0, 28);
+    prim2.writeFloatLE(0.0, 32);
+    prim2.writeFloatLE(0.0, 36);
+    prim2.writeFloatLE(0.0, 40);
+
+    const uncompressed = Buffer.concat([rawHeader, prim1, prim2]);
+    const gzipped = zlib.gzipSync(uncompressed);
+
+    const cloud = await parseGaussianSpz(
+      gzipped.buffer.slice(gzipped.byteOffset, gzipped.byteOffset + gzipped.byteLength)
+    );
+    expect(cloud.count).toBe(2);
+    expect(cloud.positions.length).toBe(6);
+    expect(cloud.positions[0]).toBeCloseTo(1.0);
+    expect(cloud.positions[1]).toBeCloseTo(2.0);
+    expect(cloud.positions[2]).toBeCloseTo(3.0);
+    expect(cloud.positions[3]).toBeCloseTo(-1.0);
+    expect(cloud.positions[4]).toBeCloseTo(-2.0);
+    expect(cloud.positions[5]).toBeCloseTo(-3.0);
+    expect(cloud.colors[0]).toBeCloseTo(200 / 255);
+    expect(cloud.opacities[0]).toBeCloseTo(1.0);
+    expect(cloud.bounds.min).toEqual([-1.0, -2.0, -3.0]);
+    expect(cloud.bounds.max).toEqual([1.0, 2.0, 3.0]);
   });
 });

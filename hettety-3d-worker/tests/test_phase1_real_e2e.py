@@ -11,6 +11,7 @@ Validates the complete 7-stage reconstruction lifecycle on real architectural ke
 """
 
 import os
+import sys
 import shutil
 import tempfile
 import unittest
@@ -19,10 +20,13 @@ import hashlib
 import numpy as np
 from typing import Dict, Any
 
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+
 from pipeline.validate import validate_keyframes, compute_image_laplacian_variance
+from pipeline.colmap import run_sfm
 from pipeline.optimize import parse_ply_header_and_bounds, optimize_splat_cloud
 from pipeline.calibrate import calibrate_sparse_scale
-from pipeline.compress import generate_metric_mesh_glb, validate_glb_file
+from pipeline.compress import generate_metric_mesh_glb, validate_glb_file, convert_ply_to_spz
 from pipeline.publish import publish_tour_assets
 from storage.object_storage import ObjectStorageClient
 
@@ -74,55 +78,63 @@ class TestPhase1RealPropertyE2E(unittest.TestCase):
         self.assertGreater(val_res["sharpness_score"], 60)
 
         # -------------------------------------------------------------------------
-        # Stage 2: Spatial Sparse Point Cloud Generation & Camera Alignment
+        # Stage 2: Genuine Spatial Sparse Point Cloud Generation & Camera Alignment
         # -------------------------------------------------------------------------
         t1 = time.time()
-        sparse_dir = os.path.join(self.temp_dir, "sfm", "sparse", "0")
-        os.makedirs(sparse_dir, exist_ok=True)
+        sfm_output_dir = os.path.join(self.temp_dir, "sfm")
+        sfm_res = run_sfm(image_dir=self.fixture_dir, output_dir=sfm_output_dir, is_video=False)
+        stage2_duration = round(time.time() - t1, 3)
+
+        self.assertTrue(sfm_res["success"], f"SfM reconstruction failed: {sfm_res}")
+        self.assertGreaterEqual(sfm_res["registered_images"], 18, f"Too few cameras registered: {sfm_res['registered_images']}")
+        self.assertGreater(sfm_res["points_count"], 500, f"Too few 3D points created: {sfm_res['points_count']}")
+        self.assertLessEqual(sfm_res["mean_reprojection_error"], 3.0)
+
+        sparse_dir = sfm_res["sparse_dir"]
         points3d_txt = os.path.join(sparse_dir, "points3D.txt")
-        
-        # Construct dense 3D point cloud representing villa living room, terrace & hallway
+        self.assertTrue(os.path.exists(points3d_txt), f"Missing points3D.txt at {points3d_txt}")
+
+        # Parse genuine reconstructed 3D points from COLMAP
         point_cloud_coords = []
         point_map = {}
-        with open(points3d_txt, "w") as f:
-            f.write("# 3D point list: POINT3D_ID, X, Y, Z, R, G, B, ERROR, TRACK[]\n")
-            # Living room floor and walls
-            pid = 1
-            for x in np.linspace(-4.5, 4.5, 25):
-                for z in np.linspace(-3.5, 3.5, 20):
-                    coord = (round(float(x), 3), 0.0, round(float(z), 3))
-                    point_cloud_coords.append(coord)
-                    point_map[pid] = coord
-                    f.write(f"{pid} {coord[0]} {coord[1]} {coord[2]} 210 200 190 0.85 1 10 2 11\n")
-                    pid += 1
-            # Terrace threshold and perimeter walls
-            for y in np.linspace(0.0, 3.2, 10):
-                for x in [-4.5, 4.5]:
-                    coord = (round(float(x), 3), round(float(y), 3), 0.0)
-                    point_cloud_coords.append(coord)
-                    point_map[pid] = coord
-                    f.write(f"{pid} {coord[0]} {coord[1]} {coord[2]} 230 225 220 0.92 1 12 2 13\n")
-                    pid += 1
+        with open(points3d_txt, "r", encoding="utf-8", errors="ignore") as f:
+            for line in f:
+                if line.startswith("#") or not line.strip():
+                    continue
+                parts = line.split()
+                if len(parts) >= 8:
+                    try:
+                        pid = int(parts[0])
+                        coord = (float(parts[1]), float(parts[2]), float(parts[3]))
+                        point_cloud_coords.append(coord)
+                        point_map[pid] = coord
+                    except ValueError:
+                        pass
 
-        stage2_duration = round(time.time() - t1, 3)
         telemetry["stages"]["RECONSTRUCTING"] = {
             "durationSec": stage2_duration,
             "sparsePointCount": len(point_cloud_coords),
-            "cameraCount": val_res["image_count"],
+            "cameraCount": sfm_res["registered_images"],
+            "registrationRatio": sfm_res.get("registration_ratio", 1.0),
+            "meanReprojectionError": sfm_res.get("mean_reprojection_error", 0.0),
+            "meanTrackLength": sfm_res.get("mean_track_length", 0.0),
         }
-        self.assertGreater(len(point_cloud_coords), 500)
+        self.assertGreaterEqual(len(point_cloud_coords), 500)
 
         # -------------------------------------------------------------------------
         # Stage 3: Metric Scale Calibration (Using Verified Physical Ground Truth)
         # -------------------------------------------------------------------------
         t2 = time.time()
-        pt_a = point_map[1]
-        pt_b = point_map[25]
+        sorted_pids = sorted(point_map.keys())
+        pid_a = sorted_pids[0]
+        pid_b = sorted_pids[min(24, len(sorted_pids) - 1)]
+        pt_a = point_map[pid_a]
+        pt_b = point_map[pid_b]
         measured_dist = round(float(np.linalg.norm(np.array(pt_b) - np.array(pt_a))), 3)
         anchor_ref = [{
             "type": "surveyor_marker",
-            "point3d_id_a": 1,
-            "point3d_id_b": 25,
+            "point3d_id_a": pid_a,
+            "point3d_id_b": pid_b,
             "known_meters": measured_dist
         }]
         calib_res = calibrate_sparse_scale(point_cloud_coords, anchor_ref, point3d_map=point_map)
@@ -144,15 +156,21 @@ class TestPhase1RealPropertyE2E(unittest.TestCase):
         raw_ply = os.path.join(self.temp_dir, "iteration_30000.ply")
         clean_ply = os.path.join(self.temp_dir, "point_cloud_clean.ply")
         
-        # Build 3DGS PLY with opacity and spherical coordinates
+        # Build authentic 3DGS binary/ascii PLY directly from the reconstructed 3D points
+        subsample_pts = point_cloud_coords[:min(len(point_cloud_coords), 1500)]
         with open(raw_ply, "w") as f:
-            f.write(f"ply\nformat ascii 1.0\nelement vertex {len(point_cloud_coords) + 10}\n")
-            f.write("property float x\nproperty float y\nproperty float z\nproperty float opacity\nend_header\n")
-            for pt in point_cloud_coords:
-                f.write(f"{pt[0]} {pt[1]} {pt[2]} 0.88\n")
+            f.write(f"ply\nformat ascii 1.0\nelement vertex {len(subsample_pts) + 10}\n")
+            f.write("property float x\nproperty float y\nproperty float z\n")
+            f.write("property float f_dc_0\nproperty float f_dc_1\nproperty float f_dc_2\n")
+            f.write("property float opacity\n")
+            f.write("property float scale_0\nproperty float scale_1\nproperty float scale_2\n")
+            f.write("property float rot_0\nproperty float rot_1\nproperty float rot_2\nproperty float rot_3\n")
+            f.write("end_header\n")
+            for pt in subsample_pts:
+                f.write(f"{pt[0]} {pt[1]} {pt[2]} 0.35 0.30 0.25 2.5 -3.2 -3.2 -3.2 1.0 0.0 0.0 0.0\n")
             # 10 low-opacity floaters to test pruning
             for i in range(10):
-                f.write(f"{i*0.1} {i*0.1} 5.0 0.005\n")
+                f.write(f"{i*0.1} {i*0.1} 5.0 0.0 0.0 0.0 -6.0 -3.2 -3.2 -3.2 1.0 0.0 0.0 0.0\n")
 
         opt_res = optimize_splat_cloud(raw_ply, clean_ply, min_opacity=0.05)
         stage4_duration = round(time.time() - t3, 3)
@@ -163,7 +181,7 @@ class TestPhase1RealPropertyE2E(unittest.TestCase):
             "bounds": opt_res.get("bounds", {}),
         }
         self.assertTrue(opt_res["success"])
-        self.assertEqual(opt_res["splat_count"], len(point_cloud_coords))
+        self.assertEqual(opt_res["splat_count"], len(subsample_pts))
         self.assertEqual(opt_res["floaters_pruned"], 10)
         self.assertIsNotNone(opt_res["bounds"])
 
@@ -176,16 +194,14 @@ class TestPhase1RealPropertyE2E(unittest.TestCase):
         spz_file = os.path.join(dist_dir, "scene.spz")
         glb_file = os.path.join(dist_dir, "mesh.glb")
 
-        # SPZ generation
-        from pipeline.compress import convert_ply_to_spz
         convert_res = convert_ply_to_spz(clean_ply, spz_file)
         self.assertTrue(convert_res["success"])
         self.assertTrue(os.path.exists(spz_file))
         self.assertGreater(os.path.getsize(spz_file), 0)
 
-        # GLB mesh generation using Alpha-Shape surface reconstruction
+        # GLB mesh generation using Alpha-Shape surface reconstruction on real COLMAP sparse directory
         mesh_res = generate_metric_mesh_glb(sparse_dir, glb_file, scale_factor=calib_res["scale_factor"])
-        self.assertTrue(mesh_res["success"])
+        self.assertTrue(mesh_res["success"], f"GLB generation failed: {mesh_res}")
         self.assertTrue(os.path.exists(glb_file))
         self.assertGreater(mesh_res["vertex_count"], 0)
         self.assertGreater(mesh_res["face_count"], 0)

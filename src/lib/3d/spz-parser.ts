@@ -425,24 +425,27 @@ export const parseGaussianSpz = async (buffer: ArrayBuffer): Promise<ParsedGauss
   // 2. Secondary path: Decompress if gzip compressed container (starts with 0x1F 0x8B)
   let rawBuffer = buffer;
   if (bytes[0] === 0x1f && bytes[1] === 0x8b) {
-    if (typeof DecompressionStream !== 'undefined') {
+    let decompressedSuccessfully = false;
+    if (typeof DecompressionStream !== 'undefined' && typeof Blob !== 'undefined' && typeof new Blob().stream === 'function') {
       try {
         const ds = new DecompressionStream('gzip');
         const decompressedStream = new Response(new Blob([buffer]).stream().pipeThrough(ds));
         rawBuffer = await decompressedStream.arrayBuffer();
+        decompressedSuccessfully = true;
+      } catch {
+        // Fall through to Node zlib
+      }
+    }
+
+    if (!decompressedSuccessfully) {
+      try {
+        const mod = 'z' + 'lib';
+        const zlib: any = await import(/* @vite-ignore */ mod);
+        const decompressed = zlib.gunzipSync(Buffer.from(buffer));
+        rawBuffer = decompressed.buffer.slice(decompressed.byteOffset, decompressed.byteOffset + decompressed.byteLength);
+        decompressedSuccessfully = true;
       } catch (err: any) {
         throw new InvalidGaussianDataError(`Gzip decompression of SPZ failed: ${err.message}`);
-      }
-    } else {
-      if (typeof window === 'undefined') {
-        try {
-          const mod = 'z' + 'lib';
-          const zlib: any = await import(/* @vite-ignore */ mod);
-          const decompressed = zlib.gunzipSync(Buffer.from(buffer));
-          rawBuffer = decompressed.buffer.slice(decompressed.byteOffset, decompressed.byteOffset + decompressed.byteLength);
-        } catch {
-          // Treat as raw
-        }
       }
     }
   }

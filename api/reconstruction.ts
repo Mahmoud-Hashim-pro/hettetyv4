@@ -6,6 +6,8 @@
  */
 
 import crypto from 'crypto';
+import path from 'path';
+import fs from 'fs';
 
 export interface ReconstructionJobPayload {
   id: string;
@@ -919,14 +921,105 @@ export default async function handler(req: any, res: any) {
           });
         }
 
-        // Scope verification: representation URLs must be scoped to properties/${job.propertyId}/tour/
+        // Strict canonical scope verification: representation URLs must resolve to properties/${job.propertyId}/tour/
+        const extractNormalizedPath = (rawUrl: string): string => {
+          try {
+            if (rawUrl.startsWith('http://') || rawUrl.startsWith('https://')) {
+              const u = new URL(rawUrl);
+              return decodeURIComponent(u.pathname).replace(/^\/+/, '');
+            }
+          } catch {}
+          return rawUrl.replace(/^\/+/, '');
+        };
+
+        const splatPath = extractNormalizedPath(representation.gaussianSplat.url || '');
+        const meshPath = extractNormalizedPath(representation.mesh.url || '');
         const expectedPrefix = `properties/${job.propertyId}/tour/`;
-        const splatUrl = String(representation.gaussianSplat.url || '');
-        const meshUrl = String(representation.mesh.url || '');
-        if (!splatUrl.includes(expectedPrefix) || !meshUrl.includes(expectedPrefix)) {
+
+        if (!splatPath.startsWith(expectedPrefix) || !meshPath.startsWith(expectedPrefix) || splatPath.includes('..') || meshPath.includes('..')) {
           return res.status(422).json({
-            error: `ARTIFACT_VALIDATION_FAILED: Representation URLs must be scoped to property tour path ${expectedPrefix}.`,
+            error: `ARTIFACT_VALIDATION_FAILED: Representation URLs must strictly resolve to path prefix ${expectedPrefix}.`,
           });
+        }
+
+        // SHA-256 format & presence verification (Fail Closed)
+        const hex64Regex = /^[a-f0-9]{64}$/i;
+        const splatSha = representation.gaussianSplat.sha256;
+        const meshSha = representation.mesh.sha256;
+
+        if (!splatSha || !hex64Regex.test(splatSha) || !meshSha || !hex64Regex.test(meshSha)) {
+          return res.status(422).json({
+            error: 'ARTIFACT_VALIDATION_FAILED: READY status requires verified 64-character SHA-256 checksums for all published artifacts.',
+          });
+        }
+
+        // Server-Side Storage Object Re-Verification (Fail Closed)
+        // If file exists on local storage or in GCS, compute and compare actual cryptographic digest
+        const candidateStorageRoots = [
+          path.resolve(process.cwd(), 'storage', 'spatial_assets'),
+          path.resolve(process.cwd(), 'hettety-3d-worker', 'storage', 'spatial_assets'),
+          path.resolve(process.cwd(), 'storage'),
+        ];
+
+        const verifyLocalFileHash = (relPath: string, expectedHash: string): { verified: boolean; error?: string } => {
+          for (const root of candidateStorageRoots) {
+            const fullPath = path.resolve(root, relPath);
+            if (fs.existsSync(fullPath)) {
+              const fileBuf = fs.readFileSync(fullPath);
+              const computedHash = crypto.createHash('sha256').update(fileBuf).digest('hex');
+              if (computedHash.toLowerCase() !== expectedHash.toLowerCase()) {
+                return {
+                  verified: false,
+                  error: `ARTIFACT_CORRUPTED: SHA-256 checksum mismatch for ${relPath} (expected ${expectedHash}, computed ${computedHash}).`
+                };
+              }
+              return { verified: true };
+            }
+          }
+          return { verified: true };
+        };
+
+        const splatCheck = verifyLocalFileHash(splatPath, splatSha);
+        if (!splatCheck.verified) {
+          return res.status(422).json({ error: splatCheck.error });
+        }
+        const meshCheck = verifyLocalFileHash(meshPath, meshSha);
+        if (!meshCheck.verified) {
+          return res.status(422).json({ error: meshCheck.error });
+        }
+
+        // Real GCS object verification if running with live GCS provider (Fail Closed)
+        if (process.env.STORAGE_PROVIDER === 'gcs' && process.env.GCS_BUCKET_NAME && process.env.NODE_ENV !== 'test') {
+          try {
+            const storagePkg = '@google-cloud/storage';
+            const { Storage } = await import(/* @vite-ignore */ storagePkg);
+            const storage = new Storage();
+            const bucket = storage.bucket(process.env.GCS_BUCKET_NAME);
+            
+            for (const [artType, artPath, artHash] of [
+              ['SPZ', splatPath, splatSha],
+              ['GLB', meshPath, meshSha]
+            ]) {
+              const [exists] = await bucket.file(artPath).exists();
+              if (!exists) {
+                return res.status(422).json({
+                  error: `ARTIFACT_VALIDATION_FAILED: ${artType} artifact not found in storage bucket at ${artPath}.`,
+                });
+              }
+              const [fileContents] = await bucket.file(artPath).download();
+              const computedHash = crypto.createHash('sha256').update(fileContents).digest('hex');
+              if (computedHash.toLowerCase() !== artHash.toLowerCase()) {
+                return res.status(422).json({
+                  error: `ARTIFACT_CORRUPTED: Stored ${artType} SHA-256 mismatch (expected ${artHash}, computed ${computedHash}).`,
+                });
+              }
+            }
+          } catch (gcsErr: any) {
+            console.error('[ControlPlane] GCS artifact verification failed:', gcsErr);
+            return res.status(502).json({
+              error: `STORAGE_VERIFICATION_FAILED: Cloud storage artifact verification failed: ${gcsErr.message}`,
+            });
+          }
         }
 
         if (

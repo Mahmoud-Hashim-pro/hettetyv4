@@ -7,7 +7,7 @@ Optimizes matching strategy: sequential for video captures, exhaustive for <=50 
 import subprocess
 import os
 import logging
-from typing import Optional, Tuple, Dict, Any
+from typing import Optional, Tuple, Dict, Any, List
 
 logger = logging.getLogger("hettety-3d-worker.colmap")
 
@@ -15,6 +15,97 @@ class SfMResult(dict):
     """Result object supporting dictionary access and boolean truthiness."""
     def __bool__(self):
         return bool(self.get("success", False))
+
+def exec_colmap(cmd: List[str], check: bool = True) -> subprocess.CompletedProcess:
+    """
+    Executes a COLMAP command. If 'colmap' is on PATH, runs it directly.
+    Otherwise, if docker is available, runs via container 'hettety-colmap:latest'
+    with automatic directory volume mounting and path translation.
+    """
+    import shutil
+    if shutil.which("colmap"):
+        return subprocess.run(cmd, check=check, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+    if shutil.which("docker"):
+        subcommand = cmd[1] if len(cmd) > 1 else ""
+        raw_args = cmd[2:] if len(cmd) > 2 else []
+
+        path_flags = {
+            "--database_path", "--image_path", "--output_path", "--input_path",
+            "--workspace_path"
+        }
+
+        mount_map = {} # host_abs_dir -> container_dir
+        idx = 0
+        while idx < len(raw_args):
+            arg = raw_args[idx]
+            if arg in path_flags and idx + 1 < len(raw_args):
+                host_target = os.path.abspath(raw_args[idx + 1])
+                host_dir = host_target if os.path.isdir(host_target) or not os.path.splitext(host_target)[1] else os.path.dirname(host_target)
+                os.makedirs(host_dir, exist_ok=True)
+
+                matched = False
+                for h_dir in mount_map:
+                    try:
+                        if os.path.commonpath([h_dir, host_dir]) == h_dir:
+                            matched = True
+                            break
+                    except ValueError:
+                        pass
+                if not matched:
+                    c_dir = f"/mnt/vol_{len(mount_map)}"
+                    mount_map[host_dir] = c_dir
+                idx += 2
+            else:
+                idx += 1
+
+        new_args = []
+        idx = 0
+        while idx < len(raw_args):
+            arg = raw_args[idx]
+            if arg in path_flags and idx + 1 < len(raw_args):
+                new_args.append(arg)
+                host_target = os.path.abspath(raw_args[idx + 1])
+                translated = False
+                for h_dir, c_dir in mount_map.items():
+                    try:
+                        if os.path.commonpath([h_dir, host_target]) == h_dir:
+                            rel = os.path.relpath(host_target, h_dir).replace("\\", "/")
+                            c_target = f"{c_dir}/{rel}" if rel != "." else c_dir
+                            new_args.append(c_target)
+                            translated = True
+                            break
+                    except ValueError:
+                        pass
+                if not translated:
+                    new_args.append(raw_args[idx + 1])
+                idx += 2
+            else:
+                if "use_gpu" in arg and idx + 1 < len(raw_args) and raw_args[idx + 1] == "1":
+                    new_args.append(arg)
+                    new_args.append("0")
+                    idx += 2
+                else:
+                    new_args.append(arg)
+                    idx += 1
+
+        docker_cmd = ["docker", "run", "--rm"]
+        for h_dir, c_dir in mount_map.items():
+            h_dir_posix = h_dir.replace("\\", "/")
+            docker_cmd.extend(["-v", f"{h_dir_posix}:{c_dir}"])
+        docker_cmd.append("hettety-colmap:latest")
+        if subcommand:
+            docker_cmd.append(subcommand)
+        docker_cmd.extend(new_args)
+
+        proc = subprocess.run(docker_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        if check and proc.returncode != 0:
+            err = proc.stderr.decode("utf-8", errors="ignore")
+            logger.error(f"COLMAP docker run failed (exit code {proc.returncode}): {err}")
+            raise subprocess.CalledProcessError(proc.returncode, docker_cmd, output=proc.stdout, stderr=proc.stderr)
+        return proc
+
+    return subprocess.run(cmd, check=check, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
 def parse_colmap_reconstruction_metrics(sparse_dir: str) -> Tuple[int, int, str]:
     """
@@ -53,7 +144,7 @@ def parse_colmap_reconstruction_metrics(sparse_dir: str) -> Tuple[int, int, str]
                 "--output_path", target_dir,
                 "--output_type", "TXT"
             ]
-            subprocess.run(cmd_convert, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            exec_colmap(cmd_convert, check=False)
         except Exception as e:
             logger.warning(f"colmap model_converter note: {e}")
 
@@ -133,7 +224,7 @@ def run_sfm(image_dir: str, output_dir: str, is_video: bool = False) -> SfMResul
         "--ImageReader.camera_model", "OPENCV",
         "--SiftExtraction.use_gpu", "1"
     ]
-    subprocess.run(cmd_extract, check=True)
+    exec_colmap(cmd_extract, check=True)
 
     # 2. Adaptive matching: sequential for video captures or >100 images, exhaustive for photo clusters
     if is_video or image_count > 100:
@@ -151,7 +242,7 @@ def run_sfm(image_dir: str, output_dir: str, is_video: bool = False) -> SfMResul
             "--database_path", db_path,
             "--SiftMatching.use_gpu", "1"
         ]
-    subprocess.run(cmd_match, check=True)
+    exec_colmap(cmd_match, check=True)
 
     # 3. Mapper / Sparse Reconstruction
     cmd_mapper = [
@@ -161,7 +252,7 @@ def run_sfm(image_dir: str, output_dir: str, is_video: bool = False) -> SfMResul
         "--output_path", sparse_dir,
         "--Mapper.min_num_matches", "15"
     ]
-    subprocess.run(cmd_mapper, check=True)
+    exec_colmap(cmd_mapper, check=True)
 
     # 4. Quantitative verification of registered cameras and sparse point cloud
     registered_images, points_count, valid_sparse, metrics = parse_colmap_reconstruction_metrics(sparse_dir)
@@ -271,7 +362,7 @@ def run_dense_stereo(
             "--output_type", "COLMAP",
             "--max_image_size", str(max_image_size)
         ]
-        subprocess.run(cmd_undistort, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        exec_colmap(cmd_undistort, check=True)
 
         # 2. Patch Match Stereo (Photometric + Geometric depth consistency)
         logger.info("Stage 2/3: Computing dense photometric depth maps (PatchMatchStereo)...")
@@ -281,7 +372,7 @@ def run_dense_stereo(
             "--workspace_format", "COLMAP",
             "--PatchMatchStereo.geom_consistency", "true"
         ]
-        subprocess.run(cmd_stereo, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        exec_colmap(cmd_stereo, check=True)
 
         # 3. Stereo Fusion (Fusing multiview depth maps into dense 3D point cloud)
         logger.info("Stage 3/3: Fusing depth maps into dense 3D point cloud (StereoFusion)...")
@@ -292,7 +383,7 @@ def run_dense_stereo(
             "--input_type", "geometric",
             "--output_path", fused_ply
         ]
-        subprocess.run(cmd_fuse, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        exec_colmap(cmd_fuse, check=True)
 
         if not os.path.exists(fused_ply) or os.path.getsize(fused_ply) < 100:
             return {

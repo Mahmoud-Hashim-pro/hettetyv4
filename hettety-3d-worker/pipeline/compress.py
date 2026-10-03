@@ -91,6 +91,8 @@ def pack_spz_native(input_ply: str, output_spz: str) -> bool:
     Extracts real Gaussian primitives from PLY (ASCII or Binary) and packages them into
     a valid gzipped SPZ1 container format strictly compatible with Niantic specifications
     and the Three.js / WebAssembly browser parser.
+    Parses genuine positions, spherical harmonics / colors, opacity, anisotropic scales,
+    and rotation quaternions dynamically based on the PLY property schema.
     """
     import gzip
     import math
@@ -123,34 +125,177 @@ def pack_spz_native(input_ply: str, output_spz: str) -> bool:
     if vertex_count <= 0:
         return False
 
+    # Dynamic property schema parsing
+    properties = []
+    curr_offset = 0
+    for line in header_text.splitlines():
+        line = line.strip()
+        if line.startswith("property "):
+            parts = line.split()
+            if len(parts) >= 3:
+                p_type = parts[1].lower()
+                p_name = parts[2]
+                if p_type in ("float", "float32", "int", "uint", "int32", "uint32"):
+                    p_size = 4
+                elif p_type in ("double", "float64"):
+                    p_size = 8
+                elif p_type in ("short", "int16", "ushort", "uint16"):
+                    p_size = 2
+                else:
+                    p_size = 1
+                properties.append({"name": p_name, "type": p_type, "size": p_size, "offset": curr_offset})
+                curr_offset += p_size
+
+    stride = curr_offset
+    prop_map = {p["name"]: p for p in properties}
+
+    x_prop = prop_map.get("x")
+    y_prop = prop_map.get("y")
+    z_prop = prop_map.get("z")
+    if not (x_prop and y_prop and z_prop):
+        return False
+
+    fdc0 = prop_map.get("f_dc_0")
+    fdc1 = prop_map.get("f_dc_1")
+    fdc2 = prop_map.get("f_dc_2")
+    red_prop = prop_map.get("red")
+    green_prop = prop_map.get("green")
+    blue_prop = prop_map.get("blue")
+
+    op_prop = prop_map.get("opacity")
+    s0_prop = prop_map.get("scale_0")
+    s1_prop = prop_map.get("scale_1")
+    s2_prop = prop_map.get("scale_2")
+    r0_prop = prop_map.get("rot_0")
+    r1_prop = prop_map.get("rot_1")
+    r2_prop = prop_map.get("rot_2")
+    r3_prop = prop_map.get("rot_3")
+
     primitives = []
+
     if is_binary:
         raw_data = content[data_start:]
-        stride = len(raw_data) // max(1, vertex_count)
         if stride < 12:
             return False
         for i in range(vertex_count):
             off = i * stride
-            if off + 12 > len(raw_data):
+            if off + stride > len(raw_data):
                 break
-            x, y, z = struct.unpack_from("<fff", raw_data, off)
-            op = 0.85
-            if stride >= 16:
-                try:
-                    op_raw = struct.unpack_from("<f", raw_data, off + 12)[0]
-                    op = 1.0 / (1.0 + math.exp(-op_raw)) if -20 < op_raw < 20 else (1.0 if op_raw >= 20 else 0.0)
-                except Exception:
-                    pass
-            primitives.append((x, y, z, op))
+            x = struct.unpack_from("<f", raw_data, off + x_prop["offset"])[0]
+            y = struct.unpack_from("<f", raw_data, off + y_prop["offset"])[0]
+            z = struct.unpack_from("<f", raw_data, off + z_prop["offset"])[0]
+
+            # Colors (SH DC or direct RGB)
+            if fdc0 and fdc1 and fdc2:
+                r_sh = struct.unpack_from("<f", raw_data, off + fdc0["offset"])[0]
+                g_sh = struct.unpack_from("<f", raw_data, off + fdc1["offset"])[0]
+                b_sh = struct.unpack_from("<f", raw_data, off + fdc2["offset"])[0]
+                r_b = int(min(255, max(0, int((0.5 + 0.28209479 * r_sh) * 255))))
+                g_b = int(min(255, max(0, int((0.5 + 0.28209479 * g_sh) * 255))))
+                b_b = int(min(255, max(0, int((0.5 + 0.28209479 * b_sh) * 255))))
+            elif red_prop and green_prop and blue_prop:
+                if red_prop["size"] == 1:
+                    r_b = struct.unpack_from("<B", raw_data, off + red_prop["offset"])[0]
+                    g_b = struct.unpack_from("<B", raw_data, off + green_prop["offset"])[0]
+                    b_b = struct.unpack_from("<B", raw_data, off + blue_prop["offset"])[0]
+                else:
+                    rf = struct.unpack_from("<f", raw_data, off + red_prop["offset"])[0]
+                    gf = struct.unpack_from("<f", raw_data, off + green_prop["offset"])[0]
+                    bf = struct.unpack_from("<f", raw_data, off + blue_prop["offset"])[0]
+                    r_b = int(min(255, max(0, int(rf * 255 if rf <= 1.0 else rf))))
+                    g_b = int(min(255, max(0, int(gf * 255 if gf <= 1.0 else gf))))
+                    b_b = int(min(255, max(0, int(bf * 255 if bf <= 1.0 else bf))))
+            else:
+                r_b, g_b, b_b = 200, 200, 200
+
+            # Opacity
+            if op_prop:
+                raw_op = struct.unpack_from("<f", raw_data, off + op_prop["offset"])[0]
+                op_val = 1.0 / (1.0 + math.exp(-raw_op)) if -20 < raw_op < 20 else (1.0 if raw_op >= 20 else 0.0)
+                op_b = int(min(255, max(0, int(op_val * 255))))
+            else:
+                op_b = 220
+
+            # Scales (log-scale in PLY)
+            if s0_prop and s1_prop and s2_prop:
+                s0 = struct.unpack_from("<f", raw_data, off + s0_prop["offset"])[0]
+                s1 = struct.unpack_from("<f", raw_data, off + s1_prop["offset"])[0]
+                s2 = struct.unpack_from("<f", raw_data, off + s2_prop["offset"])[0]
+            else:
+                s0, s1, s2 = math.log(0.04), math.log(0.04), math.log(0.04)
+
+            # Rotation quaternion
+            if r0_prop and r1_prop and r2_prop and r3_prop:
+                q0 = struct.unpack_from("<f", raw_data, off + r0_prop["offset"])[0]
+                q1 = struct.unpack_from("<f", raw_data, off + r1_prop["offset"])[0]
+                q2 = struct.unpack_from("<f", raw_data, off + r2_prop["offset"])[0]
+                q3 = struct.unpack_from("<f", raw_data, off + r3_prop["offset"])[0]
+                norm = math.sqrt(q0 * q0 + q1 * q1 + q2 * q2 + q3 * q3) or 1.0
+                q0, q1, q2, q3 = q0 / norm, q1 / norm, q2 / norm, q3 / norm
+            else:
+                q0, q1, q2, q3 = 1.0, 0.0, 0.0, 0.0
+
+            primitives.append((x, y, z, r_b, g_b, b_b, op_b, s0, s1, s2, q0, q1, q2, q3))
     else:
+        prop_names = [p["name"] for p in properties]
+        xi = prop_names.index("x")
+        yi = prop_names.index("y")
+        zi = prop_names.index("z")
+        f0i = prop_names.index("f_dc_0") if "f_dc_0" in prop_names else -1
+        f1i = prop_names.index("f_dc_1") if "f_dc_1" in prop_names else -1
+        f2i = prop_names.index("f_dc_2") if "f_dc_2" in prop_names else -1
+        ri = prop_names.index("red") if "red" in prop_names else -1
+        gi = prop_names.index("green") if "green" in prop_names else -1
+        bi = prop_names.index("blue") if "blue" in prop_names else -1
+        opi = prop_names.index("opacity") if "opacity" in prop_names else -1
+        s0i = prop_names.index("scale_0") if "scale_0" in prop_names else -1
+        s1i = prop_names.index("scale_1") if "scale_1" in prop_names else -1
+        s2i = prop_names.index("scale_2") if "scale_2" in prop_names else -1
+        r0i = prop_names.index("rot_0") if "rot_0" in prop_names else -1
+        r1i = prop_names.index("rot_1") if "rot_1" in prop_names else -1
+        r2i = prop_names.index("rot_2") if "rot_2" in prop_names else -1
+        r3i = prop_names.index("rot_3") if "rot_3" in prop_names else -1
+
         lines = content[data_start:].decode("utf-8", errors="ignore").splitlines()
         for line in lines:
             parts = line.strip().split()
             if len(parts) >= 3:
                 try:
-                    x, y, z = float(parts[0]), float(parts[1]), float(parts[2])
-                    op = float(parts[3]) if len(parts) >= 4 else 0.85
-                    primitives.append((x, y, z, op))
+                    x, y, z = float(parts[xi]), float(parts[yi]), float(parts[zi])
+
+                    if f0i >= 0 and f1i >= 0 and f2i >= 0 and len(parts) > max(f0i, f1i, f2i):
+                        r_sh, g_sh, b_sh = float(parts[f0i]), float(parts[f1i]), float(parts[f2i])
+                        r_b = int(min(255, max(0, int((0.5 + 0.28209479 * r_sh) * 255))))
+                        g_b = int(min(255, max(0, int((0.5 + 0.28209479 * g_sh) * 255))))
+                        b_b = int(min(255, max(0, int((0.5 + 0.28209479 * b_sh) * 255))))
+                    elif ri >= 0 and gi >= 0 and bi >= 0 and len(parts) > max(ri, gi, bi):
+                        rf, gf, bf = float(parts[ri]), float(parts[gi]), float(parts[bi])
+                        r_b = int(min(255, max(0, int(rf * 255 if rf <= 1.0 else rf))))
+                        g_b = int(min(255, max(0, int(gf * 255 if gf <= 1.0 else gf))))
+                        b_b = int(min(255, max(0, int(bf * 255 if bf <= 1.0 else bf))))
+                    else:
+                        r_b, g_b, b_b = 200, 200, 200
+
+                    if opi >= 0 and len(parts) > opi:
+                        raw_op = float(parts[opi])
+                        op_val = 1.0 / (1.0 + math.exp(-raw_op)) if -20 < raw_op < 20 else (1.0 if raw_op >= 20 else (raw_op if raw_op <= 1.0 else raw_op / 255.0))
+                        op_b = int(min(255, max(0, int(op_val * 255))))
+                    else:
+                        op_b = 220
+
+                    if s0i >= 0 and s1i >= 0 and s2i >= 0 and len(parts) > max(s0i, s1i, s2i):
+                        s0, s1, s2 = float(parts[s0i]), float(parts[s1i]), float(parts[s2i])
+                    else:
+                        s0, s1, s2 = math.log(0.04), math.log(0.04), math.log(0.04)
+
+                    if r0i >= 0 and r1i >= 0 and r2i >= 0 and r3i >= 0 and len(parts) > max(r0i, r1i, r2i, r3i):
+                        q0, q1, q2, q3 = float(parts[r0i]), float(parts[r1i]), float(parts[r2i]), float(parts[r3i])
+                        norm = math.sqrt(q0 * q0 + q1 * q1 + q2 * q2 + q3 * q3) or 1.0
+                        q0, q1, q2, q3 = q0 / norm, q1 / norm, q2 / norm, q3 / norm
+                    else:
+                        q0, q1, q2, q3 = 1.0, 0.0, 0.0, 0.0
+
+                    primitives.append((x, y, z, r_b, g_b, b_b, op_b, s0, s1, s2, q0, q1, q2, q3))
                 except ValueError:
                     continue
 
@@ -161,17 +306,12 @@ def pack_spz_native(input_ply: str, output_spz: str) -> bool:
     # Build SPZ1 container buffer: 16-byte header
     header = struct.pack("<4sIII", b"SPZ1", 1, count, 0)
     body = bytearray()
-    for (x, y, z, op) in primitives:
-        r_b = int(210)
-        g_b = int(195)
-        b_b = int(180)
-        op_b = int(min(255, max(0, int(op * 255))))
-        scale_f = 0.05
+    for (x, y, z, r_b, g_b, b_b, op_b, s0, s1, s2, q0, q1, q2, q3) in primitives:
         body.extend(struct.pack("<fffBBBBfffffff",
             float(x), float(y), float(z),
             r_b, g_b, b_b, op_b,
-            scale_f, scale_f, scale_f,
-            1.0, 0.0, 0.0, 0.0
+            float(s0), float(s1), float(s2),
+            float(q0), float(q1), float(q2), float(q3)
         ))
 
     raw_spz = header + bytes(body)

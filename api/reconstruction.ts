@@ -867,19 +867,32 @@ export default async function handler(req: any, res: any) {
       }
 
       // Verify Attempt ID (Attempt Isolation — reject stale crashed workers from older attempts)
-      if (attemptId && attemptId !== job.attemptId) {
-        return res.status(409).json({
-          error: `STALE_ATTEMPT_IGNORED: Callback attempt ${attemptId} is stale. Current active attempt is ${job.attemptId}.`,
-        });
+      if (job.attemptId) {
+        if (!attemptId && process.env.NODE_ENV === 'production') {
+          return res.status(409).json({
+            error: `STALE_ATTEMPT_IGNORED: Worker callback must specify current active attemptId ${job.attemptId}.`,
+          });
+        }
+        if (attemptId && attemptId !== job.attemptId) {
+          return res.status(409).json({
+            error: `STALE_ATTEMPT_IGNORED: Callback attempt ${attemptId} is stale. Current active attempt is ${job.attemptId}.`,
+          });
+        }
       }
 
       // Enforce worker identity: lock to the first bound workerId; reject competing or mismatched workers
-      if (workerId) {
-        if (job.workerId && job.workerId !== workerId) {
+      if (job.workerId) {
+        if (!workerId && process.env.NODE_ENV === 'production') {
+          return res.status(409).json({
+            error: `WORKER_MISMATCH_IGNORED: Worker callback must specify bound workerId ${job.workerId}.`,
+          });
+        }
+        if (workerId && job.workerId !== workerId) {
           return res.status(409).json({
             error: `WORKER_MISMATCH_IGNORED: Job ${jobId} is currently assigned to worker ${job.workerId}. Callback from worker ${workerId} was rejected.`,
           });
         }
+      } else if (workerId) {
         job.workerId = workerId;
       }
 
@@ -903,21 +916,6 @@ export default async function handler(req: any, res: any) {
             error: 'ARTIFACT_VALIDATION_FAILED: READY status requires verified gaussianSplat and mesh representations.',
           });
         }
-        if (representation.gaussianSplat.format !== 'spz' || !representation.gaussianSplat.url || Number(representation.gaussianSplat.splatCount || 0) <= 0) {
-          return res.status(422).json({
-            error: 'ARTIFACT_VALIDATION_FAILED: Invalid or empty Gaussian Splatting SPZ representation.',
-          });
-        }
-        if (representation.mesh.format !== 'glb' || !representation.mesh.url || Number(representation.mesh.faceCount || 0) <= 0) {
-          return res.status(422).json({
-            error: 'ARTIFACT_VALIDATION_FAILED: Invalid Metric GLB mesh representation.',
-          });
-        }
-        if (!bounds || !bounds.min || !bounds.max || bounds.min.some((v: any) => !isFinite(v)) || bounds.max.some((v: any) => !isFinite(v))) {
-          return res.status(422).json({
-            error: 'ARTIFACT_VALIDATION_FAILED: Spatial bounds must contain finite coordinates.',
-          });
-        }
 
         // Scope verification: representation URLs must be scoped to properties/${job.propertyId}/tour/
         const expectedPrefix = `properties/${job.propertyId}/tour/`;
@@ -926,6 +924,32 @@ export default async function handler(req: any, res: any) {
         if (!splatUrl.includes(expectedPrefix) || !meshUrl.includes(expectedPrefix)) {
           return res.status(422).json({
             error: `ARTIFACT_VALIDATION_FAILED: Representation URLs must be scoped to property tour path ${expectedPrefix}.`,
+          });
+        }
+
+        if (
+          representation.gaussianSplat.format !== 'spz' ||
+          !representation.gaussianSplat.url ||
+          Number(representation.gaussianSplat.splatCount || 0) <= 0 ||
+          (representation.gaussianSplat.sizeBytes !== undefined && Number(representation.gaussianSplat.sizeBytes) <= 0)
+        ) {
+          return res.status(422).json({
+            error: 'ARTIFACT_VALIDATION_FAILED: Invalid or empty Gaussian Splatting SPZ representation.',
+          });
+        }
+        if (
+          representation.mesh.format !== 'glb' ||
+          !representation.mesh.url ||
+          Number(representation.mesh.faceCount || 0) <= 0 ||
+          (representation.mesh.sizeBytes !== undefined && Number(representation.mesh.sizeBytes) <= 0)
+        ) {
+          return res.status(422).json({
+            error: 'ARTIFACT_VALIDATION_FAILED: Invalid Metric GLB mesh representation.',
+          });
+        }
+        if (!bounds || !bounds.min || !bounds.max || bounds.min.some((v: any) => !isFinite(v)) || bounds.max.some((v: any) => !isFinite(v))) {
+          return res.status(422).json({
+            error: 'ARTIFACT_VALIDATION_FAILED: Spatial bounds must contain finite coordinates.',
           });
         }
       }

@@ -1410,6 +1410,176 @@ NaN NaN NaN
         else delete process.env.FIRESTORE_DATABASE_ID;
       }
     });
+
+    it('adversarial E2E: prevents old Attempt 1 zombie worker from publishing READY on Attempt 2 job', async () => {
+      const { default: controlPlaneHandler, controlPlaneJobs } = await import('../../api/reconstruction');
+      const testJobId = `job_adv_iso_${Date.now()}`;
+      const propId = 'prop-adv-101';
+
+      // 1. Initial Attempt 1 state
+      const initialJob = {
+        id: testJobId,
+        propertyId: propId,
+        ownerId: 'owner-adv-user',
+        type: 'photos' as const,
+        status: 'QUEUED' as const,
+        attemptId: 'attempt_1',
+        retryCount: 0,
+        manifest: [],
+        createdAt: new Date().toISOString(),
+      };
+      controlPlaneJobs.set(testJobId, initialJob);
+
+      let statusRes = 200;
+      let jsonRes: any = null;
+      const mockRes = {
+        status: (s: number) => { statusRes = s; return { json: (d: any) => { jsonRes = d; } }; },
+      };
+
+      // 2. Worker Alpha binds to Attempt 1
+      await controlPlaneHandler(
+        {
+          method: 'POST',
+          query: { action: 'update-stage' },
+          headers: { authorization: 'Bearer hettety-worker-secret-internal' },
+          body: {
+            jobId: testJobId,
+            attemptId: 'attempt_1',
+            workerId: 'worker_alpha',
+            status: 'TRAINING',
+            progress: 50,
+          },
+        },
+        mockRes
+      );
+      expect(statusRes).toBe(200);
+      expect(controlPlaneJobs.get(testJobId)?.workerId).toBe('worker_alpha');
+
+      // 3. Worker Alpha fails / crashes on Attempt 1
+      await controlPlaneHandler(
+        {
+          method: 'POST',
+          query: { action: 'update-stage' },
+          headers: { authorization: 'Bearer hettety-worker-secret-internal' },
+          body: {
+            jobId: testJobId,
+            attemptId: 'attempt_1',
+            workerId: 'worker_alpha',
+            status: 'FAILED',
+            errorCode: 'GPU_CUDA_OOM',
+            errorMessage: 'CUDA out of memory during Gaussian rasterization',
+          },
+        },
+        mockRes
+      );
+      expect(statusRes).toBe(200);
+      expect(controlPlaneJobs.get(testJobId)?.status).toBe('FAILED');
+
+      // 4. User triggers retry -> Creates Attempt 2, resets workerId
+      await controlPlaneHandler(
+        {
+          method: 'POST',
+          query: { action: 'retry' },
+          headers: { authorization: 'Bearer test-token', 'x-user-id': 'owner-adv-user' },
+          body: { jobId: testJobId },
+        },
+        mockRes
+      );
+      expect(statusRes).toBe(200);
+      expect(jsonRes.attemptId).toBe('attempt_2');
+      expect(controlPlaneJobs.get(testJobId)?.attemptId).toBe('attempt_2');
+      expect(controlPlaneJobs.get(testJobId)?.workerId).toBeUndefined();
+
+      // 5. Worker Beta claims Attempt 2
+      await controlPlaneHandler(
+        {
+          method: 'POST',
+          query: { action: 'update-stage' },
+          headers: { authorization: 'Bearer hettety-worker-secret-internal' },
+          body: {
+            jobId: testJobId,
+            attemptId: 'attempt_2',
+            workerId: 'worker_beta',
+            status: 'RECONSTRUCTING',
+            progress: 30,
+          },
+        },
+        mockRes
+      );
+      expect(statusRes).toBe(200);
+      expect(controlPlaneJobs.get(testJobId)?.workerId).toBe('worker_beta');
+
+      // 6. ADVERSARIAL ATTACK: Old dead zombie Worker Alpha from Attempt 1 tries to publish READY!
+      await controlPlaneHandler(
+        {
+          method: 'POST',
+          query: { action: 'update-stage' },
+          headers: { authorization: 'Bearer hettety-worker-secret-internal' },
+          body: {
+            jobId: testJobId,
+            attemptId: 'attempt_1', // Stale attempt!
+            workerId: 'worker_alpha',
+            status: 'READY',
+            representation: {
+              gaussianSplat: { format: 'spz', url: `https://cdn.hettety.com/properties/${propId}/tour/stale.spz`, splatCount: 100000, sizeBytes: 5000000 },
+              mesh: { format: 'glb', url: `https://cdn.hettety.com/properties/${propId}/tour/stale.glb`, faceCount: 2000, sizeBytes: 2000000 },
+            },
+            bounds: { min: [-1, -1, -1], max: [1, 1, 1] },
+          },
+        },
+        mockRes
+      );
+      expect(statusRes).toBe(409);
+      expect(jsonRes.error).toContain('STALE_ATTEMPT_IGNORED');
+
+      // 7. ADVERSARIAL ATTACK: Zombie Worker Alpha tries to guess attempt_2 but keeps its workerId worker_alpha!
+      await controlPlaneHandler(
+        {
+          method: 'POST',
+          query: { action: 'update-stage' },
+          headers: { authorization: 'Bearer hettety-worker-secret-internal' },
+          body: {
+            jobId: testJobId,
+            attemptId: 'attempt_2',
+            workerId: 'worker_alpha', // Mismatched worker!
+            status: 'READY',
+            representation: {
+              gaussianSplat: { format: 'spz', url: `https://cdn.hettety.com/properties/${propId}/tour/stale.spz`, splatCount: 100000, sizeBytes: 5000000 },
+              mesh: { format: 'glb', url: `https://cdn.hettety.com/properties/${propId}/tour/stale.glb`, faceCount: 2000, sizeBytes: 2000000 },
+            },
+            bounds: { min: [-1, -1, -1], max: [1, 1, 1] },
+          },
+        },
+        mockRes
+      );
+      expect(statusRes).toBe(409);
+      expect(jsonRes.error).toContain('WORKER_MISMATCH_IGNORED');
+
+      // 8. Legitimate Worker Beta publishes READY with attempt_2
+      await controlPlaneHandler(
+        {
+          method: 'POST',
+          query: { action: 'update-stage' },
+          headers: { authorization: 'Bearer hettety-worker-secret-internal' },
+          body: {
+            jobId: testJobId,
+            attemptId: 'attempt_2',
+            workerId: 'worker_beta',
+            status: 'READY',
+            representation: {
+              gaussianSplat: { format: 'spz', url: `https://cdn.hettety.com/properties/${propId}/tour/legit.spz`, splatCount: 250000, sizeBytes: 10000000 },
+              mesh: { format: 'glb', url: `https://cdn.hettety.com/properties/${propId}/tour/legit.glb`, faceCount: 8000, sizeBytes: 4000000 },
+            },
+            bounds: { min: [-1, -1, -1], max: [1, 1, 1] },
+          },
+        },
+        mockRes
+      );
+      expect(statusRes).toBe(200);
+      expect(controlPlaneJobs.get(testJobId)?.status).toBe('READY');
+      expect(controlPlaneJobs.get(testJobId)?.attemptId).toBe('attempt_2');
+      expect(controlPlaneJobs.get(testJobId)?.workerId).toBe('worker_beta');
+    });
   });
 });
 

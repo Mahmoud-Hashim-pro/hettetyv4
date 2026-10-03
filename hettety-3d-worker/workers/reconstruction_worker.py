@@ -9,6 +9,7 @@ import os
 import shutil
 import logging
 import argparse
+import subprocess
 from typing import Dict, Any, Optional, Tuple, List
 
 from pipeline.validate import validate_keyframes
@@ -38,6 +39,7 @@ class ReconstructionWorker:
         self.cdn_base_url = cdn_base_url
         self.storage_client = ObjectStorageClient()
         self.queue_consumer = queue_consumer
+        self.active_processes: List[subprocess.Popen] = []
         os.makedirs(self.work_dir, exist_ok=True)
 
     def is_cancelled(self, job_id: str) -> bool:
@@ -45,6 +47,29 @@ class ReconstructionWorker:
         if self.queue_consumer:
             return self.queue_consumer.is_job_cancelled(job_id)
         return False
+
+    def terminate_active_processes(self):
+        """Gracefully terminates and kills active background reconstruction subprocesses (COLMAP / 3DGS) and frees GPU memory."""
+        for p in list(self.active_processes):
+            try:
+                if p.poll() is None:
+                    logger.warning(f"Terminating subprocess PID {p.pid} due to cancellation / exit...")
+                    p.terminate()
+                    try:
+                        p.wait(timeout=2)
+                    except Exception:
+                        p.kill()
+            except Exception as e:
+                logger.warning(f"Error terminating subprocess: {e}")
+        self.active_processes.clear()
+
+        # Free GPU allocations
+        try:
+            import torch
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except ImportError:
+            pass
 
     def _report_stage(
         self,
@@ -301,6 +326,7 @@ class ReconstructionWorker:
             logger.exception(f"Fatal error in reconstruction pipeline: {e}")
             return fail("PROCESSING_ERROR", str(e))
         finally:
+            self.terminate_active_processes()
             # STRICT DISK CLEANUP: Clean up heavy raw images, COLMAP db, and intermediate models to prevent worker disk exhaustion
             try:
                 if os.path.exists(job_dir):

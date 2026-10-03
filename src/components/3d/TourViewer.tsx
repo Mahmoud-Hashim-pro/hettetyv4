@@ -6,7 +6,14 @@ import { PanoramaViewer } from './PanoramaViewer';
 import { TourControls, TourRenderMode } from './TourControls';
 import { FloorPlan } from './FloorPlan';
 import { MeasurementTool } from './MeasurementTool';
+import { RoomNavigation } from './RoomNavigation';
 import { Sparkles, Layers, Globe, Shield } from 'lucide-react';
+
+export { TourEngineProvider, useTourEngine, useTourContext } from './TourEngine';
+export { GaussianRenderer } from './GaussianRenderer';
+export { MeshRenderer } from './MeshRenderer';
+export { RoomNavigation } from './RoomNavigation';
+export { MeasurementTool } from './MeasurementTool';
 
 export interface TourViewerProps {
   tour?: ThreeDTour;
@@ -69,26 +76,17 @@ export const TourViewer: React.FC<TourViewerProps> = ({
 
         {/* Room Waypoint Navigator Tray (Top Center) */}
         {tour?.rooms && tour.rooms.length > 0 && (
-          <div className="absolute top-4 start-1/2 -translate-x-1/2 z-20 flex flex-wrap items-center justify-center gap-2 max-w-full px-4">
-            <div className="flex flex-wrap items-center gap-1.5 p-1.5 rounded-2xl bg-black/60 backdrop-blur-md border border-white/10 shadow-xl">
-              {tour.rooms.map(room => {
-                const isActive = room.id === activeRoomId;
-                return (
-                  <button
-                    key={room.id}
-                    type="button"
-                    onClick={() => setActiveRoomId(room.id)}
-                    className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer ${
-                      isActive
-                        ? 'bg-emerald-600 text-white shadow-md'
-                        : 'bg-white/10 hover:bg-white/20 text-white/80'
-                    }`}
-                  >
-                    <span>{isRtl ? (room.nameAr || room.name) : room.name}</span>
-                  </button>
-                );
-              })}
-            </div>
+          <div className="absolute top-4 start-1/2 -translate-x-1/2 z-20 flex items-center justify-center max-w-full px-4">
+            <RoomNavigation
+              rooms={tour.rooms}
+              activeRoomId={activeRoomId}
+              onSelectRoom={(id) => setActiveRoomId(id)}
+              showFloorPlan={showFloorPlan}
+              onToggleFloorPlan={() => setShowFloorPlan(!showFloorPlan)}
+              showMeasure={showMeasure}
+              onToggleMeasure={() => setShowMeasure(!showMeasure)}
+              isRtl={isRtl}
+            />
           </div>
         )}
 

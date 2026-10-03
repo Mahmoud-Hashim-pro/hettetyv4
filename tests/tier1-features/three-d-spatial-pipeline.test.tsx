@@ -21,6 +21,8 @@ import { parseGaussianPly, parseGaussianSpz, InvalidGaussianDataError } from '..
 import { extractVideoKeyframes } from '../../src/features/reconstruction/CaptureWizard';
 import { calibrateModelScale, ARCHITECTURAL_REFERENCES } from '../../src/lib/3d/metric-calibration';
 import { evaluateTourQualityGate } from '../../src/lib/3d/quality-gate';
+import { RoomNavigation } from '../../src/components/3d/RoomNavigation';
+import { useTourEngine } from '../../src/components/3d/TourEngine';
 
 describe('Tier 1 — HETTETY Real 3D Reconstruction Pipeline & Architecture', () => {
   describe('CaptureValidator — Pre-flight Quality & Overlap Checks', () => {
@@ -1579,6 +1581,207 @@ NaN NaN NaN
       expect(controlPlaneJobs.get(testJobId)?.status).toBe('READY');
       expect(controlPlaneJobs.get(testJobId)?.attemptId).toBe('attempt_2');
       expect(controlPlaneJobs.get(testJobId)?.workerId).toBe('worker_beta');
+    });
+
+    it('worker heartbeat updates lastHeartbeatAt and rejects stale/mismatched workers', async () => {
+      const { default: controlPlaneHandler, controlPlaneJobs } = await import('../../api/reconstruction');
+      const testJobId = `job_hb_${Date.now()}`;
+      const propId = 'prop-hb-101';
+
+      controlPlaneJobs.set(testJobId, {
+        id: testJobId,
+        propertyId: propId,
+        ownerId: 'owner-hb-user',
+        type: 'photos' as const,
+        status: 'RECONSTRUCTING' as const,
+        attemptId: 'attempt_active_1',
+        workerId: 'worker_active_alpha',
+        retryCount: 0,
+        manifest: [],
+        createdAt: new Date().toISOString(),
+      });
+
+      let statusRes = 200;
+      let jsonRes: any = null;
+      const mockRes = {
+        status: (s: number) => { statusRes = s; return { json: (d: any) => { jsonRes = d; } }; },
+      };
+
+      // 1. Valid heartbeat from bound worker
+      await controlPlaneHandler(
+        {
+          method: 'POST',
+          query: { action: 'heartbeat' },
+          headers: { authorization: 'Bearer hettety-worker-secret-internal' },
+          body: {
+            jobId: testJobId,
+            attemptId: 'attempt_active_1',
+            workerId: 'worker_active_alpha',
+          },
+        },
+        mockRes
+      );
+      expect(statusRes).toBe(200);
+      expect(jsonRes.success).toBe(true);
+      expect(controlPlaneJobs.get(testJobId)?.lastHeartbeatAt).toBeDefined();
+
+      // 2. Heartbeat with stale attempt rejected with 409
+      await controlPlaneHandler(
+        {
+          method: 'POST',
+          query: { action: 'heartbeat' },
+          headers: { authorization: 'Bearer hettety-worker-secret-internal' },
+          body: {
+            jobId: testJobId,
+            attemptId: 'attempt_stale_0',
+            workerId: 'worker_active_alpha',
+          },
+        },
+        mockRes
+      );
+      expect(statusRes).toBe(409);
+      expect(jsonRes.error).toContain('STALE_ATTEMPT_IGNORED');
+
+      // 3. Heartbeat with mismatched worker rejected with 409
+      await controlPlaneHandler(
+        {
+          method: 'POST',
+          query: { action: 'heartbeat' },
+          headers: { authorization: 'Bearer hettety-worker-secret-internal' },
+          body: {
+            jobId: testJobId,
+            attemptId: 'attempt_active_1',
+            workerId: 'worker_imposter_gamma',
+          },
+        },
+        mockRes
+      );
+      expect(statusRes).toBe(409);
+      expect(jsonRes.error).toContain('WORKER_MISMATCH_IGNORED');
+    });
+
+    it('stage timeout enforcement returns 408 STAGE_TIMEOUT_EXCEEDED when stage duration exceeds limit', async () => {
+      const { default: controlPlaneHandler, controlPlaneJobs } = await import('../../api/reconstruction');
+      const testJobId = `job_timeout_${Date.now()}`;
+      const propId = 'prop-timeout-101';
+
+      // VALIDATING stage limit is 5 minutes (300,000ms). We simulate an expired stage started 10 minutes ago.
+      const tenMinutesAgo = new Date(Date.now() - 10 * 60 * 1000).toISOString();
+      controlPlaneJobs.set(testJobId, {
+        id: testJobId,
+        propertyId: propId,
+        ownerId: 'owner-timeout-user',
+        type: 'photos' as const,
+        status: 'VALIDATING' as const,
+        stage: 'VALIDATING',
+        attemptId: 'attempt_to_1',
+        workerId: 'worker_to_1',
+        stageStartedAt: tenMinutesAgo,
+        retryCount: 0,
+        manifest: [],
+        createdAt: tenMinutesAgo,
+      });
+
+      let statusRes = 200;
+      let jsonRes: any = null;
+      const mockRes = {
+        status: (s: number) => { statusRes = s; return { json: (d: any) => { jsonRes = d; } }; },
+      };
+
+      await controlPlaneHandler(
+        {
+          method: 'POST',
+          query: { action: 'update-stage' },
+          headers: { authorization: 'Bearer hettety-worker-secret-internal' },
+          body: {
+            jobId: testJobId,
+            attemptId: 'attempt_to_1',
+            workerId: 'worker_to_1',
+            status: 'VALIDATING',
+            stage: 'VALIDATING',
+            progress: 25,
+          },
+        },
+        mockRes
+      );
+      expect(statusRes).toBe(408);
+      expect(jsonRes.error).toContain('STAGE_TIMEOUT_EXCEEDED');
+      expect(controlPlaneJobs.get(testJobId)?.status).toBe('FAILED');
+    });
+
+    it('fail-closed missing storage artifact verification rejects non-existent local files with 422', async () => {
+      const { default: controlPlaneHandler, controlPlaneJobs } = await import('../../api/reconstruction');
+      const testJobId = `job_missing_art_${Date.now()}`;
+      const propId = 'prop-missing-art-101';
+
+      controlPlaneJobs.set(testJobId, {
+        id: testJobId,
+        propertyId: propId,
+        ownerId: 'owner-missing-user',
+        type: 'photos' as const,
+        status: 'PUBLISHING' as const,
+        attemptId: 'attempt_art_1',
+        workerId: 'worker_art_1',
+        retryCount: 0,
+        manifest: [],
+        createdAt: new Date().toISOString(),
+      });
+
+      let statusRes = 200;
+      let jsonRes: any = null;
+      const mockRes = {
+        status: (s: number) => { statusRes = s; return { json: (d: any) => { jsonRes = d; } }; },
+      };
+
+      await controlPlaneHandler(
+        {
+          method: 'POST',
+          query: { action: 'update-stage' },
+          headers: {
+            authorization: 'Bearer hettety-worker-secret-internal',
+            'x-verify-storage-existence': 'true',
+          },
+          body: {
+            jobId: testJobId,
+            attemptId: 'attempt_art_1',
+            workerId: 'worker_art_1',
+            status: 'READY',
+            representation: {
+              gaussianSplat: { format: 'spz', url: `https://cdn.hettety.com/properties/${propId}/tour/ghost_file.spz`, splatCount: 50000, sizeBytes: 1000000, sha256: 'a'.repeat(64) },
+              mesh: { format: 'glb', url: `https://cdn.hettety.com/properties/${propId}/tour/ghost_file.glb`, faceCount: 2000, sizeBytes: 500000, sha256: 'b'.repeat(64) },
+            },
+            bounds: { min: [-1, -1, -1], max: [1, 1, 1] },
+          },
+        },
+        mockRes
+      );
+      expect(statusRes).toBe(422);
+      expect(jsonRes.error).toContain('ARTIFACT_NOT_FOUND');
+    });
+
+    it('modular 3D architecture: RoomNavigation renders and selects rooms cleanly', () => {
+      const mockRooms = [
+        { id: 'room-1', name: 'Reception Salon', nameAr: 'صالون الاستقبال', position: [0, 0, 0] as [number, number, number] },
+        { id: 'room-2', name: 'Master Suite', nameAr: 'جناح الماستر', position: [5, 0, 0] as [number, number, number] },
+      ];
+      let selectedRoom = 'room-1';
+      const onSelect = vi.fn((id: string) => { selectedRoom = id; });
+
+      const { getByText } = render(
+        <RoomNavigation
+          rooms={mockRooms}
+          activeRoomId={selectedRoom}
+          onSelectRoom={onSelect}
+          showFloorPlan={false}
+          showMeasure={false}
+        />
+      );
+
+      expect(getByText('Reception Salon')).toBeDefined();
+      expect(getByText('Master Suite')).toBeDefined();
+
+      fireEvent.click(getByText('Master Suite'));
+      expect(onSelect).toHaveBeenCalledWith('room-2');
     });
   });
 });

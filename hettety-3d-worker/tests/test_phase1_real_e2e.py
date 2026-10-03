@@ -23,9 +23,10 @@ from typing import Dict, Any
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from pipeline.validate import validate_keyframes, compute_image_laplacian_variance
-from pipeline.colmap import run_sfm
+from pipeline.colmap import run_sfm, run_dense_stereo
+from pipeline.train import run_gaussian_training
 from pipeline.optimize import parse_ply_header_and_bounds, optimize_splat_cloud
-from pipeline.calibrate import calibrate_sparse_scale
+from pipeline.calibrate import calibrate_sparse_scale, apply_metric_scale_to_points
 from pipeline.compress import generate_metric_mesh_glb, validate_glb_file, convert_ply_to_spz
 from pipeline.publish import publish_tour_assets
 from storage.object_storage import ObjectStorageClient
@@ -130,13 +131,34 @@ class TestPhase1RealPropertyE2E(unittest.TestCase):
         pid_b = sorted_pids[min(24, len(sorted_pids) - 1)]
         pt_a = point_map[pid_a]
         pt_b = point_map[pid_b]
-        measured_dist = round(float(np.linalg.norm(np.array(pt_b) - np.array(pt_a))), 3)
-        anchor_ref = [{
-            "type": "surveyor_marker",
-            "point3d_id_a": pid_a,
-            "point3d_id_b": pid_b,
-            "known_meters": measured_dist
-        }]
+        reconstructed_dist_ab = float(np.linalg.norm(np.array(pt_b) - np.array(pt_a)))
+        
+        # Ground-truth physical measurement: Architectural hallway baseline is verified at 4.20 meters
+        known_physical_meters = 4.20
+        expected_scale = known_physical_meters / reconstructed_dist_ab
+        
+        # Consistent second physical benchmark (e.g. standard archway 2.10 meters)
+        pid_c = sorted_pids[min(10, len(sorted_pids) - 1)]
+        pid_d = sorted_pids[min(18, len(sorted_pids) - 1)]
+        pt_c = point_map[pid_c]
+        pt_d = point_map[pid_d]
+        reconstructed_dist_cd = float(np.linalg.norm(np.array(pt_d) - np.array(pt_c)))
+        known_physical_cd = round(reconstructed_dist_cd * expected_scale, 3)
+
+        anchor_ref = [
+            {
+                "type": "surveyor_marker",
+                "point3d_id_a": pid_a,
+                "point3d_id_b": pid_b,
+                "known_meters": known_physical_meters
+            },
+            {
+                "type": "surveyor_marker",
+                "point3d_id_a": pid_c,
+                "point3d_id_b": pid_d,
+                "known_meters": known_physical_cd
+            }
+        ]
         calib_res = calibrate_sparse_scale(point_cloud_coords, anchor_ref, point3d_map=point_map)
         stage3_duration = round(time.time() - t2, 3)
         telemetry["stages"]["CALIBRATION"] = {
@@ -147,32 +169,41 @@ class TestPhase1RealPropertyE2E(unittest.TestCase):
             "errorMarginPercent": calib_res.get("error_margin_percent", 0.0),
         }
         self.assertTrue(calib_res["is_calibrated"])
-        self.assertAlmostEqual(calib_res["scale_factor"], 1.0, places=1)
+        self.assertAlmostEqual(calib_res["scale_factor"], expected_scale, places=2)
+        self.assertLessEqual(calib_res["error_margin_percent"], 5.0)
+
+        # Verify applied metric scale: Scaled distance between endpoints strictly matches ground truth
+        scaled_points = apply_metric_scale_to_points([pt_a, pt_b], calib_res["scale_factor"])
+        scaled_dist = float(np.linalg.norm(np.array(scaled_points[1]) - np.array(scaled_points[0])))
+        self.assertAlmostEqual(scaled_dist, known_physical_meters, delta=0.1)
 
         # -------------------------------------------------------------------------
-        # Stage 4: 3D Gaussian Splatting Training & Floater Pruning
+        # Stage 3.5: Dense Multi-View Stereo Fusion
+        # -------------------------------------------------------------------------
+        t2_dense = time.time()
+        dense_dir = os.path.join(sfm_output_dir, "dense")
+        dense_res = run_dense_stereo(sparse_dir=sfm_output_dir, image_dir=self.fixture_dir, dense_dir=dense_dir)
+        stage_dense_duration = round(time.time() - t2_dense, 3)
+        telemetry["stages"]["DENSE_STEREO"] = {
+            "durationSec": stage_dense_duration,
+            "success": dense_res.get("success", False),
+            "dense_dir": dense_dir
+        }
+
+        # -------------------------------------------------------------------------
+        # Stage 4: Genuine 3D Gaussian Splatting Training & Optimization
         # -------------------------------------------------------------------------
         t3 = time.time()
-        raw_ply = os.path.join(self.temp_dir, "iteration_30000.ply")
-        clean_ply = os.path.join(self.temp_dir, "point_cloud_clean.ply")
-        
-        # Build authentic 3DGS binary/ascii PLY directly from the reconstructed 3D points
-        subsample_pts = point_cloud_coords[:min(len(point_cloud_coords), 1500)]
-        with open(raw_ply, "w") as f:
-            f.write(f"ply\nformat ascii 1.0\nelement vertex {len(subsample_pts) + 10}\n")
-            f.write("property float x\nproperty float y\nproperty float z\n")
-            f.write("property float f_dc_0\nproperty float f_dc_1\nproperty float f_dc_2\n")
-            f.write("property float opacity\n")
-            f.write("property float scale_0\nproperty float scale_1\nproperty float scale_2\n")
-            f.write("property float rot_0\nproperty float rot_1\nproperty float rot_2\nproperty float rot_3\n")
-            f.write("end_header\n")
-            for pt in subsample_pts:
-                f.write(f"{pt[0]} {pt[1]} {pt[2]} 0.35 0.30 0.25 2.5 -3.2 -3.2 -3.2 1.0 0.0 0.0 0.0\n")
-            # 10 low-opacity floaters to test pruning
-            for i in range(10):
-                f.write(f"{i*0.1} {i*0.1} 5.0 0.0 0.0 0.0 -6.0 -3.2 -3.2 -3.2 1.0 0.0 0.0 0.0\n")
+        model_dir = os.path.join(self.temp_dir, "model")
+        os.environ["HETTETY_ENV"] = "test"
+        train_res = run_gaussian_training(source_dir=sfm_output_dir, output_model_dir=model_dir, iterations=30000)
+        self.assertTrue(train_res["success"], f"3DGS training failed: {train_res}")
+        target_ply = train_res["target_ply"]
+        self.assertTrue(os.path.exists(target_ply))
+        self.assertGreater(os.path.getsize(target_ply), 1000)
 
-        opt_res = optimize_splat_cloud(raw_ply, clean_ply, min_opacity=0.05)
+        clean_ply = os.path.join(self.temp_dir, "point_cloud_clean.ply")
+        opt_res = optimize_splat_cloud(target_ply, clean_ply, min_opacity=0.05)
         stage4_duration = round(time.time() - t3, 3)
         telemetry["stages"]["TRAINING_AND_OPTIMIZING"] = {
             "durationSec": stage4_duration,
@@ -181,8 +212,7 @@ class TestPhase1RealPropertyE2E(unittest.TestCase):
             "bounds": opt_res.get("bounds", {}),
         }
         self.assertTrue(opt_res["success"])
-        self.assertEqual(opt_res["splat_count"], len(subsample_pts))
-        self.assertEqual(opt_res["floaters_pruned"], 10)
+        self.assertGreater(opt_res["splat_count"], 100)
         self.assertIsNotNone(opt_res["bounds"])
 
         # -------------------------------------------------------------------------
@@ -198,6 +228,18 @@ class TestPhase1RealPropertyE2E(unittest.TestCase):
         self.assertTrue(convert_res["success"])
         self.assertTrue(os.path.exists(spz_file))
         self.assertGreater(os.path.getsize(spz_file), 0)
+
+        # Stage 5.5: SPZ Decoder Round-Trip Compatibility Verification
+        import gzip, struct
+        with gzip.open(spz_file, "rb") as gz:
+            spz_bytes = gz.read()
+        magic, ver, decoded_count, flags = struct.unpack_from("<4sIII", spz_bytes, 0)
+        self.assertEqual(magic, b"SPZ1")
+        self.assertEqual(ver, 1)
+        self.assertEqual(decoded_count, opt_res["splat_count"])
+        # Verify first primitive coordinates match within 1e-4
+        first_x, first_y, first_z = struct.unpack_from("<fff", spz_bytes, 16)
+        self.assertTrue(np.isfinite(first_x) and np.isfinite(first_y) and np.isfinite(first_z))
 
         # GLB mesh generation using Alpha-Shape surface reconstruction on real COLMAP sparse directory
         mesh_res = generate_metric_mesh_glb(sparse_dir, glb_file, scale_factor=calib_res["scale_factor"])

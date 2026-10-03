@@ -35,6 +35,8 @@ export interface ReconstructionJobPayload {
   errorMessage?: string;
   completedAt?: string;
   updatedAt?: string;
+  lastHeartbeatAt?: string;
+  stageStartedAt?: string;
   representation?: {
     gaussianSplat?: {
       format: string;
@@ -79,6 +81,17 @@ export const ALLOWED_STAGE_TRANSITIONS: Record<string, string[]> = {
   'READY': [],
   'FAILED': ['QUEUED'], // Retried
   'CANCELLED': ['QUEUED'], // Retried
+};
+
+/**
+ * Stage-specific timeouts in milliseconds
+ */
+export const STAGE_TIMEOUTS_MS: Record<string, number> = {
+  VALIDATING: 5 * 60 * 1000,
+  RECONSTRUCTING: 45 * 60 * 1000,
+  TRAINING: 90 * 60 * 1000,
+  OPTIMIZING: 15 * 60 * 1000,
+  PUBLISHING: 10 * 60 * 1000,
 };
 
 let adminDbInstance: any = null;
@@ -824,6 +837,51 @@ export default async function handler(req: any, res: any) {
       });
     }
 
+    // 4.5 Action: HEARTBEAT (Worker keepalive)
+    if (action === 'heartbeat') {
+      const workerSecret = getWorkerSharedSecret();
+      const authHeader = req.headers?.authorization || req.headers?.Authorization || '';
+      const providedSecret = authHeader.replace(/^Bearer\s+/i, '').trim();
+
+      if (process.env.NODE_ENV !== 'test' && providedSecret !== workerSecret) {
+        return res.status(401).json({ error: 'UNAUTHORIZED: Invalid or missing worker secret token.' });
+      }
+
+      const { jobId, attemptId, workerId } = req.body;
+      if (!jobId) {
+        return res.status(400).json({ error: 'INVALID_REQUEST: jobId is required.' });
+      }
+
+      const job = await getJobFromFirestoreOrMemory(jobId);
+      if (!job) {
+        return res.status(404).json({ error: `JOB_NOT_FOUND: Job ${jobId} does not exist.` });
+      }
+
+      if (['READY', 'CANCELLED'].includes(job.status)) {
+        return res.status(409).json({ error: `TERMINAL_STATE_LOCKED: Job ${jobId} is in ${job.status}.` });
+      }
+
+      if (job.attemptId && attemptId && job.attemptId !== attemptId) {
+        return res.status(409).json({ error: `STALE_ATTEMPT_IGNORED: Stale attempt ${attemptId}.` });
+      }
+
+      if (job.workerId && workerId && job.workerId !== workerId) {
+        return res.status(409).json({ error: `WORKER_MISMATCH_IGNORED: Callback from mismatched worker ${workerId}.` });
+      }
+
+      const nowIso = new Date().toISOString();
+      job.lastHeartbeatAt = nowIso;
+      job.updatedAt = nowIso;
+      await persistJobToFirestore(job);
+
+      return res.status(200).json({
+        success: true,
+        jobId: job.id,
+        attemptId: job.attemptId,
+        lastHeartbeatAt: job.lastHeartbeatAt,
+      });
+    }
+
     // 5. Action: UPDATE STAGE (Worker Status & Completion Webhook with Attempt Isolation & State Machine)
     if (action === 'update-stage' || action === 'worker-callback') {
       const workerSecret = getWorkerSharedSecret();
@@ -903,6 +961,26 @@ export default async function handler(req: any, res: any) {
       const currentStatus = job.status;
       const targetStatus = (status || '').toUpperCase();
 
+      // Stage Timeout Enforcing: If current stage exceeded timeout and not explicitly failing/cancelling
+      if (job.stageStartedAt && currentStatus in STAGE_TIMEOUTS_MS && targetStatus !== 'FAILED' && targetStatus !== 'CANCELLED') {
+        const elapsedMs = Date.now() - new Date(job.stageStartedAt).getTime();
+        const maxAllowedMs = STAGE_TIMEOUTS_MS[currentStatus];
+        if (elapsedMs > maxAllowedMs + 5000) {
+          job.status = 'FAILED';
+          job.errorCode = `${currentStatus}_TIMEOUT`;
+          job.errorMessage = `Job exceeded allowed timeout for stage ${currentStatus} (${Math.round(elapsedMs / 1000)}s > ${maxAllowedMs / 1000}s).`;
+          job.completedAt = new Date().toISOString();
+          job.updatedAt = new Date().toISOString();
+          await persistJobToFirestore(job);
+          return res.status(408).json({
+            error: `STAGE_TIMEOUT_EXCEEDED: ${job.errorMessage}`,
+            errorCode: job.errorCode,
+            jobId: job.id,
+            status: 'FAILED',
+          });
+        }
+      }
+
       // State machine validation
       if (targetStatus && targetStatus !== currentStatus) {
         const allowedTransitions = ALLOWED_STAGE_TRANSITIONS[currentStatus] || [];
@@ -911,6 +989,7 @@ export default async function handler(req: any, res: any) {
             error: `INVALID_STATE_TRANSITION: Cannot transition from ${currentStatus} to ${targetStatus}.`,
           });
         }
+        job.stageStartedAt = new Date().toISOString();
       }
 
       // Server-Side READY Validation before accepting READY status
@@ -962,9 +1041,11 @@ export default async function handler(req: any, res: any) {
         ];
 
         const verifyLocalFileHash = (relPath: string, expectedHash: string): { verified: boolean; error?: string } => {
+          let found = false;
           for (const root of candidateStorageRoots) {
             const fullPath = path.resolve(root, relPath);
             if (fs.existsSync(fullPath)) {
+              found = true;
               const fileBuf = fs.readFileSync(fullPath);
               const computedHash = crypto.createHash('sha256').update(fileBuf).digest('hex');
               if (computedHash.toLowerCase() !== expectedHash.toLowerCase()) {
@@ -975,6 +1056,18 @@ export default async function handler(req: any, res: any) {
               }
               return { verified: true };
             }
+          }
+
+          // Strict fail-closed: If running in local storage mode, production, or if storage existence check is enforced, missing file is an error
+          const enforceStorageCheck = process.env.STORAGE_PROVIDER === 'local' ||
+            process.env.NODE_ENV === 'production' ||
+            req.headers?.['x-verify-storage-existence'] === 'true';
+
+          if (enforceStorageCheck && !found) {
+            return {
+              verified: false,
+              error: `ARTIFACT_NOT_FOUND: Spatial asset ${relPath} was not found on storage disk.`
+            };
           }
           return { verified: true };
         };
@@ -1006,8 +1099,15 @@ export default async function handler(req: any, res: any) {
                   error: `ARTIFACT_VALIDATION_FAILED: ${artType} artifact not found in storage bucket at ${artPath}.`,
                 });
               }
-              const [fileContents] = await bucket.file(artPath).download();
-              const computedHash = crypto.createHash('sha256').update(fileContents).digest('hex');
+              // Stream hashing to prevent memory exhaustion on large 200MB-500MB spatial assets
+              const hash = crypto.createHash('sha256');
+              const readStream = bucket.file(artPath).createReadStream();
+              await new Promise<void>((resolve, reject) => {
+                readStream.on('data', (chunk: Buffer) => hash.update(chunk));
+                readStream.on('end', () => resolve());
+                readStream.on('error', (err: any) => reject(err));
+              });
+              const computedHash = hash.digest('hex');
               if (computedHash.toLowerCase() !== artHash.toLowerCase()) {
                 return res.status(422).json({
                   error: `ARTIFACT_CORRUPTED: Stored ${artType} SHA-256 mismatch (expected ${artHash}, computed ${computedHash}).`,

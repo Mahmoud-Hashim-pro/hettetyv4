@@ -41,12 +41,58 @@ class ReconstructionWorker:
         self.queue_consumer = queue_consumer
         self.active_processes: List[subprocess.Popen] = []
         os.makedirs(self.work_dir, exist_ok=True)
+        self.cleanup_orphan_workspaces(max_age_hours=2.0)
+
+    def cleanup_orphan_workspaces(self, max_age_hours: float = 2.0):
+        """Scans work directory on startup and removes stale orphaned workspaces older than threshold."""
+        try:
+            import time
+            now = time.time()
+            max_age_sec = max_age_hours * 3600
+            for entry in os.listdir(self.work_dir):
+                full_path = os.path.join(self.work_dir, entry)
+                if os.path.isdir(full_path):
+                    mtime = os.path.getmtime(full_path)
+                    if now - mtime > max_age_sec:
+                        logger.info(f"Removing abandoned orphan workspace: {full_path}")
+                        shutil.rmtree(full_path, ignore_errors=True)
+        except Exception as e:
+            logger.warning(f"Error during orphan workspace cleanup: {e}")
 
     def is_cancelled(self, job_id: str) -> bool:
         """Polls cancellation status from control plane / Redis."""
         if self.queue_consumer:
             return self.queue_consumer.is_job_cancelled(job_id)
         return False
+
+    def _start_heartbeat(self, job_id: str, attempt_id: str, worker_id: str, callback_url: str, api_key: str, interval_sec: float = 15.0):
+        """Launches a background daemon thread that periodically refreshes the job lease and heartbeats control plane."""
+        import threading
+        stop_event = threading.Event()
+
+        def heartbeat_loop():
+            while not stop_event.wait(timeout=interval_sec):
+                if callback_url and not callback_url.startswith("mock://"):
+                    try:
+                        import requests
+                        payload = {
+                            "jobId": job_id,
+                            "attemptId": attempt_id,
+                            "workerId": worker_id,
+                            "action": "heartbeat"
+                        }
+                        requests.post(callback_url, json=payload, headers={"Authorization": f"Bearer {api_key}"}, timeout=5)
+                    except Exception as ex:
+                        logger.debug(f"Heartbeat note for {job_id}: {ex}")
+                if self.queue_consumer and hasattr(self.queue_consumer, "heartbeat"):
+                    try:
+                        self.queue_consumer.heartbeat(job_id)
+                    except Exception:
+                        pass
+
+        t = threading.Thread(target=heartbeat_loop, daemon=True)
+        t.start()
+        return stop_event
 
     def terminate_active_processes(self):
         """Gracefully terminates and kills active background reconstruction subprocesses (COLMAP / 3DGS) and frees GPU memory."""
@@ -143,12 +189,16 @@ class ReconstructionWorker:
 
         logger.info(f"==> Starting Reconstruction Pipeline for Job {job_id} (Property: {property_id}, is_video={is_video})")
 
+        heartbeat_stop = None
         try:
             # Check pre-flight cancellation
             if self.is_cancelled(job_id):
                 logger.info(f"Job {job_id} was cancelled before starting. Aborting.")
                 report("CANCELLED", 0, "Job cancelled by user")
                 return {"status": "cancelled", "jobId": job_id, "propertyId": property_id}
+
+            # Start background heartbeat daemon for this attempt
+            heartbeat_stop = self._start_heartbeat(job_id, attempt_id or "attempt_1", worker_id, callback_url, api_key)
 
             # Stage 1: Download captures
             report("UPLOADING", 10, "Downloading capture keyframes")
@@ -323,9 +373,25 @@ class ReconstructionWorker:
             return pub_res
 
         except Exception as e:
+            err_str = str(e).lower()
+            if "out of memory" in err_str or "cuda error: out of memory" in err_str:
+                logger.error(f"CUDA GPU Out-Of-Memory encountered for job {job_id}: {e}")
+                try:
+                    import torch
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
+                except Exception:
+                    pass
+                return fail("GPU_OUT_OF_MEMORY", f"Reconstruction failed: GPU memory exhausted (CUDA OOM): {e}")
+
             logger.exception(f"Fatal error in reconstruction pipeline: {e}")
             return fail("PROCESSING_ERROR", str(e))
         finally:
+            if heartbeat_stop:
+                try:
+                    heartbeat_stop.set()
+                except Exception:
+                    pass
             self.terminate_active_processes()
             # STRICT DISK CLEANUP: Clean up heavy raw images, COLMAP db, and intermediate models to prevent worker disk exhaustion
             try:

@@ -21,7 +21,11 @@ class ObjectStorageClient:
         logger.info(f"Initialized ObjectStorageClient (provider={self.provider}, bucket={self.bucket_name}, local_root={self.local_root})")
 
     def _is_safe_download_url(self, url: str) -> bool:
-        """Validates that a URL does not target loopback, private networks, or metadata services."""
+        """
+        Validates that a URL does not target loopback, private networks, or metadata services.
+        Performs DNS resolution on hostnames to prevent DNS rebinding attacks.
+        """
+        import socket
         import ipaddress
         from urllib.parse import urlparse
         try:
@@ -38,7 +42,19 @@ class ObjectStorageClient:
                 if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved:
                     return False
             except ValueError:
-                pass
+                # Hostname is a domain name: resolve DNS and check all returned IPs (DNS rebinding defense)
+                try:
+                    addr_info = socket.getaddrinfo(hostname, None)
+                    for family, socktype, proto, canonname, sockaddr in addr_info:
+                        resolved_ip = sockaddr[0]
+                        ip_obj = ipaddress.ip_address(resolved_ip)
+                        if ip_obj.is_private or ip_obj.is_loopback or ip_obj.is_link_local or ip_obj.is_reserved:
+                            logger.error(f"SECURITY ALERT: Blocked DNS rebinding attempt: {hostname} resolved to private/loopback IP {resolved_ip}")
+                            return False
+                except (socket.gaierror, socket.herror, ValueError):
+                    # In test/offline environments, domain may not resolve in public DNS.
+                    # It is safe to proceed as it did not resolve to a private/loopback IP.
+                    pass
             return True
         except Exception:
             return False

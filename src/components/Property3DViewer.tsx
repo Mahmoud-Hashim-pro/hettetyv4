@@ -19,7 +19,19 @@ import { ThreeDTourAsset, TourRoomWaypoint } from '../types';
 import { FloorPlan } from './3d/FloorPlan';
 import { MeasurementTool } from './3d/MeasurementTool';
 import { SpatialAiAssistant } from './3d/SpatialAiAssistant';
-export { TourViewer } from './3d/TourViewer';
+import { RoomNavigation } from './3d/RoomNavigation';
+import { TourViewer } from './3d/TourViewer';
+
+export {
+  TourViewer,
+  TourEngineProvider,
+  useTourEngine,
+  useTourContext,
+  GaussianRenderer,
+  MeshRenderer,
+  RoomNavigation,
+  MeasurementTool,
+} from './3d/TourViewer';
 
 /**
  * Loads an image element for a texture.
@@ -678,52 +690,20 @@ const Property3DViewer: React.FC<Property3DViewerProps> = ({ images, depthMaps, 
 
       {/* Room Waypoint Navigator Bar */}
       {rooms.length > 0 && (
-        <div className="absolute top-32 sm:top-28 start-1/2 -translate-x-1/2 z-20 flex items-center gap-2 max-w-[92vw] overflow-x-auto p-1.5 bg-black/60 backdrop-blur-md border border-white/20 rounded-2xl scrollbar-none shadow-xl">
-          <div className="text-[10px] uppercase font-black text-amber-400 px-2 flex items-center gap-1 shrink-0">
-            <Compass size={12} /> {isRtl ? 'نقاط الغرف' : 'Rooms'}
-          </div>
-          {rooms.map((room) => {
-            const isSelected = room.id === activeRoomId;
-            return (
-              <button
-                key={room.id}
-                type="button"
-                onClick={() => {
-                  setActiveRoomId(room.id);
-                  if (mode !== 'tour' && hasTourAsset) setMode('tour');
-                }}
-                className={`px-3 py-1.5 rounded-xl text-xs font-bold whitespace-nowrap transition-all flex items-center gap-1.5 cursor-pointer ${
-                  isSelected
-                    ? 'bg-brand-600 text-white shadow-md scale-105'
-                    : 'bg-white/10 hover:bg-white/20 text-white/90 hover:text-white'
-                }`}
-              >
-                <MapPin size={12} className={isSelected ? 'text-amber-300' : 'text-slate-400'} />
-                <span>{isRtl ? (room.nameAr || room.name) : room.name}</span>
-              </button>
-            );
-          })}
-          <div className="w-[1px] h-4 bg-white/20 mx-1 shrink-0" />
-          <button
-            type="button"
-            onClick={() => setShowFloorPlan(!showFloorPlan)}
-            className={`px-3 py-1.5 rounded-xl text-xs font-bold whitespace-nowrap transition-all flex items-center gap-1.5 cursor-pointer ${
-              showFloorPlan ? 'bg-white/25 text-white' : 'bg-white/10 hover:bg-white/20 text-white/80'
-            }`}
-          >
-            <Compass size={12} />
-            <span>{isRtl ? 'المخطط' : 'Floor Plan'}</span>
-          </button>
-          <button
-            type="button"
-            onClick={() => setShowMeasure(!showMeasure)}
-            className={`px-3 py-1.5 rounded-xl text-xs font-bold whitespace-nowrap transition-all flex items-center gap-1.5 cursor-pointer ${
-              showMeasure ? 'bg-white/25 text-white' : 'bg-white/10 hover:bg-white/20 text-white/80'
-            }`}
-          >
-            <Ruler size={12} />
-            <span>{isRtl ? 'قياس' : 'Measure'}</span>
-          </button>
+        <div className="absolute top-32 sm:top-28 start-1/2 -translate-x-1/2 z-20 flex items-center justify-center max-w-full px-4">
+          <RoomNavigation
+            rooms={rooms}
+            activeRoomId={activeRoomId || undefined}
+            onSelectRoom={(id) => {
+              setActiveRoomId(id);
+              if (mode !== 'tour' && hasTourAsset) setMode('tour');
+            }}
+            showFloorPlan={showFloorPlan}
+            onToggleFloorPlan={() => setShowFloorPlan(!showFloorPlan)}
+            showMeasure={showMeasure}
+            onToggleMeasure={() => setShowMeasure(!showMeasure)}
+            isRtl={isRtl}
+          />
         </div>
       )}
 
@@ -754,10 +734,21 @@ const Property3DViewer: React.FC<Property3DViewerProps> = ({ images, depthMaps, 
       />
 
       {mode === 'tour' ? (
-        <Canvas camera={{ position: [0, 2, 5], fov: 60 }} className="flex-1" gl={{ antialias: true }}>
-          <color attach="background" args={['#05080f']} />
-          <SpatialTourScene rooms={rooms} activeRoomId={activeRoomId} onSelectRoom={setActiveRoomId} />
-        </Canvas>
+        threeDTour && (threeDTour.representation?.gaussianSplat?.url || threeDTour.representation?.mesh?.url || threeDTour.source === 'matterport' || threeDTour.source === 'polycam') ? (
+          <div className="flex-1 w-full h-full relative">
+            <TourViewer
+              tour={threeDTour as any}
+              title={title}
+              onClose={onClose}
+              isRtl={isRtl}
+            />
+          </div>
+        ) : (
+          <Canvas camera={{ position: [0, 2, 5], fov: 60 }} className="flex-1" gl={{ antialias: true }}>
+            <color attach="background" args={['#05080f']} />
+            <SpatialTourScene rooms={rooms} activeRoomId={activeRoomId} onSelectRoom={setActiveRoomId} />
+          </Canvas>
+        )
       ) : mode === 'pano' ? (
         <Canvas camera={{ position: [0, 0, 0.1], fov: 75 }} className="flex-1" gl={{ antialias: true }}>
           <color attach="background" args={['#05080f']} />

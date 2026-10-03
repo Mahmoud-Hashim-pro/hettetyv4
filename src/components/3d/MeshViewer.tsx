@@ -1,82 +1,19 @@
-import React, { useState, useEffect, useRef, useMemo } from 'react';
-import { Canvas, useFrame } from '@react-three/fiber';
+import React, { useState, useEffect, useMemo } from 'react';
+import { Canvas } from '@react-three/fiber';
 import { OrbitControls } from '@react-three/drei';
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
-import { Box, CheckCircle2, AlertTriangle, AlertCircle, Loader2, Ruler } from 'lucide-react';
+import { Box, CheckCircle2, AlertTriangle, AlertCircle, Loader2 } from 'lucide-react';
 import { ThreeDTour, Room } from '../../types';
+import { MeshRenderer } from './MeshRenderer';
+
+export { MeshRenderer } from './MeshRenderer';
 
 interface MeshViewerProps {
   tour: ThreeDTour;
   activeRoom?: Room;
   isRtl?: boolean;
 }
-
-interface LoadedMeshSceneProps {
-  scene: THREE.Group;
-  wireframe: boolean;
-  activeRoom?: Room;
-  bounds: THREE.Box3;
-}
-
-const LoadedMeshScene: React.FC<LoadedMeshSceneProps> = ({ scene, wireframe, activeRoom, bounds }) => {
-  const clonedScene = useMemo(() => {
-    const clone = scene.clone(true);
-    clone.traverse((child) => {
-      if ((child as THREE.Mesh).isMesh) {
-        const mesh = child as THREE.Mesh;
-        if (Array.isArray(mesh.material)) {
-          mesh.material = mesh.material.map((m) => {
-            const mat = m.clone();
-            (mat as any).wireframe = wireframe;
-            return mat;
-          });
-        } else if (mesh.material) {
-          const mat = mesh.material.clone();
-          (mat as any).wireframe = wireframe;
-          mesh.material = mat;
-        }
-      }
-    });
-    return clone;
-  }, [scene, wireframe]);
-
-  useFrame((state) => {
-    if (activeRoom?.camera?.position) {
-      const [tx, ty, tz] = activeRoom.camera.position;
-      state.camera.position.lerp(new THREE.Vector3(tx, ty, tz), 0.05);
-    }
-  });
-
-  return (
-    <>
-      <ambientLight intensity={1.2} />
-      <directionalLight position={[6, 12, 6]} intensity={1.8} />
-      <directionalLight position={[-6, 8, -6]} intensity={0.9} color="#94a3b8" />
-
-      <primitive object={clonedScene} />
-
-      {/* Active room spatial boundary box if waypoint provided */}
-      {activeRoom?.position && (
-        <mesh position={activeRoom.position}>
-          <boxGeometry args={[activeRoom.dimensions?.width || 3, activeRoom.dimensions?.height || 2.8, activeRoom.dimensions?.length || 3]} />
-          <meshStandardMaterial
-            color="#10b981"
-            transparent
-            opacity={0.2}
-            wireframe
-          />
-        </mesh>
-      )}
-
-      {/* Ground helper grid */}
-      <gridHelper
-        args={[24, 24, '#10b981', '#334155']}
-        position={[0, bounds.min.y - 0.01, 0]}
-      />
-    </>
-  );
-};
 
 export const MeshViewer: React.FC<MeshViewerProps> = ({ tour, activeRoom, isRtl = false }) => {
   const meshUrl = tour?.representation?.mesh?.url;
@@ -202,7 +139,7 @@ export const MeshViewer: React.FC<MeshViewerProps> = ({ tour, activeRoom, isRtl 
 
       {loadedScene && (
         <Canvas camera={{ position: [0, 2.5, 5], fov: 60 }} className="w-full h-full">
-          <LoadedMeshScene
+          <MeshRenderer
             scene={loadedScene}
             wireframe={wireframe}
             activeRoom={activeRoom}

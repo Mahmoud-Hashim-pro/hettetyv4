@@ -89,7 +89,8 @@ export class ReconstructionApiClient {
     // Direct invocation fallback for SSR / testing / unit runs
     if (!controlJob) {
       try {
-        const { default: handler } = await import('../../../api/reconstruction');
+        const apiModulePath = '../../../api/reconstruction';
+        const { default: handler } = await import(/* @vite-ignore */ apiModulePath);
         let jsonRes: any = null;
         const mockRes = {
           status: () => ({ json: (d: any) => { jsonRes = d; } }),
@@ -137,7 +138,7 @@ export class ReconstructionApiClient {
             storagePath: s.storagePath,
           })),
         }
-      : createUploadSession({
+      : await createUploadSession({
           propertyId,
           files: files.map((f) => ({ name: f.name, sizeBytes: f.size, mimeType: f.type })),
         });

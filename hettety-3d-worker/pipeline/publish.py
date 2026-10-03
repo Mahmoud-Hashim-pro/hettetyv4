@@ -28,7 +28,9 @@ def publish_tour_assets(
     registered_cameras: int = 0,
     mesh_vertex_count: int = 0,
     mesh_face_count: int = 0,
-    is_calibrated_metric: bool = False
+    is_calibrated_metric: bool = False,
+    attempt_id: Optional[str] = None,
+    worker_id: Optional[str] = None
 ) -> Dict[str, Any]:
     """
     Publishes generated representations and invokes Hettety completion webhook.
@@ -106,6 +108,8 @@ def publish_tour_assets(
         "jobId": job_id,
         "propertyId": property_id,
         "status": "ready",
+        **({"attemptId": attempt_id} if attempt_id else {}),
+        **({"workerId": worker_id} if worker_id else {}),
         "representation": {
             "gaussianSplat": {
                 "format": "spz",

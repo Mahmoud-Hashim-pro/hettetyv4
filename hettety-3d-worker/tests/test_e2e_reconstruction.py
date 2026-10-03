@@ -479,6 +479,86 @@ class TestHettety3DReconstructionE2E(unittest.TestCase):
         self.assertIn(99, sparse_map)
         self.assertEqual(sparse_map[42], (1.25, 2.50, 3.75))
 
+    def test_22_magic_bytes_rejection_for_corrupt_captures(self):
+        """Verifies that keyframe validation rejects spoofed files failing image magic bytes."""
+        corrupt_dir = os.path.join(self.temp_dir, "corrupt_captures")
+        os.makedirs(corrupt_dir, exist_ok=True)
+
+        # Write 15 files with .jpg extension but containing plain text rather than JPEG magic bytes
+        for i in range(15):
+            fake_path = os.path.join(corrupt_dir, f"frame_{i:04d}.jpg")
+            with open(fake_path, "wb") as f:
+                f.write(b"PLAIN_TEXT_NOT_A_REAL_IMAGE_" * 1000)
+
+        val_res = validate_keyframes(corrupt_dir, min_images=12)
+        self.assertFalse(val_res["valid"])
+        self.assertEqual(val_res["error_code"], "CORRUPT_OR_LOW_RES_CAPTURES")
+        self.assertIn("magic bytes", val_res["message"].lower())
+
+    def test_23_worker_stage_reporting_with_attempt_and_worker_id(self):
+        """Verifies that worker attaches attemptId and workerId to callbacks and published payloads."""
+        # 1. Verify publish_tour_assets includes attemptId and workerId in payload
+        dummy_spz = os.path.join(self.temp_dir, "test.spz")
+        dummy_glb = os.path.join(self.temp_dir, "test.glb")
+        with open(dummy_spz, "wb") as f:
+            f.write(b"SPZ_TEST_BYTES")
+        with open(dummy_glb, "wb") as f:
+            f.write(b"GLB_TEST_BYTES")
+
+        pub_res = publish_tour_assets(
+            job_id="job_audit_99",
+            property_id="prop_audit_99",
+            spz_path=dummy_spz,
+            glb_path=dummy_glb,
+            bounds={"min": [-1, -1, -1], "max": [1, 1, 1]},
+            cdn_base_url="https://cdn.hettety.com",
+            callback_url="mock://callback",
+            api_key="test-key",
+            image_count=20,
+            splat_count=50000,
+            sharpness_score=80,
+            registered_cameras=20,
+            mesh_vertex_count=500,
+            mesh_face_count=800,
+            is_calibrated_metric=True,
+            attempt_id="attempt_run_7",
+            worker_id="worker_gpu_node_3"
+        )
+        self.assertTrue(pub_res["success"])
+        payload = pub_res["payload"]
+        self.assertEqual(payload["attemptId"], "attempt_run_7")
+        self.assertEqual(payload["workerId"], "worker_gpu_node_3")
+
+        # 2. Verify worker process_job passes attemptId and workerId
+        worker = ReconstructionWorker(work_dir=self.temp_dir)
+        reported_stages = []
+
+        def mock_report(job_id, property_id, status, progress, stage, callback_url, api_key, attempt_id=None, worker_id=None):
+            reported_stages.append({
+                "jobId": job_id,
+                "status": status,
+                "attemptId": attempt_id,
+                "workerId": worker_id
+            })
+
+        worker._report_stage = mock_report
+
+        # Create a cancelled job to observe pre-flight report
+        job_spec = {
+            "id": "job_cancelled_preflight",
+            "propertyId": "prop_audit_99",
+            "attemptId": "attempt_isolated_42",
+            "workerId": "worker_h100_1",
+            "captureUrls": []
+        }
+        worker.is_cancelled = lambda jid: True
+        res = worker.process_job(job_spec)
+        self.assertEqual(res["status"], "cancelled")
+        self.assertTrue(len(reported_stages) > 0)
+        self.assertEqual(reported_stages[0]["attemptId"], "attempt_isolated_42")
+        self.assertEqual(reported_stages[0]["workerId"], "worker_h100_1")
+
 if __name__ == "__main__":
     unittest.main()
+
 

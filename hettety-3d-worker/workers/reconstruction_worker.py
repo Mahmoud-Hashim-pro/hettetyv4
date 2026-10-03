@@ -46,7 +46,18 @@ class ReconstructionWorker:
             return self.queue_consumer.is_job_cancelled(job_id)
         return False
 
-    def _report_stage(self, job_id: str, property_id: str, status: str, progress: int, stage: str, callback_url: str, api_key: str):
+    def _report_stage(
+        self,
+        job_id: str,
+        property_id: str,
+        status: str,
+        progress: int,
+        stage: str,
+        callback_url: str,
+        api_key: str,
+        attempt_id: Optional[str] = None,
+        worker_id: Optional[str] = None
+    ):
         """Emits live stage and progress updates to the control plane."""
         logger.info(f"[{status} {progress}%] Job {job_id}: {stage}")
         if callback_url and not callback_url.startswith("mock://"):
@@ -59,6 +70,10 @@ class ReconstructionWorker:
                     "progress": progress,
                     "stage": stage
                 }
+                if attempt_id:
+                    payload["attemptId"] = attempt_id
+                if worker_id:
+                    payload["workerId"] = worker_id
                 requests.post(callback_url, json=payload, headers={"Authorization": f"Bearer {api_key}"}, timeout=5)
             except Exception as e:
                 logger.debug(f"Stage progress webhook note for {job_id}: {e}")
@@ -66,6 +81,8 @@ class ReconstructionWorker:
     def process_job(self, job: Dict[str, Any]) -> Dict[str, Any]:
         job_id = job.get("id", "job_unknown")
         property_id = job.get("propertyId", "prop_unknown")
+        attempt_id = job.get("attemptId") or job.get("attempt")
+        worker_id = job.get("workerId") or os.getenv("HETTETY_WORKER_ID", "hettety-gpu-worker-1")
         job_type = job.get("type", "photos")
         is_video = (job_type == "video")
         capture_manifest = job.get("manifest") or job.get("captureManifest") or []
@@ -80,6 +97,13 @@ class ReconstructionWorker:
         reference_anchors = job.get("referenceAnchors") or job.get("scaleReferences") or []
         callback_url = job.get("callbackUrl") or os.getenv("HETTETY_CONTROL_PLANE_URL", "mock://callback")
         api_key = job.get("apiKey") or os.getenv("WORKER_SHARED_SECRET", "hettety-worker-secret-internal")
+
+        # Bound reporting closures with attempt isolation & worker identification
+        def report(status: str, progress: int, stage_desc: str):
+            self._report_stage(job_id, property_id, status, progress, stage_desc, callback_url, api_key, attempt_id=attempt_id, worker_id=worker_id)
+
+        def fail(err_code: str, err_msg: str) -> Dict[str, Any]:
+            return self._fail_job(job_id, property_id, err_code, err_msg, callback_url, api_key, attempt_id=attempt_id, worker_id=worker_id)
 
         job_dir = os.path.join(self.work_dir, job_id)
         raw_images_dir = os.path.join(job_dir, "images")
@@ -98,131 +122,107 @@ class ReconstructionWorker:
             # Check pre-flight cancellation
             if self.is_cancelled(job_id):
                 logger.info(f"Job {job_id} was cancelled before starting. Aborting.")
-                self._report_stage(job_id, property_id, "CANCELLED", 0, "Job cancelled by user", callback_url, api_key)
+                report("CANCELLED", 0, "Job cancelled by user")
                 return {"status": "cancelled", "jobId": job_id, "propertyId": property_id}
 
             # Stage 1: Download captures
-            self._report_stage(job_id, property_id, "UPLOADING", 10, "Downloading capture keyframes", callback_url, api_key)
+            report("UPLOADING", 10, "Downloading capture keyframes")
             self.storage_client.download_capture_files(capture_urls, raw_images_dir)
 
             if self.is_cancelled(job_id):
-                self._report_stage(job_id, property_id, "CANCELLED", 15, "Job cancelled by user", callback_url, api_key)
+                report("CANCELLED", 15, "Job cancelled by user")
                 return {"status": "cancelled", "jobId": job_id, "propertyId": property_id}
 
             # Stage 2: Validate keyframe dataset
-            self._report_stage(job_id, property_id, "VALIDATING", 20, "Analyzing Laplacian sharpness and count", callback_url, api_key)
+            report("VALIDATING", 20, "Analyzing Laplacian sharpness and count")
             val_res = validate_keyframes(raw_images_dir, min_images=12)
             if not val_res.get("valid"):
-                return self._fail_job(job_id, property_id, val_res.get("error_code", "VALIDATION_FAILED"), val_res.get("message", "Validation failed"), callback_url, api_key)
+                return fail(val_res.get("error_code", "VALIDATION_FAILED"), val_res.get("message", "Validation failed"))
 
             if self.is_cancelled(job_id):
-                self._report_stage(job_id, property_id, "CANCELLED", 25, "Job cancelled by user", callback_url, api_key)
+                report("CANCELLED", 25, "Job cancelled by user")
                 return {"status": "cancelled", "jobId": job_id, "propertyId": property_id}
 
             # Stage 3: SfM (Structure-from-Motion)
-            self._report_stage(job_id, property_id, "RECONSTRUCTING", 35, "COLMAP feature extraction & camera alignment", callback_url, api_key)
+            report("RECONSTRUCTING", 35, "COLMAP feature extraction & camera alignment")
             try:
                 sfm_res = run_sfm(raw_images_dir, colmap_dir, is_video=is_video)
                 if not sfm_res:
-                    return self._fail_job(
-                        job_id,
-                        property_id,
+                    return fail(
                         sfm_res.get("error_code", "SFM_FAILED"),
-                        sfm_res.get("message", "COLMAP SfM did not converge."),
-                        callback_url,
-                        api_key
+                        sfm_res.get("message", "COLMAP SfM did not converge.")
                     )
             except Exception as e:
                 logger.error(f"COLMAP execution failed: {e}")
-                return self._fail_job(job_id, property_id, "SFM_FAILED", f"COLMAP feature matching failed: {e}", callback_url, api_key)
+                return fail("SFM_FAILED", f"COLMAP feature matching failed: {e}")
 
             if self.is_cancelled(job_id):
-                self._report_stage(job_id, property_id, "CANCELLED", 45, "Job cancelled by user", callback_url, api_key)
+                report("CANCELLED", 45, "Job cancelled by user")
                 return {"status": "cancelled", "jobId": job_id, "propertyId": property_id}
 
             # Stage 3.5: Dense Stereo Reconstruction (undistort -> patch match stereo -> stereo fusion)
             dense_dir = os.path.join(colmap_dir, "dense")
-            self._report_stage(job_id, property_id, "RECONSTRUCTING", 50, "Executing dense multi-view stereo fusion", callback_url, api_key)
+            report("RECONSTRUCTING", 50, "Executing dense multi-view stereo fusion")
             try:
                 dense_res = run_dense_stereo(sparse_dir=colmap_dir, image_dir=raw_images_dir, dense_dir=dense_dir)
                 fused_ply = os.path.join(dense_dir, "fused.ply")
                 if not os.path.exists(fused_ply) or os.path.getsize(fused_ply) < 100:
                     # In real reconstruction, dense failure must strictly fail rather than falling back to sparse SfM
                     if os.environ.get("HETTETY_ENV") != "test" and not callback_url.startswith("mock://"):
-                        return self._fail_job(
-                            job_id,
-                            property_id,
+                        return fail(
                             "DENSE_RECONSTRUCTION_FAILED",
-                            "Dense multi-view stereo fusion failed to produce fused point cloud. Fallback to sparse SfM prohibited.",
-                            callback_url,
-                            api_key
+                            "Dense multi-view stereo fusion failed to produce fused point cloud. Fallback to sparse SfM prohibited."
                         )
             except Exception as dense_err:
                 logger.error(f"Dense stereo reconstruction failed for {job_id}: {dense_err}")
                 if os.environ.get("HETTETY_ENV") != "test" and not callback_url.startswith("mock://"):
-                    return self._fail_job(
-                        job_id,
-                        property_id,
+                    return fail(
                         "DENSE_RECONSTRUCTION_FAILED",
-                        f"Dense multi-view stereo reconstruction failed: {dense_err}. Fallback to sparse SfM prohibited.",
-                        callback_url,
-                        api_key
+                        f"Dense multi-view stereo reconstruction failed: {dense_err}. Fallback to sparse SfM prohibited."
                     )
 
             if self.is_cancelled(job_id):
-                self._report_stage(job_id, property_id, "CANCELLED", 55, "Job cancelled by user", callback_url, api_key)
+                report("CANCELLED", 55, "Job cancelled by user")
                 return {"status": "cancelled", "jobId": job_id, "propertyId": property_id}
 
             # Stage 4: 3DGS Optimization / Training
-            self._report_stage(job_id, property_id, "TRAINING", 65, "Optimizing 3D Gaussian Splatting scene", callback_url, api_key)
+            report("TRAINING", 65, "Optimizing 3D Gaussian Splatting scene")
             train_res = run_gaussian_training(colmap_dir, model_dir, iterations=30000)
             if not train_res.get("success"):
-                return self._fail_job(
-                    job_id,
-                    property_id,
+                return fail(
                     train_res.get("error_code", "TRAINING_FAILED"),
-                    train_res.get("message", "3DGS training failed"),
-                    callback_url,
-                    api_key
+                    train_res.get("message", "3DGS training failed")
                 )
             target_ply = train_res.get("target_ply")
 
             if self.is_cancelled(job_id):
-                self._report_stage(job_id, property_id, "CANCELLED", 75, "Job cancelled by user", callback_url, api_key)
+                report("CANCELLED", 75, "Job cancelled by user")
                 return {"status": "cancelled", "jobId": job_id, "propertyId": property_id}
 
             # Stage 5: Floater pruning & dynamic bounding box extraction
-            self._report_stage(job_id, property_id, "OPTIMIZING", 80, "Pruning floaters and computing spatial boundaries", callback_url, api_key)
+            report("OPTIMIZING", 80, "Pruning floaters and computing spatial boundaries")
             optimized_ply = os.path.join(model_dir, "point_cloud_clean.ply")
             opt_res = optimize_splat_cloud(target_ply, optimized_ply)
             if not opt_res.get("success"):
-                return self._fail_job(
-                    job_id,
-                    property_id,
+                return fail(
                     opt_res.get("error_code", "OPTIMIZATION_FAILED"),
-                    opt_res.get("message", "Point cloud optimization failed"),
-                    callback_url,
-                    api_key
+                    opt_res.get("message", "Point cloud optimization failed")
                 )
             
             # Strict non-synthetic bounds validation: Fail if geometry does not produce real bounds
             bounds = opt_res.get("bounds")
             if not bounds or "min" not in bounds or "max" not in bounds:
-                return self._fail_job(
-                    job_id,
-                    property_id,
+                return fail(
                     "MESH_VALIDATION_FAILED",
-                    "Cannot compute genuine spatial bounds from reconstruction geometry. Default bounding box prohibited.",
-                    callback_url,
-                    api_key
+                    "Cannot compute genuine spatial bounds from reconstruction geometry. Default bounding box prohibited."
                 )
 
             if self.is_cancelled(job_id):
-                self._report_stage(job_id, property_id, "CANCELLED", 85, "Job cancelled by user", callback_url, api_key)
+                report("CANCELLED", 85, "Job cancelled by user")
                 return {"status": "cancelled", "jobId": job_id, "propertyId": property_id}
 
             # Stage 6: Metric Calibration & Compression
-            self._report_stage(job_id, property_id, "OPTIMIZING", 90, "Calibrating scale and generating metric GLB mesh", callback_url, api_key)
+            report("OPTIMIZING", 90, "Calibrating scale and generating metric GLB mesh")
             sparse_pts: List[Tuple[float, float, float]] = []
             sparse_map: Dict[int, Tuple[float, float, float]] = {}
             candidate_points3d_txt = [
@@ -262,13 +262,13 @@ class ReconstructionWorker:
             mesh_res = generate_metric_mesh_glb(colmap_dir, glb_path, scale_factor=scale_factor)
 
             if not convert_res.get("success"):
-                return self._fail_job(job_id, property_id, "COMPRESSION_FAILED", convert_res.get("message", "SPZ conversion failed"), callback_url, api_key)
+                return fail("COMPRESSION_FAILED", convert_res.get("message", "SPZ conversion failed"))
 
             if not mesh_res.get("success"):
-                return self._fail_job(job_id, property_id, "MESH_GENERATION_FAILED", mesh_res.get("message", "Metric GLB mesh generation failed"), callback_url, api_key)
+                return fail("MESH_GENERATION_FAILED", mesh_res.get("message", "Metric GLB mesh generation failed"))
 
             # Stage 7: Publishing & Callback
-            self._report_stage(job_id, property_id, "PUBLISHING", 96, "Uploading verified spatial assets", callback_url, api_key)
+            report("PUBLISHING", 96, "Uploading verified spatial assets")
             pub_res = publish_tour_assets(
                 job_id=job_id,
                 property_id=property_id,
@@ -285,19 +285,21 @@ class ReconstructionWorker:
                 registered_cameras=sfm_res.get("registered_images", 0),
                 mesh_vertex_count=mesh_res.get("vertex_count", 0),
                 mesh_face_count=mesh_res.get("face_count", 0),
-                is_calibrated_metric=is_calibrated
+                is_calibrated_metric=is_calibrated,
+                attempt_id=attempt_id,
+                worker_id=worker_id
             )
 
             if not pub_res.get("success"):
-                return self._fail_job(job_id, property_id, pub_res.get("error_code", "PUBLISH_FAILED"), pub_res.get("message", "Publishing failed"), callback_url, api_key)
+                return fail(pub_res.get("error_code", "PUBLISH_FAILED"), pub_res.get("message", "Publishing failed"))
 
-            self._report_stage(job_id, property_id, "READY", 100, "Spatial tour reconstruction complete", callback_url, api_key)
+            report("READY", 100, "Spatial tour reconstruction complete")
             logger.info(f"==> Successfully completed reconstruction for Job {job_id}!")
             return pub_res
 
         except Exception as e:
             logger.exception(f"Fatal error in reconstruction pipeline: {e}")
-            return self._fail_job(job_id, property_id, "PROCESSING_ERROR", str(e), callback_url, api_key)
+            return fail("PROCESSING_ERROR", str(e))
         finally:
             # STRICT DISK CLEANUP: Clean up heavy raw images, COLMAP db, and intermediate models to prevent worker disk exhaustion
             try:
@@ -310,7 +312,17 @@ class ReconstructionWorker:
             except Exception as cleanup_err:
                 logger.warning(f"Error during workspace cleanup for {job_id}: {cleanup_err}")
 
-    def _fail_job(self, job_id: str, property_id: str, error_code: str, message: str, callback_url: str, api_key: str) -> Dict[str, Any]:
+    def _fail_job(
+        self,
+        job_id: str,
+        property_id: str,
+        error_code: str,
+        message: str,
+        callback_url: str,
+        api_key: str,
+        attempt_id: Optional[str] = None,
+        worker_id: Optional[str] = None
+    ) -> Dict[str, Any]:
         logger.error(f"Job {job_id} FAILED: [{error_code}] {message}")
         payload = {
             "jobId": job_id,
@@ -319,6 +331,10 @@ class ReconstructionWorker:
             "errorCode": error_code,
             "errorMessage": message
         }
+        if attempt_id:
+            payload["attemptId"] = attempt_id
+        if worker_id:
+            payload["workerId"] = worker_id
         # Attempt error webhook
         if callback_url and not callback_url.startswith("mock://"):
             try:

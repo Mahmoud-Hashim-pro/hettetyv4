@@ -41,6 +41,23 @@ def compute_image_laplacian_variance(img_path: str) -> float:
         logger.warning(f"Could not compute Laplacian variance for {img_path}: {e}")
         return 0.0
 
+def verify_image_magic_bytes(file_path: str) -> bool:
+    """Verifies that file starts with genuine image magic header bytes (JPEG, PNG, WebP)."""
+    try:
+        with open(file_path, "rb") as f:
+            header = f.read(16)
+        if len(header) < 4:
+            return False
+        if header.startswith(b"\xff\xd8\xff"):
+            return True
+        if header.startswith(b"\x89PNG\r\n\x1a\n"):
+            return True
+        if header.startswith(b"RIFF") and len(header) >= 12 and header[8:12] == b"WEBP":
+            return True
+        return False
+    except Exception:
+        return False
+
 def validate_keyframes(input_dir: str, min_images: int = 12) -> Dict[str, Any]:
     valid_exts = ('.jpg', '.jpeg', '.png')
     if not os.path.exists(input_dir):
@@ -59,13 +76,16 @@ def validate_keyframes(input_dir: str, min_images: int = 12) -> Dict[str, Any]:
             "message": f"Found {len(images)} images, minimum required is {min_images}"
         }
 
-    # Inspect file sizes and integrity
+    # Inspect file sizes and integrity (including magic bytes verification)
     corrupt_files = []
     too_small = 0
     total_bytes = 0
     variances: List[float] = []
 
     for img_path in images:
+        if not verify_image_magic_bytes(img_path):
+            corrupt_files.append(os.path.basename(img_path))
+            continue
         sz = os.path.getsize(img_path)
         total_bytes += sz
         if sz < 10240: # < 10KB is likely corrupt thumbnail
@@ -75,11 +95,11 @@ def validate_keyframes(input_dir: str, min_images: int = 12) -> Dict[str, Any]:
             var = compute_image_laplacian_variance(img_path)
             variances.append(var)
 
-    if too_small > len(images) * 0.3:
+    if corrupt_files and (len(corrupt_files) > len(images) * 0.2 or (len(images) - len(corrupt_files)) < min_images):
         return {
             "valid": False,
             "error_code": "CORRUPT_OR_LOW_RES_CAPTURES",
-            "message": f"Over 30% of captures appear corrupted or below minimum resolution (<10KB)."
+            "message": f"Capture dataset failed validation: {len(corrupt_files)} files appear corrupted, spoofed (failed magic bytes), or below 10KB minimum."
         }
 
     # Derive genuine sharpness score from average Laplacian variance

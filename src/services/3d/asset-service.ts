@@ -1,21 +1,19 @@
 /**
  * HETTETY 3D - Asset Management Service
- * Manages signed upload paths, capture tracking, and final 3D asset registration.
- * Synchronizes with Firestore collections 'capture_assets' and 'three_d_assets'.
+ * Manages capture asset tracking, storage upload executions, and spatial asset caching.
+ * The browser NEVER signs upload URLs directly; all signed URLs are requested from the backend control plane.
  */
 
 import { CaptureAsset, ThreeDAsset } from '../../types';
-import { db } from '../../firebase';
+import { db, auth } from '../../firebase';
 import { doc, setDoc } from 'firebase/firestore';
-
-import { generateV4SignedUploadUrl } from '../../../api/reconstruction';
 
 const captureAssetsRegistry = new Map<string, CaptureAsset[]>();
 const threeDAssetsRegistry = new Map<string, ThreeDAsset[]>();
 
 export interface UploadSessionRequest {
   propertyId: string;
-  files: Array<{ name: string; sizeBytes: number; mimeType: string }>;
+  files: Array<{ name: string; sizeBytes: number; mimeType: string; checksum?: string }>;
 }
 
 export interface UploadSessionResponse {
@@ -28,40 +26,83 @@ export interface UploadSessionResponse {
 }
 
 /**
- * Authoritative upload session generation: delegates directly to genuine GCS V4 signing algorithm
+ * Authoritative upload session generation:
+ * Requests signed upload URLs exclusively from the backend control plane API.
+ * Contains ZERO client-side signing credentials or algorithms.
  */
-export const createUploadSession = (request: UploadSessionRequest): UploadSessionResponse => {
-  const sessionId = `session_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-  const bucket = 'hettety-spatial-assets';
+export const createUploadSession = async (request: UploadSessionRequest): Promise<UploadSessionResponse> => {
+  const currentUid = auth?.currentUser?.uid || (process.env.NODE_ENV === 'test' ? 'test-owner-uid' : '');
 
-  const signedUploadUrls = request.files.map(f => {
-    const safeName = f.name.replace(/[^a-zA-Z0-9._-]/g, '_');
-    const storagePath = `properties/${request.propertyId}/3d/raw/${sessionId}/${safeName}`;
-    const signed = generateV4SignedUploadUrl(bucket, storagePath, f.mimeType || 'image/jpeg');
-
+  // 1. Production browser: calls backend API
+  if (typeof fetch !== 'undefined' && typeof window !== 'undefined' && window.location?.origin && process.env.NODE_ENV !== 'test') {
+    const res = await fetch('/api/reconstruction?action=create-job', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${currentUid}`,
+      },
+      body: JSON.stringify({
+        propertyId: request.propertyId,
+        files: request.files,
+        type: 'photos',
+      }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: res.statusText }));
+      throw new Error(`UPLOAD_SESSION_FAILED: ${err.error || res.statusText}`);
+    }
+    const data = await res.json();
     return {
-      fileName: f.name,
-      uploadUrl: signed.uploadUrl,
-      storagePath: signed.storagePath,
+      sessionId: data.sessionId,
+      signedUploadUrls: data.signedUploadUrls.map((s: any, idx: number) => ({
+        fileName: request.files[idx]?.name || `frame_${idx}.jpg`,
+        uploadUrl: s.uploadUrl,
+        storagePath: s.storagePath,
+      })),
     };
-  });
+  }
 
-  return {
-    sessionId,
-    signedUploadUrls,
+  // 2. SSR / Testing: delegates directly to serverless API handler
+  const apiModulePath = '../../../api/reconstruction';
+  const { default: handler } = await import(/* @vite-ignore */ apiModulePath);
+  let jsonRes: any = null;
+  const mockRes = {
+    status: () => ({ json: (d: any) => { jsonRes = d; } }),
+    json: (d: any) => { jsonRes = d; },
   };
+  await handler({
+    method: 'POST',
+    query: { action: 'create-job' },
+    headers: { authorization: `Bearer ${currentUid}`, 'x-user-id': currentUid },
+    body: {
+      propertyId: request.propertyId,
+      files: request.files,
+      type: 'photos',
+    },
+  }, mockRes);
+
+  if (jsonRes && jsonRes.signedUploadUrls) {
+    return {
+      sessionId: jsonRes.sessionId,
+      signedUploadUrls: jsonRes.signedUploadUrls.map((s: any, idx: number) => ({
+        fileName: request.files[idx]?.name || `frame_${idx}.jpg`,
+        uploadUrl: s.uploadUrl,
+        storagePath: s.storagePath,
+      })),
+    };
+  }
+
+  throw new Error('UPLOAD_SESSION_FAILED: Failed to obtain signed upload URLs from control plane.');
 };
 
 /**
  * Uploads a file/blob to the designated signed upload URL with progress monitoring.
- * In a web browser environment, issues a PUT request or saves to memory cache for development/testing.
  */
 export const uploadFileToSession = async (
   uploadUrl: string,
   file: File | Blob,
   onProgress?: (percent: number) => void
 ): Promise<string> => {
-  // Explicit test/mock environment handling (avoids real HTTP network call in jsdom)
   if (uploadUrl.startsWith('mock://') || process.env.NODE_ENV === 'test') {
     if (onProgress) {
       onProgress(100);

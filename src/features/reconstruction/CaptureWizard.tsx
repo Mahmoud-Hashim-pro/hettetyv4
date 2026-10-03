@@ -266,7 +266,7 @@ export const CaptureWizard: React.FC<CaptureWizardProps> = ({
       setStatusMessage(isRtl ? 'جاري رفع الإطارات والصور إلى سحابة Hettety...' : 'Uploading keyframes to Hettety storage...');
       updateJobStatus(job.id, 'UPLOADING', 25, 'Uploading Media');
 
-      const uploadSession = createUploadSession({
+      const uploadSession = await createUploadSession({
         propertyId,
         files: captureFiles.map(f => ({ name: f.name, sizeBytes: f.size, mimeType: f.type })),
       });

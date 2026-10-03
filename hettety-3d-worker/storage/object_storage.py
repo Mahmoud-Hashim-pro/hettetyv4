@@ -49,7 +49,7 @@ class ObjectStorageClient:
         Handles GCS paths (properties/... or gs://...), HTTP URLs, and local files.
         """
         os.makedirs(os.path.dirname(os.path.abspath(local_destination)), exist_ok=True)
-        MAX_FRAME_SIZE = 50 * 1024 * 1024
+        MAX_FRAME_SIZE = 500 * 1024 * 1024
 
         # 1. HTTP / HTTPS URL
         if storage_path.startswith("http://") or storage_path.startswith("https://"):

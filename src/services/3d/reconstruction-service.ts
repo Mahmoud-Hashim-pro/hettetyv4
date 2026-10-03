@@ -1,12 +1,13 @@
 /**
- * HETTETY 3D - Reconstruction Job Service
- * Orchestrates job submission, idempotency caching, stage tracking, and persistent Firestore database records.
- * Database is the definitive source of truth across browser sessions and devices.
+ * HETTETY 3D - Reconstruction Service (Client-Side Read & Subscription Layer)
+ * Listens to server-authoritative reconstruction jobs from Firestore 'reconstruction_jobs' collection.
+ * The client NEVER manufactures authoritative reconstruction state or mutates worker-owned stages directly.
+ * LocalStorage acts strictly as an optimistic read-only UI cache ('cachedJobView'), never the source of truth.
  */
 
 import { ReconstructionJob, ReconstructionJobStatus, ReconstructionErrorCode } from '../../types';
 import { db } from '../../firebase';
-import { doc, getDoc, setDoc, updateDoc, collection, query, where, getDocs, onSnapshot } from 'firebase/firestore';
+import { doc, getDoc, collection, query, where, getDocs, onSnapshot } from 'firebase/firestore';
 
 export interface CreateJobParams {
   id?: string;
@@ -17,15 +18,17 @@ export interface CreateJobParams {
   idempotencyKey?: string;
 }
 
-const STORAGE_KEY = 'hettety_3d_reconstruction_jobs';
+const STORAGE_KEY = 'hettety_3d_cached_jobs_view';
 const COLLECTION_NAME = 'reconstruction_jobs';
 
-// Memory cache + local persistence
-const activeJobs = new Map<string, ReconstructionJob>();
+// Client-side read-only cached view of jobs
+export const cachedJobView = new Map<string, ReconstructionJob>();
+export const activeJobs = cachedJobView; // Backwards compatibility alias
+
 const listeners = new Map<string, Set<(job: ReconstructionJob) => void>>();
 const firestoreUnsubs = new Map<string, () => void>();
 
-// Hydrate from localStorage for offline/immediate startup
+// Hydrate read cache from localStorage for instant offline startup
 const hydrateFromStorage = () => {
   if (typeof window === 'undefined' || !window.localStorage) return;
   try {
@@ -33,8 +36,8 @@ const hydrateFromStorage = () => {
     if (raw) {
       const parsed: ReconstructionJob[] = JSON.parse(raw);
       for (const j of parsed) {
-        if (j && j.id && !activeJobs.has(j.id)) {
-          activeJobs.set(j.id, j);
+        if (j && j.id && !cachedJobView.has(j.id)) {
+          cachedJobView.set(j.id, j);
         }
       }
     }
@@ -46,7 +49,7 @@ const hydrateFromStorage = () => {
 const persistToStorage = () => {
   if (typeof window === 'undefined' || !window.localStorage) return;
   try {
-    const jobsArray = Array.from(activeJobs.values());
+    const jobsArray = Array.from(cachedJobView.values());
     localStorage.setItem(STORAGE_KEY, JSON.stringify(jobsArray));
   } catch {
     // Ignore storage quota errors
@@ -65,7 +68,7 @@ const notifyListeners = (job: ReconstructionJob) => {
 };
 
 /**
- * Subscribes to real-time status updates from Firestore (or local listener fallback).
+ * Subscribes to real-time status updates from Firestore (Authoritative source of truth).
  */
 export const subscribeToJob = (jobId: string, callback: (job: ReconstructionJob) => void): (() => void) => {
   if (!listeners.has(jobId)) {
@@ -74,7 +77,7 @@ export const subscribeToJob = (jobId: string, callback: (job: ReconstructionJob)
   listeners.get(jobId)!.add(callback);
 
   // Return immediate cached state if present
-  const existing = activeJobs.get(jobId);
+  const existing = cachedJobView.get(jobId);
   if (existing) {
     callback(existing);
   }
@@ -88,7 +91,7 @@ export const subscribeToJob = (jobId: string, callback: (job: ReconstructionJob)
         (snap) => {
           if (snap.exists()) {
             const data = snap.data() as ReconstructionJob;
-            activeJobs.set(jobId, data);
+            cachedJobView.set(jobId, data);
             persistToStorage();
             notifyListeners(data);
           }
@@ -98,8 +101,8 @@ export const subscribeToJob = (jobId: string, callback: (job: ReconstructionJob)
         }
       );
       firestoreUnsubs.set(jobId, unsub);
-    } catch (e) {
-      // In tests without active firestore network, fallback is active
+    } catch {
+      // Offline fallback
     }
   }
 
@@ -119,22 +122,24 @@ export const subscribeToJob = (jobId: string, callback: (job: ReconstructionJob)
   };
 };
 
+/**
+ * Registers a job into the client-side cached view (hydrated from backend control plane response)
+ */
 export const createReconstructionJob = (params: CreateJobParams): ReconstructionJob => {
   const { id: explicitId, propertyId, ownerId, type, sourceCount, idempotencyKey } = params;
 
-  if (explicitId && activeJobs.has(explicitId)) {
-    return activeJobs.get(explicitId)!;
+  if (explicitId && cachedJobView.has(explicitId)) {
+    return cachedJobView.get(explicitId)!;
   }
 
-  // Idempotency check: if a job already exists with this key or active for this property, return it
   if (idempotencyKey) {
-    const existingByKey = Array.from(activeJobs.values()).find(
+    const existingByKey = Array.from(cachedJobView.values()).find(
       j => j.idempotencyKey === idempotencyKey && j.status !== 'FAILED' && j.status !== 'CANCELLED'
     );
     if (existingByKey) return existingByKey;
   }
 
-  const existingActive = Array.from(activeJobs.values()).find(
+  const existingActive = Array.from(cachedJobView.values()).find(
     j => j.propertyId === propertyId &&
       ['QUEUED', 'VALIDATING', 'UPLOADING', 'RECONSTRUCTING', 'TRAINING', 'OPTIMIZING', 'PUBLISHING'].includes(j.status)
   );
@@ -158,32 +163,24 @@ export const createReconstructionJob = (params: CreateJobParams): Reconstruction
     pipelineVersion: '2.0.0',
   };
 
-  activeJobs.set(jobId, newJob);
+  cachedJobView.set(jobId, newJob);
   persistToStorage();
   notifyListeners(newJob);
-
-  // Persist asynchronously to Firestore
-  if (db) {
-    try {
-      setDoc(doc(db, COLLECTION_NAME, jobId), newJob).catch(err => {
-        console.warn('Firestore setDoc note for reconstruction job:', err);
-      });
-    } catch (e) {
-      // Offline fallback
-    }
-  }
 
   return newJob;
 };
 
 export const getReconstructionJob = (jobId: string): ReconstructionJob | null => {
-  return activeJobs.get(jobId) || null;
+  return cachedJobView.get(jobId) || null;
 };
 
 export const listJobsForProperty = (propertyId: string): ReconstructionJob[] => {
-  return Array.from(activeJobs.values()).filter(j => j.propertyId === propertyId);
+  return Array.from(cachedJobView.values()).filter(j => j.propertyId === propertyId);
 };
 
+/**
+ * Local UI optimistic state update (client MUST NOT mutate worker-owned stages in Firestore directly)
+ */
 export const updateJobStatus = (
   jobId: string,
   status: ReconstructionJobStatus,
@@ -192,7 +189,7 @@ export const updateJobStatus = (
   errorCode?: ReconstructionErrorCode,
   errorMessage?: string
 ): ReconstructionJob | null => {
-  const job = activeJobs.get(jobId);
+  const job = cachedJobView.get(jobId);
   if (!job) return null;
 
   job.status = status;
@@ -205,80 +202,41 @@ export const updateJobStatus = (
   }
 
   const updated = { ...job };
-  activeJobs.set(jobId, updated);
+  cachedJobView.set(jobId, updated);
   persistToStorage();
   notifyListeners(updated);
-
-  // Sync to Firestore
-  if (db) {
-    try {
-      updateDoc(doc(db, COLLECTION_NAME, jobId), {
-        status,
-        progress,
-        stage,
-        ...(errorCode ? { errorCode } : {}),
-        ...(errorMessage ? { errorMessage } : {}),
-        ...(job.completedAt ? { completedAt: job.completedAt } : {}),
-        updatedAt: new Date().toISOString(),
-      }).catch(() => {
-        // Fallback
-      });
-    } catch {
-      // Offline fallback
-    }
-  }
 
   return updated;
 };
 
 export const cancelReconstructionJob = (jobId: string): boolean => {
-  const job = activeJobs.get(jobId);
+  const job = cachedJobView.get(jobId);
   if (!job || job.status === 'READY') return false;
   job.status = 'CANCELLED';
   job.completedAt = new Date().toISOString();
   const updated = { ...job };
-  activeJobs.set(jobId, updated);
+  cachedJobView.set(jobId, updated);
   persistToStorage();
   notifyListeners(updated);
-
-  if (db) {
-    try {
-      updateDoc(doc(db, COLLECTION_NAME, jobId), {
-        status: 'CANCELLED',
-        completedAt: updated.completedAt,
-      }).catch(() => {});
-    } catch {}
-  }
-
   return true;
 };
 
 export const retryReconstructionJob = (jobId: string): ReconstructionJob | null => {
-  const job = activeJobs.get(jobId);
-  if (!job || (job.status !== 'FAILED' && job.status !== 'CANCELLED')) {
-    return null;
-  }
+  const job = cachedJobView.get(jobId);
+  if (!job || !['FAILED', 'CANCELLED'].includes(job.status)) return null;
 
   job.status = 'QUEUED';
   job.progress = 5;
   job.stage = 'QUEUED';
   job.errorCode = undefined;
   job.errorMessage = undefined;
-  job.errorMessageAr = undefined;
   job.completedAt = undefined;
   job.startedAt = new Date().toISOString();
   job.retryCount = (job.retryCount || 0) + 1;
 
   const updated = { ...job };
-  activeJobs.set(jobId, updated);
+  cachedJobView.set(jobId, updated);
   persistToStorage();
   notifyListeners(updated);
-
-  if (db) {
-    try {
-      setDoc(doc(db, COLLECTION_NAME, jobId), updated).catch(() => {});
-    } catch {}
-  }
-
   return updated;
 };

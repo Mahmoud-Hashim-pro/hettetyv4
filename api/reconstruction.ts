@@ -132,24 +132,28 @@ export async function getAdminServices(): Promise<{ adminDb: any; adminAuth: any
     const authPkg = 'firebase-admin/auth';
     const { getAuth } = await import(/* @vite-ignore */ authPkg);
 
+    // Upfront credential & project validation (fail-fast without hanging or network timeouts)
+    let serviceAccountData: any = null;
+    if (process.env.FIREBASE_SERVICE_ACCOUNT_KEY) {
+      try {
+        serviceAccountData = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_KEY);
+      } catch (parseErr: any) {
+        throw new Error(`FIREBASE_ADMIN_CONFIG_INVALID: Failed to parse FIREBASE_SERVICE_ACCOUNT_KEY JSON: ${parseErr.message}`);
+      }
+    }
+
+    const projectId = (serviceAccountData && serviceAccountData.project_id) ||
+      process.env.FIREBASE_PROJECT_ID ||
+      process.env.GOOGLE_CLOUD_PROJECT;
+
+    if (!projectId && process.env.NODE_ENV === 'production') {
+      throw new Error('CONFIGURATION_ERROR: Missing projectId for Firebase Admin initialization.');
+    }
+
     if (getApps().length === 0) {
-      if (process.env.FIREBASE_SERVICE_ACCOUNT_KEY) {
-        let sa: any;
-        try {
-          sa = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_KEY);
-        } catch (parseErr: any) {
-          throw new Error(`FIREBASE_ADMIN_CONFIG_INVALID: Failed to parse FIREBASE_SERVICE_ACCOUNT_KEY JSON: ${parseErr.message}`);
-        }
-        const projectId = sa.project_id || process.env.FIREBASE_PROJECT_ID || process.env.GOOGLE_CLOUD_PROJECT;
-        if (!projectId && process.env.NODE_ENV === 'production') {
-          throw new Error('CONFIGURATION_ERROR: Missing projectId for Firebase Admin initialization.');
-        }
-        initializeApp({ credential: cert(sa), ...(projectId ? { projectId } : {}) });
+      if (serviceAccountData) {
+        initializeApp({ credential: cert(serviceAccountData), ...(projectId ? { projectId } : {}) });
       } else {
-        const projectId = process.env.FIREBASE_PROJECT_ID || process.env.GOOGLE_CLOUD_PROJECT;
-        if (!projectId && process.env.NODE_ENV === 'production') {
-          throw new Error('CONFIGURATION_ERROR: Missing projectId for Firebase Admin initialization.');
-        }
         initializeApp(projectId ? { projectId } : undefined);
       }
     }
@@ -161,6 +165,9 @@ export async function getAdminServices(): Promise<{ adminDb: any; adminAuth: any
   } catch (err: any) {
     if (process.env.NODE_ENV === 'test' && !err.message?.includes('FIREBASE_ADMIN_CONFIG_INVALID') && !err.message?.includes('CONFIGURATION_ERROR')) {
       return { adminDb: null, adminAuth: null };
+    }
+    if (err.message?.includes('CONFIGURATION_ERROR') || err.message?.includes('FIREBASE_ADMIN_CONFIG_INVALID')) {
+      throw err;
     }
     throw new Error(`FIREBASE_ADMIN_INIT_FAILED: Could not initialize Firebase Admin SDK: ${err.message}`);
   }
@@ -778,6 +785,12 @@ export default async function handler(req: any, res: any) {
       // Enqueue to Redis stream BEFORE setting QUEUED
       const enqueued = await enqueueToRedis(job);
       if (!enqueued && process.env.REDIS_URL && !process.env.REDIS_URL.startsWith('mock://') && process.env.NODE_ENV !== 'test') {
+        job.status = 'FAILED';
+        job.stage = 'QUEUE_FAILED';
+        job.errorCode = 'REDIS_ENQUEUE_FAILED';
+        job.errorMessage = 'Failed to enqueue retry to worker stream.';
+        job.updatedAt = new Date().toISOString();
+        await persistJobToFirestore(job);
         return res.status(500).json({
           error: 'REDIS_ENQUEUE_FAILED: Failed to enqueue retry to worker stream.',
           jobId: job.id,

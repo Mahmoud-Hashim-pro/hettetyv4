@@ -72,14 +72,21 @@ class QueueConsumer:
                                 if payload_str:
                                     job = json.loads(payload_str)
                                     job_id = job.get("id", f"job-{time.time()}")
-                                    self._in_flight[job_id] = {
-                                        "job": job,
-                                        "leased_at": time.time(),
-                                        "stream": True,
-                                        "stream_msg_id": msg_id
-                                    }
-                                    logger.info(f"Re-claimed pending job {job_id} from stream (msg {msg_id})")
-                                    return job
+
+                                    # Check if active lease is held by another worker (prevent concurrent stealing)
+                                    lease_holder = self.redis_client.get(f"hettety:lease:{job_id}")
+                                    if lease_holder and lease_holder != self.worker_id:
+                                        logger.info(f"Skipping XAUTOCLAIM for job {job_id}: active lease held by {lease_holder}")
+                                    else:
+                                        self._in_flight[job_id] = {
+                                            "job": job,
+                                            "leased_at": time.time(),
+                                            "stream": True,
+                                            "stream_msg_id": msg_id
+                                        }
+                                        self.heartbeat(job_id)
+                                        logger.info(f"Re-claimed pending job {job_id} from stream (msg {msg_id})")
+                                        return job
                         except Exception as claim_err:
                             logger.debug(f"xautoclaim note: {claim_err}")
 
@@ -102,6 +109,7 @@ class QueueConsumer:
                                 "stream": True,
                                 "stream_msg_id": msg_id
                             }
+                            self.heartbeat(job_id)
                             return job
                     return None
                 except Exception as e:
@@ -125,6 +133,49 @@ class QueueConsumer:
                 except Exception as e:
                     logger.error(f"Error polling Redis queue '{self.queue_name}': {e}")
         return None
+
+    def heartbeat(self, job_id: str) -> bool:
+        """
+        Extends the lease of an actively processing job in Redis to prevent XAUTOCLAIM theft.
+        1. Refreshes the Redis key lease: hettety:lease:{job_id} with TTL.
+        2. Touches the Redis Stream message in PEL using XCLAIM to reset its idle time to 0.
+        """
+        if not job_id:
+            return False
+
+        flight = self._in_flight.get(job_id)
+        if flight:
+            flight["last_heartbeat_at"] = time.time()
+
+        if not self.redis_client:
+            return True
+
+        success = True
+        try:
+            # 1. Refresh key lease
+            lease_ttl = max(60, int(self.lease_timeout_sec))
+            self.redis_client.set(f"hettety:lease:{job_id}", self.worker_id, ex=lease_ttl)
+        except Exception as e:
+            logger.debug(f"Error updating Redis lease key for {job_id}: {e}")
+            success = False
+
+        # 2. Reset Stream PEL idle time via XCLAIM (min-idle-time 0 with justid=True)
+        if flight and flight.get("stream"):
+            msg_id = flight.get("stream_msg_id")
+            if msg_id and hasattr(self.redis_client, "xclaim"):
+                try:
+                    self.redis_client.xclaim(
+                        self.stream_name,
+                        self.group_name,
+                        self.worker_id,
+                        min_idle_time=0,
+                        message_ids=[msg_id],
+                        justid=True
+                    )
+                except Exception as ex:
+                    logger.debug(f"Error refreshing stream message idle time for {job_id}: {ex}")
+
+        return success
 
     def ack_job(self, job_id: str) -> None:
         """

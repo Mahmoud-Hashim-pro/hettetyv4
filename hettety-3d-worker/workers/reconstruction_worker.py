@@ -96,6 +96,12 @@ class ReconstructionWorker:
 
     def terminate_active_processes(self):
         """Gracefully terminates and kills active background reconstruction subprocesses (COLMAP / 3DGS) and frees GPU memory."""
+        try:
+            from pipeline.process_manager import terminate_all_active_processes
+            terminate_all_active_processes()
+        except Exception as e:
+            logger.warning(f"Error calling terminate_all_active_processes: {e}")
+
         for p in list(self.active_processes):
             try:
                 if p.poll() is None:
@@ -218,10 +224,12 @@ class ReconstructionWorker:
                 report("CANCELLED", 25, "Job cancelled by user")
                 return {"status": "cancelled", "jobId": job_id, "propertyId": property_id}
 
+            cancel_checker = lambda: self.is_cancelled(job_id)
+
             # Stage 3: SfM (Structure-from-Motion)
             report("RECONSTRUCTING", 35, "COLMAP feature extraction & camera alignment")
             try:
-                sfm_res = run_sfm(raw_images_dir, colmap_dir, is_video=is_video)
+                sfm_res = run_sfm(raw_images_dir, colmap_dir, is_video=is_video, cancel_check=cancel_checker)
                 if not sfm_res:
                     return fail(
                         sfm_res.get("error_code", "SFM_FAILED"),
@@ -239,7 +247,7 @@ class ReconstructionWorker:
             dense_dir = os.path.join(colmap_dir, "dense")
             report("RECONSTRUCTING", 50, "Executing dense multi-view stereo fusion")
             try:
-                dense_res = run_dense_stereo(sparse_dir=colmap_dir, image_dir=raw_images_dir, dense_dir=dense_dir)
+                dense_res = run_dense_stereo(sparse_dir=colmap_dir, image_dir=raw_images_dir, dense_dir=dense_dir, cancel_check=cancel_checker)
                 fused_ply = os.path.join(dense_dir, "fused.ply")
                 if not os.path.exists(fused_ply) or os.path.getsize(fused_ply) < 100:
                     # In real reconstruction, dense failure must strictly fail rather than falling back to sparse SfM
@@ -262,7 +270,7 @@ class ReconstructionWorker:
 
             # Stage 4: 3DGS Optimization / Training
             report("TRAINING", 65, "Optimizing 3D Gaussian Splatting scene")
-            train_res = run_gaussian_training(colmap_dir, model_dir, iterations=30000)
+            train_res = run_gaussian_training(colmap_dir, model_dir, iterations=30000, cancel_check=cancel_checker)
             if not train_res.get("success"):
                 return fail(
                     train_res.get("error_code", "TRAINING_FAILED"),
@@ -373,6 +381,12 @@ class ReconstructionWorker:
             return pub_res
 
         except Exception as e:
+            from pipeline.process_manager import JobCancelledException
+            if isinstance(e, JobCancelledException):
+                logger.warning(f"Reconstruction job {job_id} cancelled during managed execution: {e}")
+                report("CANCELLED", 0, "Job cancelled by user request")
+                return {"status": "cancelled", "jobId": job_id, "propertyId": property_id}
+
             err_str = str(e).lower()
             if "out of memory" in err_str or "cuda error: out of memory" in err_str:
                 logger.error(f"CUDA GPU Out-Of-Memory encountered for job {job_id}: {e}")

@@ -6,8 +6,11 @@ Optimizes matching strategy: sequential for video captures, exhaustive for <=50 
 
 import subprocess
 import os
+import shutil
 import logging
-from typing import Optional, Tuple, Dict, Any, List
+from typing import Optional, Tuple, Dict, Any, List, Callable
+
+from pipeline.process_manager import run_managed_process
 
 logger = logging.getLogger("hettety-3d-worker.colmap")
 
@@ -16,15 +19,48 @@ class SfMResult(dict):
     def __bool__(self):
         return bool(self.get("success", False))
 
-def exec_colmap(cmd: List[str], check: bool = True) -> subprocess.CompletedProcess:
+def is_gpu_acceleration_available() -> bool:
     """
-    Executes a COLMAP command. If 'colmap' is on PATH, runs it directly.
+    Checks if NVIDIA GPU acceleration is available on the host/container.
+    Respects explicit environment overrides COLMAP_FORCE_CPU and COLMAP_FORCE_GPU.
+    """
+    if os.environ.get("COLMAP_FORCE_CPU", "").lower() in ("1", "true"):
+        return False
+    if os.environ.get("COLMAP_FORCE_GPU", "").lower() in ("1", "true"):
+        return True
+    try:
+        import torch
+        if torch.cuda.is_available():
+            return True
+    except Exception:
+        pass
+    if shutil.which("nvidia-smi"):
+        try:
+            res = subprocess.run(["nvidia-smi"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+            if res.returncode == 0:
+                return True
+        except Exception:
+            pass
+    return False
+
+def exec_colmap(
+    cmd: List[str],
+    check: bool = True,
+    cancel_check: Optional[Callable[[], bool]] = None,
+    timeout: Optional[float] = None
+) -> subprocess.CompletedProcess:
+    """
+    Executes a COLMAP command via managed process tracking.
+    If 'colmap' is on PATH, runs it directly.
     Otherwise, if docker is available, runs via container 'hettety-colmap:latest'
-    with automatic directory volume mounting and path translation.
+    with automatic directory volume mounting, GPU passthrough if available, and path translation.
+    Terminates immediately if cancel_check() returns True.
     """
-    import shutil
+    gpu_available = is_gpu_acceleration_available()
+
     if shutil.which("colmap"):
-        return subprocess.run(cmd, check=check, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        # Direct COLMAP execution on host
+        return run_managed_process(cmd, check=check, cancel_check=cancel_check, timeout=timeout)
 
     if shutil.which("docker"):
         subcommand = cmd[1] if len(cmd) > 1 else ""
@@ -35,7 +71,7 @@ def exec_colmap(cmd: List[str], check: bool = True) -> subprocess.CompletedProce
             "--workspace_path"
         }
 
-        mount_map = {} # host_abs_dir -> container_dir
+        mount_map = {}  # host_abs_dir -> container_dir
         idx = 0
         while idx < len(raw_args):
             arg = raw_args[idx]
@@ -81,15 +117,21 @@ def exec_colmap(cmd: List[str], check: bool = True) -> subprocess.CompletedProce
                     new_args.append(raw_args[idx + 1])
                 idx += 2
             else:
-                if "use_gpu" in arg and idx + 1 < len(raw_args) and raw_args[idx + 1] == "1":
+                # GPU passthrough handling: keep use_gpu 1 if GPU is available, else downgrade to 0
+                if "use_gpu" in arg and idx + 1 < len(raw_args):
                     new_args.append(arg)
-                    new_args.append("0")
+                    if gpu_available:
+                        new_args.append(raw_args[idx + 1])
+                    else:
+                        new_args.append("0")
                     idx += 2
                 else:
                     new_args.append(arg)
                     idx += 1
 
         docker_cmd = ["docker", "run", "--rm"]
+        if gpu_available:
+            docker_cmd.extend(["--gpus", "all"])
         for h_dir, c_dir in mount_map.items():
             h_dir_posix = h_dir.replace("\\", "/")
             docker_cmd.extend(["-v", f"{h_dir_posix}:{c_dir}"])
@@ -98,14 +140,9 @@ def exec_colmap(cmd: List[str], check: bool = True) -> subprocess.CompletedProce
             docker_cmd.append(subcommand)
         docker_cmd.extend(new_args)
 
-        proc = subprocess.run(docker_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        if check and proc.returncode != 0:
-            err = proc.stderr.decode("utf-8", errors="ignore")
-            logger.error(f"COLMAP docker run failed (exit code {proc.returncode}): {err}")
-            raise subprocess.CalledProcessError(proc.returncode, docker_cmd, output=proc.stdout, stderr=proc.stderr)
-        return proc
+        return run_managed_process(docker_cmd, check=check, cancel_check=cancel_check, timeout=timeout)
 
-    return subprocess.run(cmd, check=check, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    return run_managed_process(cmd, check=check, cancel_check=cancel_check, timeout=timeout)
 
 def parse_colmap_reconstruction_metrics(sparse_dir: str) -> Tuple[int, int, str]:
     """
@@ -198,7 +235,12 @@ def parse_colmap_reconstruction_metrics(sparse_dir: str) -> Tuple[int, int, str]
 
     return registered_images, points_count, target_dir, metrics
 
-def run_sfm(image_dir: str, output_dir: str, is_video: bool = False) -> SfMResult:
+def run_sfm(
+    image_dir: str,
+    output_dir: str,
+    is_video: bool = False,
+    cancel_check: Optional[Callable[[], bool]] = None
+) -> SfMResult:
     db_path = os.path.join(output_dir, "database.db")
     sparse_dir = os.path.join(output_dir, "sparse")
     os.makedirs(sparse_dir, exist_ok=True)
@@ -224,7 +266,7 @@ def run_sfm(image_dir: str, output_dir: str, is_video: bool = False) -> SfMResul
         "--ImageReader.camera_model", "OPENCV",
         "--SiftExtraction.use_gpu", "1"
     ]
-    exec_colmap(cmd_extract, check=True)
+    exec_colmap(cmd_extract, check=True, cancel_check=cancel_check)
 
     # 2. Adaptive matching: sequential for video captures or >100 images, exhaustive for photo clusters
     if is_video or image_count > 100:
@@ -242,7 +284,7 @@ def run_sfm(image_dir: str, output_dir: str, is_video: bool = False) -> SfMResul
             "--database_path", db_path,
             "--SiftMatching.use_gpu", "1"
         ]
-    exec_colmap(cmd_match, check=True)
+    exec_colmap(cmd_match, check=True, cancel_check=cancel_check)
 
     # 3. Mapper / Sparse Reconstruction
     cmd_mapper = [
@@ -252,7 +294,7 @@ def run_sfm(image_dir: str, output_dir: str, is_video: bool = False) -> SfMResul
         "--output_path", sparse_dir,
         "--Mapper.min_num_matches", "15"
     ]
-    exec_colmap(cmd_mapper, check=True)
+    exec_colmap(cmd_mapper, check=True, cancel_check=cancel_check)
 
     # 4. Quantitative verification of registered cameras and sparse point cloud
     registered_images, points_count, valid_sparse, metrics = parse_colmap_reconstruction_metrics(sparse_dir)
@@ -334,7 +376,8 @@ def run_dense_stereo(
     sparse_dir: str,
     image_dir: str,
     dense_dir: str,
-    max_image_size: int = 2000
+    max_image_size: int = 2000,
+    cancel_check: Optional[Callable[[], bool]] = None
 ) -> Dict[str, Any]:
     """
     Executes genuine multi-view dense stereo reconstruction:
@@ -346,10 +389,18 @@ def run_dense_stereo(
     os.makedirs(dense_dir, exist_ok=True)
     fused_ply = os.path.join(dense_dir, "fused.ply")
 
-    # Verify sparse model exists
+    # Verify sparse model exists across candidate directory layouts
+    candidates = [
+        os.path.join(sparse_dir, "sparse", "0"),
+        os.path.join(sparse_dir, "0"),
+        os.path.join(sparse_dir, "sparse"),
+        sparse_dir
+    ]
     candidate_sparse = sparse_dir
-    if os.path.exists(os.path.join(sparse_dir, "0")):
-        candidate_sparse = os.path.join(sparse_dir, "0")
+    for c in candidates:
+        if os.path.exists(c) and any(os.path.exists(os.path.join(c, f)) for f in ["images.bin", "images.txt", "cameras.bin", "cameras.txt"]):
+            candidate_sparse = c
+            break
 
     try:
         # 1. Image Undistortion
@@ -362,7 +413,7 @@ def run_dense_stereo(
             "--output_type", "COLMAP",
             "--max_image_size", str(max_image_size)
         ]
-        exec_colmap(cmd_undistort, check=True)
+        exec_colmap(cmd_undistort, check=True, cancel_check=cancel_check)
 
         # 2. Patch Match Stereo (Photometric + Geometric depth consistency)
         logger.info("Stage 2/3: Computing dense photometric depth maps (PatchMatchStereo)...")
@@ -372,7 +423,7 @@ def run_dense_stereo(
             "--workspace_format", "COLMAP",
             "--PatchMatchStereo.geom_consistency", "true"
         ]
-        exec_colmap(cmd_stereo, check=True)
+        exec_colmap(cmd_stereo, check=True, cancel_check=cancel_check)
 
         # 3. Stereo Fusion (Fusing multiview depth maps into dense 3D point cloud)
         logger.info("Stage 3/3: Fusing depth maps into dense 3D point cloud (StereoFusion)...")
@@ -383,7 +434,7 @@ def run_dense_stereo(
             "--input_type", "geometric",
             "--output_path", fused_ply
         ]
-        exec_colmap(cmd_fuse, check=True)
+        exec_colmap(cmd_fuse, check=True, cancel_check=cancel_check)
 
         if not os.path.exists(fused_ply) or os.path.getsize(fused_ply) < 100:
             return {

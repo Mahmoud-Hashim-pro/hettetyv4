@@ -117,12 +117,102 @@ def publish_tour_assets(
 
     overall_score = int(sum(valid_components) / max(0.1, sum(overall_weights))) if valid_components else 0
     
+    quality_metrics = {
+        "coverage": coverage_score,
+        "sharpness": sharpness_val,
+        "density": density_score,
+        "meshCompleteness": mesh_score,
+        "registeredCameras": {
+            "value": reg_val,
+            "status": reg_status
+        },
+        "totalCameras": image_count,
+        "splatCount": {
+            "value": splat_val,
+            "status": splat_status
+        },
+        "sharpnessScore": {
+            "value": sharpness_val,
+            "status": sharpness_status
+        },
+        "isCalibratedMetric": is_calibrated_metric
+    }
+
+    import tempfile
+    import datetime
+
+    manifest_url = None
+    manifest_sha256 = None
+
+    manifest_content = {
+        "manifestVersion": "1.0.0",
+        "jobId": job_id,
+        "propertyId": property_id,
+        "attemptId": attempt_id,
+        "workerId": worker_id,
+        "publishedAt": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        "coordinateSystem": {
+            "name": "threejs_canonical",
+            "handedness": "right_handed",
+            "axis": {
+                "x": "+X_right",
+                "y": "+Y_up",
+                "z": "+Z_backward"
+            },
+            "unit": "meter",
+            "scale": 1.0
+        },
+        "artifacts": {
+            "spz": {
+                "format": "spz",
+                "url": spz_url,
+                "storagePath": remote_spz_path,
+                "sha256": spz_sha256,
+                "sizeBytes": spz_size,
+                "splatCount": splat_val
+            },
+            "glb": {
+                "format": "glb",
+                "url": glb_url,
+                "storagePath": remote_glb_path,
+                "sha256": glb_sha256,
+                "sizeBytes": glb_size,
+                "vertexCount": mesh_vertex_count,
+                "faceCount": mesh_face_count,
+                "isCalibratedMetric": is_calibrated_metric
+            }
+        },
+        "bounds": bounds,
+        "qualityReport": {
+            "overallScore": overall_score,
+            "metrics": quality_metrics
+        }
+    }
+
+    remote_manifest_path = f"properties/{property_id}/tour/manifest.json"
+    manifest_url = f"{cdn_base_url}/{remote_manifest_path}"
+    with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as mf:
+        json.dump(manifest_content, mf, indent=2)
+        local_manifest_tmp = mf.name
+
+    try:
+        manifest_sha256 = compute_sha256(local_manifest_tmp)
+        if storage_client:
+            storage_client.upload_file(local_manifest_tmp, remote_manifest_path)
+    finally:
+        try:
+            os.remove(local_manifest_tmp)
+        except Exception:
+            pass
+
     payload = {
         "jobId": job_id,
         "propertyId": property_id,
         "status": "ready",
         **({"attemptId": attempt_id} if attempt_id else {}),
         **({"workerId": worker_id} if worker_id else {}),
+        **({"manifestUrl": manifest_url} if manifest_url else {}),
+        **({"manifestSha256": manifest_sha256} if manifest_sha256 else {}),
         "representation": {
             "gaussianSplat": {
                 "format": "spz",
@@ -144,26 +234,7 @@ def publish_tour_assets(
         "bounds": bounds,
         "qualityReport": {
             "overallScore": overall_score,
-            "metrics": {
-                "coverage": coverage_score,
-                "sharpness": sharpness_val,
-                "density": density_score,
-                "meshCompleteness": mesh_score,
-                "registeredCameras": {
-                    "value": reg_val,
-                    "status": reg_status
-                },
-                "totalCameras": image_count,
-                "splatCount": {
-                    "value": splat_val,
-                    "status": splat_status
-                },
-                "sharpnessScore": {
-                    "value": sharpness_val,
-                    "status": sharpness_status
-                },
-                "isCalibratedMetric": is_calibrated_metric
-            }
+            "metrics": quality_metrics
         }
     }
     

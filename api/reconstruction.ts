@@ -28,10 +28,15 @@ export interface ReconstructionJobPayload {
   createdAt: string;
   retryCount: number;
   idempotencyKey?: string;
+  stateVersion?: number;
+  cancelRequested?: boolean;
+  cancelRequestedAt?: string;
   scaleReferences?: any[];
   progress?: number;
   stage?: string;
   workerId?: string;
+  manifestUrl?: string;
+  manifestSha256?: string;
   errorCode?: string;
   errorMessage?: string;
   completedAt?: string;
@@ -65,6 +70,7 @@ export interface ReconstructionJobPayload {
 
 // In-memory control plane store for fast local development and testing
 export const controlPlaneJobs = new Map<string, ReconstructionJobPayload>();
+export const controlPlaneIdempotencyKeys = new Map<string, string>();
 export const mockPropertiesStore = new Map<string, { authorUid: string; [key: string]: any }>();
 export const mockAttemptsStore = new Map<string, any[]>();
 
@@ -211,10 +217,16 @@ export async function persistJobToFirestore(job: ReconstructionJobPayload): Prom
       progress: job.progress ?? (job.status === 'QUEUED' ? 10 : job.status === 'READY' ? 100 : 0),
       attemptId: job.attemptId,
       retryCount: job.retryCount,
-      manifest: job.manifest,
+      stateVersion: job.stateVersion ?? 1,
       createdAt: job.createdAt,
       updatedAt: now,
+      ...(job.stageStartedAt ? { stageStartedAt: job.stageStartedAt } : {}),
+      ...(job.lastHeartbeatAt ? { lastHeartbeatAt: job.lastHeartbeatAt } : {}),
+      ...(job.cancelRequested ? { cancelRequested: job.cancelRequested } : {}),
+      ...(job.cancelRequestedAt ? { cancelRequestedAt: job.cancelRequestedAt } : {}),
       ...(job.workerId ? { workerId: job.workerId } : {}),
+      ...(job.manifestUrl ? { manifestUrl: job.manifestUrl } : {}),
+      ...(job.manifestSha256 ? { manifestSha256: job.manifestSha256 } : {}),
       ...(job.representation ? { representation: job.representation } : {}),
       ...(job.bounds ? { bounds: job.bounds } : {}),
       ...(job.qualityReport ? { qualityReport: job.qualityReport } : {}),
@@ -258,6 +270,9 @@ export async function persistJobToFirestore(job: ReconstructionJobPayload): Prom
         publishedAt: now,
         createdAt: job.createdAt,
         updatedAt: now,
+        currentVersionId: `${job.id}_${job.attemptId}`,
+        ...(job.manifestUrl ? { manifestUrl: job.manifestUrl } : {}),
+        ...(job.manifestSha256 ? { manifestSha256: job.manifestSha256 } : {}),
       };
 
       // 1. Property-level active spatial asset
@@ -286,6 +301,126 @@ export async function persistJobToFirestore(job: ReconstructionJobPayload): Prom
     controlPlaneJobs.set(job.id, job);
   } catch (err: any) {
     throw new Error(`PERSISTENCE_FAILED: Failed to persist job ${job.id} to Firestore: ${err.message}`);
+  }
+}
+
+/**
+ * Executes an authoritative state mutation within a Firestore transaction.
+ * Enforces stateVersion optimistic locking, prevents stale-writes, and guarantees atomic transitions.
+ */
+export async function runJobTransaction(
+  jobId: string,
+  mutateFn: (currentJob: ReconstructionJobPayload) => {
+    updatedJob: ReconstructionJobPayload;
+    additionalWrites?: (tx: any, adminDb: any, attemptId: string) => void;
+  },
+  expectedStateVersion?: number
+): Promise<ReconstructionJobPayload> {
+  const { adminDb } = await getAdminServices();
+  const now = new Date().toISOString();
+
+  if (!adminDb) {
+    const current = controlPlaneJobs.get(jobId);
+    if (!current) {
+      const err: any = new Error(`JOB_NOT_FOUND: Job ${jobId} does not exist.`);
+      err.status = 404;
+      throw err;
+    }
+    if (expectedStateVersion !== undefined && current.stateVersion !== undefined && current.stateVersion !== expectedStateVersion) {
+      const err: any = new Error(`STATE_VERSION_CONFLICT: Expected state version ${expectedStateVersion} but current is ${current.stateVersion}`);
+      err.code = 'STATE_VERSION_CONFLICT';
+      err.status = 409;
+      throw err;
+    }
+    const { updatedJob } = mutateFn({ ...current });
+    updatedJob.stateVersion = (current.stateVersion ?? 1) + 1;
+    updatedJob.updatedAt = now;
+    controlPlaneJobs.set(jobId, updatedJob);
+    return updatedJob;
+  }
+
+  try {
+    const result = await adminDb.runTransaction(async (tx: any) => {
+      const jobDocRef = adminDb.collection('reconstruction_jobs').doc(jobId);
+      const snap = await tx.get(jobDocRef);
+      if (!snap.exists) {
+        const err: any = new Error(`JOB_NOT_FOUND: Job ${jobId} does not exist.`);
+        err.status = 404;
+        throw err;
+      }
+      const current = snap.data() as ReconstructionJobPayload;
+      if (expectedStateVersion !== undefined && current.stateVersion !== undefined && current.stateVersion !== expectedStateVersion) {
+        const err: any = new Error(`STATE_VERSION_CONFLICT: Expected state version ${expectedStateVersion} but current is ${current.stateVersion}`);
+        err.code = 'STATE_VERSION_CONFLICT';
+        err.status = 409;
+        throw err;
+      }
+
+      const { updatedJob, additionalWrites } = mutateFn({ ...current });
+      updatedJob.stateVersion = (current.stateVersion ?? 1) + 1;
+      updatedJob.updatedAt = now;
+
+      // Clean set to prevent stale fields from previous attempts leaking forward
+      tx.set(jobDocRef, updatedJob);
+
+      if (updatedJob.attemptId) {
+        const attemptDocRef = jobDocRef.collection('attempts').doc(updatedJob.attemptId);
+        tx.set(attemptDocRef, {
+          attemptId: updatedJob.attemptId,
+          jobId: updatedJob.id,
+          workerId: updatedJob.workerId || null,
+          status: updatedJob.status,
+          stage: updatedJob.stage || updatedJob.status,
+          progress: updatedJob.progress ?? 0,
+          updatedAt: now,
+          ...(updatedJob.completedAt ? { completedAt: updatedJob.completedAt } : {}),
+          ...(updatedJob.errorCode ? { errorCode: updatedJob.errorCode, errorMessage: updatedJob.errorMessage } : {}),
+        }, { merge: true });
+      }
+
+      if (updatedJob.status === 'READY' && updatedJob.representation) {
+        const assetPayload: any = {
+          id: updatedJob.propertyId,
+          propertyId: updatedJob.propertyId,
+          jobId: updatedJob.id,
+          attemptId: updatedJob.attemptId,
+          status: 'PUBLISHED',
+          representation: updatedJob.representation,
+          bounds: updatedJob.bounds || null,
+          qualityReport: updatedJob.qualityReport || null,
+          publishedAt: now,
+          createdAt: updatedJob.createdAt,
+          updatedAt: now,
+          currentVersionId: `${updatedJob.id}_${updatedJob.attemptId}`,
+          ...(updatedJob.manifestUrl ? { manifestUrl: updatedJob.manifestUrl } : {}),
+          ...(updatedJob.manifestSha256 ? { manifestSha256: updatedJob.manifestSha256 } : {}),
+        };
+
+        const propAssetDocRef = adminDb.collection('three_d_assets').doc(updatedJob.propertyId);
+        tx.set(propAssetDocRef, assetPayload, { merge: true });
+
+        const jobAssetDocRef = adminDb.collection('three_d_assets').doc(updatedJob.id);
+        tx.set(jobAssetDocRef, assetPayload, { merge: true });
+
+        const versionDocRef = propAssetDocRef.collection('versions').doc(`${updatedJob.id}_${updatedJob.attemptId}`);
+        tx.set(versionDocRef, {
+          ...assetPayload,
+          versionId: `${updatedJob.id}_${updatedJob.attemptId}`,
+        }, { merge: true });
+      }
+
+      if (additionalWrites) {
+        additionalWrites(tx, adminDb, updatedJob.attemptId);
+      }
+
+      return updatedJob;
+    });
+
+    controlPlaneJobs.set(jobId, result);
+    return result;
+  } catch (txErr: any) {
+    if (txErr.status) throw txErr;
+    throw new Error(`TRANSACTION_FAILED: Failed to mutate job ${jobId}: ${txErr.message}`);
   }
 }
 
@@ -355,15 +490,18 @@ export async function authenticateRequest(req: any): Promise<{ uid: string; isAd
     throw new Error('AUTHENTICATION_REQUIRED: Empty Bearer token.');
   }
 
-  // 1. Worker internal authentication
+  // 1. Worker internal authentication (Principle of Least Privilege: worker daemon is NOT admin)
   const workerSecret = getWorkerSharedSecret();
   if (token === workerSecret) {
-    return { uid: 'worker-daemon', isAdmin: true, isWorker: true };
+    return { uid: 'worker-daemon', isAdmin: false, isWorker: true };
   }
 
   // 2. Unit testing harness ONLY
   if (process.env.NODE_ENV === 'test') {
-    const testUid = req.headers?.['x-user-id'] || (token !== workerSecret ? token : 'test-owner-uid');
+    if (token === workerSecret || req.headers?.['x-worker-token'] === 'true') {
+      return { uid: 'worker-daemon', isAdmin: false, isWorker: true };
+    }
+    const testUid = req.headers?.['x-user-id'] || token;
     return { uid: testUid, isAdmin: testUid.includes('admin') || token.includes('admin'), isWorker: false };
   }
 
@@ -580,6 +718,10 @@ export default async function handler(req: any, res: any) {
     // 1. Action: CREATE RECONSTRUCTION JOB
     if (action === 'create-job') {
       const auth = await authenticateRequest(req);
+      if (auth.isWorker) {
+        return res.status(403).json({ error: 'FORBIDDEN: Worker tokens are not authorized to create reconstruction jobs.' });
+      }
+
       const { propertyId, files, type, scaleReferences } = req.body;
       if (!propertyId || !files || !Array.isArray(files) || files.length === 0) {
         return res.status(400).json({ error: 'INVALID_REQUEST: propertyId and non-empty files array are required.' });
@@ -592,8 +734,25 @@ export default async function handler(req: any, res: any) {
 
       // P1-6: Idempotent submission: If idempotencyKey provided, replay existing active job
       const idempotencyKey = (req.headers?.['idempotency-key'] || req.headers?.['Idempotency-Key'] || req.body?.idempotencyKey)?.toString();
+      let keyHash: string | undefined;
       if (idempotencyKey) {
+        keyHash = crypto.createHash('sha256').update(`${auth.uid}:${propertyId}:${idempotencyKey}`).digest('hex');
+
         // 1. Check in-memory store
+        const cachedJobId = controlPlaneIdempotencyKeys.get(keyHash);
+        if (cachedJobId && controlPlaneJobs.has(cachedJobId)) {
+          const j = controlPlaneJobs.get(cachedJobId)!;
+          return res.status(200).json({
+            job: j,
+            idempotentReplay: true,
+            sessionId: `session_${j.id}`,
+            signedUploadUrls: (j.manifest || []).map((m: any) => ({
+              id: m.id,
+              uploadUrl: m.uploadUrl,
+              storagePath: m.storagePath,
+            })),
+          });
+        }
         for (const j of controlPlaneJobs.values()) {
           if (j.ownerId === auth.uid && j.propertyId === propertyId && j.idempotencyKey === idempotencyKey) {
             return res.status(200).json({
@@ -609,29 +768,29 @@ export default async function handler(req: any, res: any) {
           }
         }
 
-        // 2. Check Firestore
+        // 2. Check Firestore atomic idempotency document
         const { adminDb } = await getAdminServices();
         if (adminDb) {
           try {
-            const snap = await adminDb.collection('reconstruction_jobs')
-              .where('propertyId', '==', propertyId)
-              .where('ownerId', '==', auth.uid)
-              .where('idempotencyKey', '==', idempotencyKey)
-              .limit(1)
-              .get();
-            if (!snap.empty) {
-              const existingJob = snap.docs[0].data() as ReconstructionJobPayload;
-              controlPlaneJobs.set(existingJob.id, existingJob);
-              return res.status(200).json({
-                job: existingJob,
-                idempotentReplay: true,
-                sessionId: `session_${existingJob.id}`,
-                signedUploadUrls: (existingJob.manifest || []).map((m: any) => ({
-                  id: m.id,
-                  uploadUrl: m.uploadUrl,
-                  storagePath: m.storagePath,
-                })),
-              });
+            const idempSnap = await adminDb.collection('reconstruction_idempotency').doc(keyHash).get();
+            if (idempSnap.exists) {
+              const existingJobId = idempSnap.data()?.jobId;
+              if (existingJobId) {
+                const existingJob = await getJobFromFirestoreOrMemory(existingJobId);
+                if (existingJob) {
+                  controlPlaneIdempotencyKeys.set(keyHash, existingJob.id);
+                  return res.status(200).json({
+                    job: existingJob,
+                    idempotentReplay: true,
+                    sessionId: `session_${existingJob.id}`,
+                    signedUploadUrls: (existingJob.manifest || []).map((m: any) => ({
+                      id: m.id,
+                      uploadUrl: m.uploadUrl,
+                      storagePath: m.storagePath,
+                    })),
+                  });
+                }
+              }
             }
           } catch (queryErr) {
             console.debug('[ControlPlane] Idempotency query error:', queryErr);
@@ -669,11 +828,29 @@ export default async function handler(req: any, res: any) {
         manifest,
         createdAt: new Date().toISOString(),
         retryCount: 0,
+        stateVersion: 1,
         scaleReferences: scaleReferences || [],
         ...(idempotencyKey ? { idempotencyKey } : {}),
       };
 
       await persistJobToFirestore(newJob);
+
+      if (keyHash) {
+        controlPlaneIdempotencyKeys.set(keyHash, jobId);
+        const { adminDb } = await getAdminServices();
+        if (adminDb) {
+          try {
+            await adminDb.collection('reconstruction_idempotency').doc(keyHash).set({
+              jobId,
+              propertyId,
+              ownerId: auth.uid,
+              createdAt: new Date().toISOString(),
+            });
+          } catch (idempErr) {
+            console.debug('[ControlPlane] Could not record idempotency doc:', idempErr);
+          }
+        }
+      }
 
       return res.status(200).json({
         job: newJob,
@@ -689,6 +866,10 @@ export default async function handler(req: any, res: any) {
     // 2. Action: COMPLETE UPLOADS & ENQUEUE TO WORKER
     if (action === 'complete-uploads') {
       const auth = await authenticateRequest(req);
+      if (auth.isWorker) {
+        return res.status(403).json({ error: 'FORBIDDEN: Worker tokens cannot complete user uploads.' });
+      }
+
       const { jobId, uploadedAssetIds, checksums } = req.body;
 
       if (!uploadedAssetIds || !Array.isArray(uploadedAssetIds) || uploadedAssetIds.length === 0) {
@@ -709,109 +890,137 @@ export default async function handler(req: any, res: any) {
         'video/mp4', 'video/quicktime', 'video/webm'
       ];
 
+      // Full manifest verification: Every declared item in manifest must be uploaded & verified
       let verifiedCount = 0;
       for (const asset of job.manifest) {
-        if (uploadedAssetIds.includes(asset.id)) {
-          // Check storage prefix integrity
-          const expectedPrefix = `properties/${job.propertyId}/3d/raw/${job.id}/`;
-          if (!asset.storagePath.startsWith(expectedPrefix)) {
-            asset.validationStatus = 'REJECTED';
-            continue;
-          }
+        if (!uploadedAssetIds.includes(asset.id)) {
+          return res.status(400).json({
+            error: `UPLOAD_VERIFICATION_FAILED: Manifest asset ${asset.id} was not included in uploadedAssetIds. Full manifest must be uploaded.`,
+          });
+        }
 
-          // Check format & bounds
-          if (!allowedMimes.includes(asset.mimeType) && !asset.mimeType.startsWith('image/') && !asset.mimeType.startsWith('video/')) {
-            asset.validationStatus = 'REJECTED';
-            continue;
-          }
+        // Check storage prefix integrity
+        const expectedPrefix = `properties/${job.propertyId}/3d/raw/${job.id}/`;
+        if (!asset.storagePath.startsWith(expectedPrefix)) {
+          return res.status(400).json({
+            error: `UPLOAD_VERIFICATION_FAILED: Asset ${asset.id} storagePath does not match expected prefix ${expectedPrefix}.`,
+          });
+        }
 
-          // Aligned 500MB upload ceiling
-          if (asset.sizeBytes < 0 || asset.sizeBytes > 500 * 1024 * 1024) {
-            asset.validationStatus = 'REJECTED';
-            continue;
-          }
+        // Check format & bounds
+        if (!allowedMimes.includes(asset.mimeType) && !asset.mimeType.startsWith('image/') && !asset.mimeType.startsWith('video/')) {
+          return res.status(400).json({
+            error: `UPLOAD_VERIFICATION_FAILED: Asset ${asset.id} has invalid mimeType ${asset.mimeType}.`,
+          });
+        }
 
-          if (checksums && checksums[asset.id]) {
-            asset.checksum = checksums[asset.id];
-          }
+        // Aligned 500MB upload ceiling
+        if (asset.sizeBytes < 0 || asset.sizeBytes > 500 * 1024 * 1024) {
+          return res.status(400).json({
+            error: `UPLOAD_VERIFICATION_FAILED: Asset ${asset.id} exceeds upload size limit.`,
+          });
+        }
 
-          // Real GCS object verification if running with live GCS provider (Fail Closed)
-          if (process.env.STORAGE_PROVIDER === 'gcs' && process.env.GCS_BUCKET_NAME && process.env.NODE_ENV !== 'test') {
-            try {
-              const storagePkg = '@google-cloud/storage';
-              const { Storage } = await import(/* @vite-ignore */ storagePkg);
-              const storage = new Storage();
-              const [exists] = await storage.bucket(process.env.GCS_BUCKET_NAME).file(asset.storagePath).exists();
-              if (!exists) {
-                asset.validationStatus = 'REJECTED';
-                continue;
-              }
-              const [metadata] = await storage.bucket(process.env.GCS_BUCKET_NAME).file(asset.storagePath).getMetadata();
-              const realSize = Number(metadata.size || 0);
-              if (realSize === 0 || realSize > 500 * 1024 * 1024) {
-                asset.validationStatus = 'REJECTED';
-                continue;
-              }
-              if (asset.checksum && metadata.md5Hash) {
-                const clientMd5Hex = asset.checksum.length === 32 ? Buffer.from(asset.checksum, 'hex').toString('base64') : asset.checksum;
-                if (clientMd5Hex !== metadata.md5Hash) {
-                  asset.validationStatus = 'REJECTED';
-                  continue;
-                }
-              }
-              asset.sizeBytes = realSize;
-            } catch (gcsErr: any) {
-              console.error('[ControlPlane] GCS verification failed:', gcsErr);
-              return res.status(502).json({
-                error: `STORAGE_VERIFICATION_FAILED: Cloud storage verification failed: ${gcsErr.message}`,
+        if (checksums && checksums[asset.id]) {
+          asset.checksum = checksums[asset.id];
+        }
+
+        // Real GCS object verification if running with live GCS provider (Fail Closed)
+        if (process.env.STORAGE_PROVIDER === 'gcs' && process.env.GCS_BUCKET_NAME && process.env.NODE_ENV !== 'test') {
+          try {
+            const storagePkg = '@google-cloud/storage';
+            const { Storage } = await import(/* @vite-ignore */ storagePkg);
+            const storage = new Storage();
+            const [exists] = await storage.bucket(process.env.GCS_BUCKET_NAME).file(asset.storagePath).exists();
+            if (!exists) {
+              return res.status(400).json({
+                error: `UPLOAD_VERIFICATION_FAILED: Asset ${asset.id} does not exist in storage bucket.`,
               });
             }
+            const [metadata] = await storage.bucket(process.env.GCS_BUCKET_NAME).file(asset.storagePath).getMetadata();
+            const realSize = Number(metadata.size || 0);
+            if (realSize === 0 || realSize > 500 * 1024 * 1024) {
+              return res.status(400).json({
+                error: `UPLOAD_VERIFICATION_FAILED: Asset ${asset.id} invalid remote file size ${realSize}.`,
+              });
+            }
+            if (asset.checksum && metadata.md5Hash) {
+              const clientMd5Hex = asset.checksum.length === 32 ? Buffer.from(asset.checksum, 'hex').toString('base64') : asset.checksum;
+              if (clientMd5Hex !== metadata.md5Hash) {
+                return res.status(400).json({
+                  error: `UPLOAD_VERIFICATION_FAILED: Asset ${asset.id} MD5 checksum mismatch.`,
+                });
+              }
+            }
+            asset.sizeBytes = realSize;
+          } catch (gcsErr: any) {
+            console.error('[ControlPlane] GCS verification failed:', gcsErr);
+            return res.status(502).json({
+              error: `STORAGE_VERIFICATION_FAILED: Cloud storage verification failed: ${gcsErr.message}`,
+            });
           }
-
-          asset.validationStatus = 'VERIFIED';
-          verifiedCount++;
         }
+
+        asset.validationStatus = 'VERIFIED';
+        verifiedCount++;
       }
 
-      if (verifiedCount === 0 || verifiedCount < uploadedAssetIds.length) {
+      if (verifiedCount === 0 || verifiedCount < job.manifest.length) {
         return res.status(400).json({
-          error: 'UPLOAD_VERIFICATION_FAILED: One or more capture assets failed verification.',
+          error: 'UPLOAD_VERIFICATION_FAILED: All declared manifest assets must be uploaded and verified before enqueuing.',
         });
       }
 
-      // Enqueue to Redis stream first before declaring QUEUED state
-      const enqueued = await enqueueToRedis(job);
+      // Persist QUEUED state to Firestore via transaction BEFORE enqueuing to Redis stream
+      const nowIso = new Date().toISOString();
+      const updatedJob = await runJobTransaction(jobId, (current) => {
+        if (!['UPLOADING', 'QUEUED'].includes(current.status)) {
+          const err: any = new Error(`INVALID_STATE_TRANSITION: Cannot complete uploads for job in ${current.status} status.`);
+          err.status = 400;
+          throw err;
+        }
+        current.manifest = job.manifest;
+        current.status = 'QUEUED';
+        current.stage = 'QUEUED';
+        current.progress = 10;
+        current.stageStartedAt = nowIso;
+        return { updatedJob: current };
+      });
+
+      // Enqueue to Redis stream
+      const enqueued = await enqueueToRedis(updatedJob);
       if (!enqueued && process.env.REDIS_URL && !process.env.REDIS_URL.startsWith('mock://') && process.env.NODE_ENV !== 'test') {
-        job.status = 'FAILED';
-        job.stage = 'QUEUE_FAILED';
-        job.errorCode = 'REDIS_ENQUEUE_FAILED';
-        job.errorMessage = 'Failed to enqueue reconstruction job to worker stream.';
-        await persistJobToFirestore(job);
+        await runJobTransaction(jobId, (current) => {
+          current.status = 'FAILED';
+          current.stage = 'QUEUE_FAILED';
+          current.errorCode = 'REDIS_ENQUEUE_FAILED';
+          current.errorMessage = 'Failed to enqueue reconstruction job to worker stream.';
+          return { updatedJob: current };
+        });
         return res.status(500).json({
           error: 'REDIS_ENQUEUE_FAILED: Failed to enqueue reconstruction job to worker stream.',
-          jobId: job.id,
+          jobId: updatedJob.id,
           status: 'FAILED',
         });
       }
 
-      job.status = 'QUEUED';
-      job.stage = 'QUEUED';
-      job.progress = 10;
-      job.updatedAt = new Date().toISOString();
-      await persistJobToFirestore(job);
-
       return res.status(200).json({
         success: true,
-        jobId: job.id,
-        status: job.status,
+        jobId: updatedJob.id,
+        status: updatedJob.status,
         enqueued,
         verifiedAssets: verifiedCount,
+        stateVersion: updatedJob.stateVersion,
       });
     }
 
     // 3. Action: RETRY JOB (Atomic & Enqueue-Aware)
     if (action === 'retry') {
       const auth = await authenticateRequest(req);
+      if (auth.isWorker) {
+        return res.status(403).json({ error: 'FORBIDDEN: Worker tokens cannot retry reconstruction jobs.' });
+      }
+
       const { jobId } = req.body;
       const job = await getJobFromFirestoreOrMemory(jobId);
       if (!job) {
@@ -822,65 +1031,85 @@ export default async function handler(req: any, res: any) {
         return res.status(403).json({ error: 'FORBIDDEN: You do not own this reconstruction job.' });
       }
 
-      if (!['FAILED', 'CANCELLED'].includes(job.status)) {
-        return res.status(400).json({ error: `INVALID_RETRY_STATE: Cannot retry job currently in ${job.status} state.` });
-      }
+      const nowIso = new Date().toISOString();
+      const updatedJob = await runJobTransaction(jobId, (current) => {
+        if (!['FAILED', 'CANCELLED'].includes(current.status)) {
+          const err: any = new Error(`INVALID_RETRY_STATE: Cannot retry job currently in ${current.status} state.`);
+          err.status = 400;
+          throw err;
+        }
 
-      job.retryCount += 1;
-      const newAttemptId = `attempt_${job.retryCount + 1}`;
-      job.attemptId = newAttemptId;
-      delete job.workerId;
-      delete job.errorCode;
-      delete job.errorMessage;
-      delete job.completedAt;
+        current.retryCount = (current.retryCount || 0) + 1;
+        current.attemptId = `attempt_${current.retryCount + 1}`;
+        current.status = 'QUEUED';
+        current.stage = 'QUEUED';
+        current.progress = 10;
+        current.stageStartedAt = nowIso;
+        delete current.workerId;
+        delete current.errorCode;
+        delete current.errorMessage;
+        delete current.completedAt;
+        delete current.lastHeartbeatAt;
+        delete current.cancelRequested;
+        delete current.cancelRequestedAt;
+        return { updatedJob: current };
+      });
 
-      // Enqueue to Redis stream BEFORE setting QUEUED
-      const enqueued = await enqueueToRedis(job);
+      // Enqueue to Redis stream AFTER setting QUEUED
+      const enqueued = await enqueueToRedis(updatedJob);
       if (!enqueued && process.env.REDIS_URL && !process.env.REDIS_URL.startsWith('mock://') && process.env.NODE_ENV !== 'test') {
-        job.status = 'FAILED';
-        job.stage = 'QUEUE_FAILED';
-        job.errorCode = 'REDIS_ENQUEUE_FAILED';
-        job.errorMessage = 'Failed to enqueue retry to worker stream.';
-        job.updatedAt = new Date().toISOString();
-        await persistJobToFirestore(job);
+        await runJobTransaction(jobId, (current) => {
+          current.status = 'FAILED';
+          current.stage = 'QUEUE_FAILED';
+          current.errorCode = 'REDIS_ENQUEUE_FAILED';
+          current.errorMessage = 'Failed to enqueue retry to worker stream.';
+          return { updatedJob: current };
+        });
         return res.status(500).json({
           error: 'REDIS_ENQUEUE_FAILED: Failed to enqueue retry to worker stream.',
-          jobId: job.id,
-          attemptId: job.attemptId,
+          jobId: updatedJob.id,
+          attemptId: updatedJob.attemptId,
           status: 'FAILED',
         });
       }
 
-      job.status = 'QUEUED';
-      job.stage = 'QUEUED';
-      job.progress = 10;
-      job.updatedAt = new Date().toISOString();
-      await persistJobToFirestore(job);
-
       return res.status(200).json({
         success: true,
-        jobId: job.id,
-        attemptId: job.attemptId,
+        jobId: updatedJob.id,
+        attemptId: updatedJob.attemptId,
         status: 'QUEUED',
         enqueued,
+        stateVersion: updatedJob.stateVersion,
       });
     }
 
     // 4. Action: CANCEL JOB
     if (action === 'cancel') {
       const auth = await authenticateRequest(req);
+      if (auth.isWorker) {
+        return res.status(403).json({ error: 'FORBIDDEN: Worker tokens cannot cancel reconstruction jobs.' });
+      }
+
       const { jobId } = req.body;
       const job = await getJobFromFirestoreOrMemory(jobId);
-      if (job) {
-        if (job.ownerId !== auth.uid && !auth.isAdmin && process.env.NODE_ENV !== 'test') {
-          return res.status(403).json({ error: 'FORBIDDEN: You do not own this reconstruction job.' });
-        }
-        job.status = 'CANCELLED';
-        job.stage = 'CANCELLED';
-        job.completedAt = new Date().toISOString();
-        job.updatedAt = new Date().toISOString();
-        await persistJobToFirestore(job);
+      if (!job) {
+        return res.status(404).json({ error: `JOB_NOT_FOUND: Cannot cancel unknown job ${jobId}.` });
       }
+      if (job.ownerId !== auth.uid && !auth.isAdmin && process.env.NODE_ENV !== 'test') {
+        return res.status(403).json({ error: 'FORBIDDEN: You do not own this reconstruction job.' });
+      }
+
+      const nowIso = new Date().toISOString();
+      const updatedJob = await runJobTransaction(jobId, (current) => {
+        current.cancelRequested = true;
+        current.cancelRequestedAt = nowIso;
+        if (current.status !== 'READY') {
+          current.status = 'CANCELLED';
+          current.stage = 'CANCELLED';
+          current.completedAt = nowIso;
+        }
+        return { updatedJob: current };
+      });
 
       if (process.env.REDIS_URL && !process.env.REDIS_URL.startsWith('mock://')) {
         try {
@@ -889,6 +1118,9 @@ export default async function handler(req: any, res: any) {
           const client = redisModule.createClient({ url: process.env.REDIS_URL });
           await client.connect();
           await client.set(`hettety:job:${jobId}:cancel`, '1', { EX: 3600 });
+          if (updatedJob.attemptId) {
+            await client.set(`hettety:job:${jobId}:cancel_${updatedJob.attemptId}`, '1', { EX: 3600 });
+          }
           await client.quit();
         } catch (e) {
           console.debug('Redis cancellation flag note:', e);
@@ -898,7 +1130,9 @@ export default async function handler(req: any, res: any) {
       return res.status(200).json({
         success: true,
         jobId,
-        status: 'CANCELLED',
+        status: updatedJob.status,
+        cancelRequested: true,
+        stateVersion: updatedJob.stateVersion,
       });
     }
 
@@ -912,38 +1146,43 @@ export default async function handler(req: any, res: any) {
         return res.status(401).json({ error: 'UNAUTHORIZED: Invalid or missing worker secret token.' });
       }
 
-      const { jobId, attemptId, workerId } = req.body;
+      const { jobId, attemptId, workerId, expectedStateVersion } = req.body;
       if (!jobId) {
         return res.status(400).json({ error: 'INVALID_REQUEST: jobId is required.' });
       }
 
-      const job = await getJobFromFirestoreOrMemory(jobId);
-      if (!job) {
-        return res.status(404).json({ error: `JOB_NOT_FOUND: Job ${jobId} does not exist.` });
-      }
-
-      if (['READY', 'CANCELLED'].includes(job.status)) {
-        return res.status(409).json({ error: `TERMINAL_STATE_LOCKED: Job ${jobId} is in ${job.status}.` });
-      }
-
-      if (job.attemptId && attemptId && job.attemptId !== attemptId) {
-        return res.status(409).json({ error: `STALE_ATTEMPT_IGNORED: Stale attempt ${attemptId}.` });
-      }
-
-      if (job.workerId && workerId && job.workerId !== workerId) {
-        return res.status(409).json({ error: `WORKER_MISMATCH_IGNORED: Callback from mismatched worker ${workerId}.` });
-      }
-
       const nowIso = new Date().toISOString();
-      job.lastHeartbeatAt = nowIso;
-      job.updatedAt = nowIso;
-      await persistJobToFirestore(job);
+      const updatedJob = await runJobTransaction(jobId, (current) => {
+        if (['READY', 'CANCELLED'].includes(current.status)) {
+          const err: any = new Error(`TERMINAL_STATE_LOCKED: Job ${jobId} is in ${current.status}.`);
+          err.status = 409;
+          throw err;
+        }
+
+        if (current.attemptId && attemptId && current.attemptId !== attemptId) {
+          const err: any = new Error(`STALE_ATTEMPT_IGNORED: Stale attempt ${attemptId}.`);
+          err.status = 409;
+          throw err;
+        }
+
+        if (current.workerId && workerId && current.workerId !== workerId) {
+          const err: any = new Error(`WORKER_MISMATCH_IGNORED: Callback from mismatched worker ${workerId}.`);
+          err.status = 409;
+          throw err;
+        }
+
+        current.lastHeartbeatAt = nowIso;
+        return { updatedJob: current };
+      }, expectedStateVersion);
 
       return res.status(200).json({
         success: true,
-        jobId: job.id,
-        attemptId: job.attemptId,
-        lastHeartbeatAt: job.lastHeartbeatAt,
+        jobId: updatedJob.id,
+        attemptId: updatedJob.attemptId,
+        lastHeartbeatAt: updatedJob.lastHeartbeatAt,
+        cancelRequested: Boolean(updatedJob.cancelRequested),
+        status: updatedJob.status,
+        stateVersion: updatedJob.stateVersion,
       });
     }
 
@@ -970,6 +1209,9 @@ export default async function handler(req: any, res: any) {
         representation,
         bounds,
         qualityReport,
+        manifestUrl,
+        manifestSha256,
+        expectedStateVersion,
       } = req.body;
 
       if (!jobId) {
@@ -1019,8 +1261,6 @@ export default async function handler(req: any, res: any) {
             error: `WORKER_MISMATCH_IGNORED: Job ${jobId} is currently assigned to worker ${job.workerId}. Callback from worker ${workerId} was rejected.`,
           });
         }
-      } else if (workerId) {
-        job.workerId = workerId;
       }
 
       const currentStatus = job.status;
@@ -1031,16 +1271,18 @@ export default async function handler(req: any, res: any) {
         const elapsedMs = Date.now() - new Date(job.stageStartedAt).getTime();
         const maxAllowedMs = STAGE_TIMEOUTS_MS[currentStatus];
         if (elapsedMs > maxAllowedMs + 5000) {
-          job.status = 'FAILED';
-          job.errorCode = `${currentStatus}_TIMEOUT`;
-          job.errorMessage = `Job exceeded allowed timeout for stage ${currentStatus} (${Math.round(elapsedMs / 1000)}s > ${maxAllowedMs / 1000}s).`;
-          job.completedAt = new Date().toISOString();
-          job.updatedAt = new Date().toISOString();
-          await persistJobToFirestore(job);
+          const nowIso = new Date().toISOString();
+          const failedJob = await runJobTransaction(jobId, (current) => {
+            current.status = 'FAILED';
+            current.errorCode = `${currentStatus}_TIMEOUT`;
+            current.errorMessage = `Job exceeded allowed timeout for stage ${currentStatus} (${Math.round(elapsedMs / 1000)}s > ${maxAllowedMs / 1000}s).`;
+            current.completedAt = nowIso;
+            return { updatedJob: current };
+          });
           return res.status(408).json({
-            error: `STAGE_TIMEOUT_EXCEEDED: ${job.errorMessage}`,
-            errorCode: job.errorCode,
-            jobId: job.id,
+            error: `STAGE_TIMEOUT_EXCEEDED: ${failedJob.errorMessage}`,
+            errorCode: failedJob.errorCode,
+            jobId: failedJob.id,
             status: 'FAILED',
           });
         }
@@ -1054,7 +1296,6 @@ export default async function handler(req: any, res: any) {
             error: `INVALID_STATE_TRANSITION: Cannot transition from ${currentStatus} to ${targetStatus}.`,
           });
         }
-        job.stageStartedAt = new Date().toISOString();
       }
 
       // Server-Side READY Validation before accepting READY status
@@ -1098,7 +1339,6 @@ export default async function handler(req: any, res: any) {
         }
 
         // Server-Side Storage Object Re-Verification (Fail Closed)
-        // If file exists on local storage or in GCS, compute and compare actual cryptographic digest
         const candidateStorageRoots = [
           path.resolve(process.cwd(), 'storage', 'spatial_assets'),
           path.resolve(process.cwd(), 'hettety-3d-worker', 'storage', 'spatial_assets'),
@@ -1123,7 +1363,6 @@ export default async function handler(req: any, res: any) {
             }
           }
 
-          // Strict fail-closed: If running in local storage mode, production, or if storage existence check is enforced, missing file is an error
           const enforceStorageCheck = process.env.STORAGE_PROVIDER === 'local' ||
             process.env.NODE_ENV === 'production' ||
             req.headers?.['x-verify-storage-existence'] === 'true';
@@ -1164,7 +1403,6 @@ export default async function handler(req: any, res: any) {
                   error: `ARTIFACT_VALIDATION_FAILED: ${artType} artifact not found in storage bucket at ${artPath}.`,
                 });
               }
-              // Stream hashing to prevent memory exhaustion on large 200MB-500MB spatial assets
               const hash = crypto.createHash('sha256');
               const readStream = bucket.file(artPath).createReadStream();
               await new Promise<void>((resolve, reject) => {
@@ -1214,41 +1452,81 @@ export default async function handler(req: any, res: any) {
         }
       }
 
-      // Apply authoritative state
-      if (targetStatus) {
-        job.status = targetStatus as any;
-      }
-      job.progress = progress ?? (targetStatus === 'READY' ? 100 : job.progress || 0);
-      job.stage = stage || status || job.stage;
-      if (workerId) job.workerId = workerId;
-      if (errorCode) job.errorCode = errorCode;
-      if (errorMessage) job.errorMessage = errorMessage;
-      if (representation) job.representation = representation;
-      if (bounds) job.bounds = bounds;
-      if (qualityReport) job.qualityReport = qualityReport;
+      const nowIso = new Date().toISOString();
+      const updatedJob = await runJobTransaction(jobId, (current) => {
+        if (['READY', 'CANCELLED'].includes(current.status)) {
+          const err: any = new Error(`TERMINAL_STATE_LOCKED: Job ${jobId} is in terminal state ${current.status} and cannot be modified.`);
+          err.status = 409;
+          throw err;
+        }
 
-      const now = new Date().toISOString();
-      job.updatedAt = now;
-      if (['READY', 'FAILED', 'CANCELLED'].includes(job.status)) {
-        job.completedAt = now;
-      }
+        if (propertyId && propertyId !== current.propertyId) {
+          const err: any = new Error(`PROPERTY_MISMATCH: Property ${propertyId} does not match job ${current.propertyId}.`);
+          err.status = 400;
+          throw err;
+        }
 
-      await persistJobToFirestore(job);
+        if (current.attemptId && attemptId && current.attemptId !== attemptId) {
+          const err: any = new Error(`STALE_ATTEMPT_IGNORED: Callback attempt ${attemptId} is stale. Current active attempt is ${current.attemptId}.`);
+          err.status = 409;
+          throw err;
+        }
+
+        if (current.workerId && workerId && current.workerId !== workerId) {
+          const err: any = new Error(`WORKER_MISMATCH_IGNORED: Job ${jobId} is currently assigned to worker ${current.workerId}. Callback from worker ${workerId} was rejected.`);
+          err.status = 409;
+          throw err;
+        } else if (workerId) {
+          current.workerId = workerId;
+        }
+
+        if (targetStatus && targetStatus !== current.status) {
+          current.stageStartedAt = nowIso;
+          current.status = targetStatus as any;
+        }
+
+        current.progress = progress ?? (targetStatus === 'READY' ? 100 : current.progress || 0);
+        current.stage = stage || status || current.stage;
+        if (errorCode) current.errorCode = errorCode;
+        if (errorMessage) current.errorMessage = errorMessage;
+        if (representation) current.representation = representation;
+        if (bounds) current.bounds = bounds;
+        if (qualityReport) current.qualityReport = qualityReport;
+        if (manifestUrl) current.manifestUrl = manifestUrl;
+        if (manifestSha256) current.manifestSha256 = manifestSha256;
+        current.lastHeartbeatAt = nowIso;
+
+        if (['READY', 'FAILED', 'CANCELLED'].includes(current.status)) {
+          current.completedAt = nowIso;
+        }
+
+        return { updatedJob: current };
+      }, expectedStateVersion);
 
       return res.status(200).json({
         success: true,
-        jobId: job.id,
-        attemptId: job.attemptId,
-        status: job.status,
-        stage: job.stage,
-        progress: job.progress,
-        updatedAt: now,
+        jobId: updatedJob.id,
+        attemptId: updatedJob.attemptId,
+        status: updatedJob.status,
+        stage: updatedJob.stage,
+        progress: updatedJob.progress,
+        stateVersion: updatedJob.stateVersion,
+        updatedAt: updatedJob.updatedAt,
       });
     }
 
     return res.status(400).json({ error: `UNKNOWN_ACTION: ${action}` });
   } catch (err: any) {
     console.error('[ControlPlane] Unhandled error:', err);
+    if (err.status) {
+      return res.status(err.status).json({
+        error: err.message,
+        errorCode: err.code || (err.message?.includes(':') ? err.message.split(':')[0] : undefined),
+      });
+    }
+    if (err.message?.startsWith('STATE_VERSION_CONFLICT')) {
+      return res.status(409).json({ error: err.message, errorCode: 'STATE_VERSION_CONFLICT' });
+    }
     if (err.message?.startsWith('AUTHENTICATION')) {
       return res.status(401).json({ error: err.message });
     }

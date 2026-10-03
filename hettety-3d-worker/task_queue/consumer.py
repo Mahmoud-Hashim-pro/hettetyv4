@@ -4,6 +4,7 @@ Pulls reconstruction jobs from Redis queue with durable lease management,
 acknowledgement (ACK), dead-letter queue (DLQ) routing, and cancellation checks.
 """
 
+import os
 import json
 import time
 import logging
@@ -17,12 +18,13 @@ class QueueConsumer:
         queue_name: str = "hettety_3d_jobs",
         redis_url: Optional[str] = None,
         lease_timeout_sec: int = 600,
-        dlq_name: Optional[str] = None
+        dlq_name: Optional[str] = None,
+        worker_id: Optional[str] = None
     ):
         self.queue_name = queue_name
         self.stream_name = f"{queue_name}:stream"
         self.group_name = "hettety_workers"
-        self.worker_id = f"worker_{time.time()}"
+        self.worker_id = worker_id or os.getenv("HETTETY_WORKER_ID", f"worker_{time.time()}")
         self.dlq_name = dlq_name or f"{queue_name}:dead_letter"
         self.redis_url = redis_url
         self.lease_timeout_sec = lease_timeout_sec
@@ -77,6 +79,14 @@ class QueueConsumer:
                                     lease_holder = self.redis_client.get(f"hettety:lease:{job_id}")
                                     if lease_holder and lease_holder != self.worker_id:
                                         logger.info(f"Skipping XAUTOCLAIM for job {job_id}: active lease held by {lease_holder}")
+                                        # Revert message back to lease_holder's PEL immediately to prevent message theft
+                                        try:
+                                            self.redis_client.xclaim(
+                                                self.stream_name, self.group_name, lease_holder,
+                                                min_idle_time=0, message_ids=[msg_id], justid=True
+                                            )
+                                        except Exception as rev_err:
+                                            logger.debug(f"Failed to revert stream message to {lease_holder}: {rev_err}")
                                     else:
                                         self._in_flight[job_id] = {
                                             "job": job,
@@ -220,22 +230,33 @@ class QueueConsumer:
         try:
             if retry_count >= max_retries:
                 logger.error(f"Job {job_id} exceeded max retries ({max_retries}). Routing to DLQ: {self.dlq_name}")
-                self.redis_client.rpush(self.dlq_name, json.dumps(job))
                 if self.use_streams:
                     try:
-                        self.redis_client.xadd(f"{self.stream_name}:dead_letter", {"payload": json.dumps(job)})
+                        self.redis_client.xadd(f"{self.stream_name}:dead_letter", "*", {"payload": json.dumps(job)})
                         if flight and flight.get("stream"):
                             self.redis_client.xack(self.stream_name, self.group_name, flight.get("stream_msg_id"))
+                            self.redis_client.xdel(self.stream_name, flight.get("stream_msg_id"))
                     except Exception as stream_nack_err:
                         logger.debug(f"Stream DLQ note: {stream_nack_err}")
+                else:
+                    self.redis_client.rpush(self.dlq_name, json.dumps(job))
             else:
                 logger.warning(f"Re-queueing job {job_id} for retry {retry_count}/{max_retries}...")
-                self.redis_client.rpush(self.queue_name, json.dumps(job))
-                if self.use_streams and flight and flight.get("stream"):
+                if self.use_streams:
                     try:
-                        self.redis_client.xack(self.stream_name, self.group_name, flight.get("stream_msg_id"))
-                    except Exception:
-                        pass
+                        self.redis_client.xadd(self.stream_name, "*", {
+                            "jobId": job_id,
+                            "attemptId": job.get("attemptId", "attempt_1"),
+                            "payload": json.dumps(job),
+                            "enqueuedAt": str(int(time.time() * 1000)),
+                        })
+                        if flight and flight.get("stream"):
+                            self.redis_client.xack(self.stream_name, self.group_name, flight.get("stream_msg_id"))
+                            self.redis_client.xdel(self.stream_name, flight.get("stream_msg_id"))
+                    except Exception as stream_retry_err:
+                        logger.debug(f"Stream retry re-enqueue note: {stream_retry_err}")
+                else:
+                    self.redis_client.rpush(self.queue_name, json.dumps(job))
         except Exception as e:
             logger.error(f"Failed to handle NACK routing in Redis: {e}")
 

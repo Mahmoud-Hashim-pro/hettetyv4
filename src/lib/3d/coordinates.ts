@@ -10,6 +10,37 @@ export interface BoundingBox {
 }
 
 /**
+ * Canonical Hettety 3D Coordinate Contract:
+ * - System: Three.js / WebGL Standard
+ * - Handedness: Right-Handed Cartesian
+ * - +X: Right (Lateral width)
+ * - +Y: Up (Vertical elevation)
+ * - +Z: Backward (Depth outward towards viewer) / -Z: Forward
+ * - Scale: 1.0 unit = 1.0 real-world meter
+ */
+export const HETTETY_COORDINATE_CONTRACT = {
+  system: 'threejs_webgl',
+  handedness: 'right_handed',
+  axes: {
+    x: '+X_right',
+    y: '+Y_up',
+    z: '+Z_back',
+  },
+  units: 'meter',
+  scaleFactor: 1.0,
+} as const;
+
+export interface CoordinateSystemDefinition {
+  system: string;
+  handedness: 'right_handed' | 'left_handed';
+  up: '+Y' | '+Z';
+  right: '+X';
+  forward: '-Z' | '+Y';
+  unit: 'meter';
+  scale: number;
+}
+
+/**
  * Calculates Euclidean 3D distance in real-world meters between two points.
  */
 export const calculateDistanceMeters = (p1: Vec3, p2: Vec3): number => {

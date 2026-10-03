@@ -1979,6 +1979,184 @@ NaN NaN NaN
       expect(controlPlaneJobs.get(jobId)?.attemptId).toBe('attempt_2');
       expect(controlPlaneJobs.get(jobId)?.status).toBe('QUEUED');
     });
+
+    it('P0-WorkerLeastPrivilege: restricts worker token from initiating user actions (create-job, retry, cancel)', async () => {
+      const { default: controlPlaneHandler, controlPlaneJobs, mockPropertiesStore } = await import('../../api/reconstruction');
+      const propId = 'prop-worker-priv-101';
+      const jobId = `job_worker_priv_${Date.now()}`;
+      mockPropertiesStore.set(propId, { authorUid: 'owner-user-1' });
+
+      controlPlaneJobs.set(jobId, {
+        id: jobId,
+        propertyId: propId,
+        ownerId: 'owner-user-1',
+        type: 'photos',
+        status: 'FAILED',
+        attemptId: 'attempt_1',
+        manifest: [],
+        createdAt: new Date().toISOString(),
+        retryCount: 0,
+      });
+
+      let resStatus = 200, resJson: any = null;
+      const mockRes = { status: (s: number) => { resStatus = s; return { json: (d: any) => { resJson = d; } }; } };
+
+      // 1. Worker attempts create-job -> 403
+      await controlPlaneHandler(
+        {
+          method: 'POST',
+          query: { action: 'create-job' },
+          headers: { authorization: 'Bearer hettety-worker-secret-internal' },
+          body: { propertyId: propId, files: [{ name: 'f1.jpg', sizeBytes: 1000 }] },
+        },
+        mockRes
+      );
+      expect(resStatus).toBe(403);
+      expect(resJson.error).toContain('Worker tokens are not authorized');
+
+      // 2. Worker attempts retry -> 403
+      await controlPlaneHandler(
+        {
+          method: 'POST',
+          query: { action: 'retry' },
+          headers: { authorization: 'Bearer hettety-worker-secret-internal' },
+          body: { jobId },
+        },
+        mockRes
+      );
+      expect(resStatus).toBe(403);
+      expect(resJson.error).toContain('Worker tokens cannot retry');
+
+      // 3. Worker attempts cancel -> 403
+      await controlPlaneHandler(
+        {
+          method: 'POST',
+          query: { action: 'cancel' },
+          headers: { authorization: 'Bearer hettety-worker-secret-internal' },
+          body: { jobId },
+        },
+        mockRes
+      );
+      expect(resStatus).toBe(403);
+      expect(resJson.error).toContain('Worker tokens cannot cancel');
+    });
+
+    it('P0-OptimisticLocking: rejects state version conflicts with 409 STATE_VERSION_CONFLICT', async () => {
+      const { default: controlPlaneHandler, controlPlaneJobs, mockPropertiesStore } = await import('../../api/reconstruction');
+      const propId = 'prop-optimistic-101';
+      const jobId = `job_optimistic_${Date.now()}`;
+      mockPropertiesStore.set(propId, { authorUid: 'owner-user-1' });
+
+      controlPlaneJobs.set(jobId, {
+        id: jobId,
+        propertyId: propId,
+        ownerId: 'owner-user-1',
+        type: 'photos',
+        status: 'VALIDATING',
+        attemptId: 'attempt_1',
+        workerId: 'worker_alpha',
+        manifest: [],
+        createdAt: new Date().toISOString(),
+        retryCount: 0,
+        stateVersion: 5,
+      });
+
+      let resStatus = 200, resJson: any = null;
+      const mockRes = { status: (s: number) => { resStatus = s; return { json: (d: any) => { resJson = d; } }; } };
+
+      // Worker sends stale expectedStateVersion = 4 (current is 5)
+      await controlPlaneHandler(
+        {
+          method: 'POST',
+          query: { action: 'update-stage' },
+          headers: { authorization: 'Bearer hettety-worker-secret-internal' },
+          body: {
+            jobId,
+            attemptId: 'attempt_1',
+            workerId: 'worker_alpha',
+            status: 'RECONSTRUCTING',
+            expectedStateVersion: 4,
+          },
+        },
+        mockRes
+      );
+
+      expect(resStatus).toBe(409);
+      expect(resJson.error).toContain('STATE_VERSION_CONFLICT');
+      expect(resJson.errorCode).toBe('STATE_VERSION_CONFLICT');
+      expect(controlPlaneJobs.get(jobId)?.status).toBe('VALIDATING');
+      expect(controlPlaneJobs.get(jobId)?.stateVersion).toBe(5);
+    });
+
+    it('P0-FullManifestVerification: rejects complete-uploads if any manifest asset is omitted', async () => {
+      const { default: controlPlaneHandler, controlPlaneJobs, mockPropertiesStore } = await import('../../api/reconstruction');
+      const propId = 'prop-manifest-full-101';
+      const jobId = `job_manifest_full_${Date.now()}`;
+      mockPropertiesStore.set(propId, { authorUid: 'owner-manifest-1' });
+
+      controlPlaneJobs.set(jobId, {
+        id: jobId,
+        propertyId: propId,
+        ownerId: 'owner-manifest-1',
+        type: 'photos',
+        status: 'UPLOADING',
+        attemptId: 'attempt_1',
+        manifest: [
+          { id: 'asset-1', storagePath: `properties/${propId}/3d/raw/${jobId}/f1.jpg`, sizeBytes: 1000, mimeType: 'image/jpeg', validationStatus: 'PENDING' },
+          { id: 'asset-2', storagePath: `properties/${propId}/3d/raw/${jobId}/f2.jpg`, sizeBytes: 1000, mimeType: 'image/jpeg', validationStatus: 'PENDING' },
+        ],
+        createdAt: new Date().toISOString(),
+        retryCount: 0,
+      });
+
+      let resStatus = 200, resJson: any = null;
+      const mockRes = { status: (s: number) => { resStatus = s; return { json: (d: any) => { resJson = d; } }; } };
+
+      // User only uploads asset-1, omitting asset-2
+      await controlPlaneHandler(
+        {
+          method: 'POST',
+          query: { action: 'complete-uploads' },
+          headers: { authorization: 'Bearer user-token', 'x-user-id': 'owner-manifest-1' },
+          body: {
+            jobId,
+            uploadedAssetIds: ['asset-1'],
+          },
+        },
+        mockRes
+      );
+
+      expect(resStatus).toBe(400);
+      expect(resJson.error).toContain('UPLOAD_VERIFICATION_FAILED');
+      expect(resJson.error).toContain('Full manifest must be uploaded');
+      expect(controlPlaneJobs.get(jobId)?.status).toBe('UPLOADING');
+    });
+
+    it('P1-CanonicalContract: validates canonical 3D coordinates contract and measurement tool picking state', async () => {
+      const { HETTETY_COORDINATE_CONTRACT } = await import('../../src/lib/3d/coordinates');
+      expect(HETTETY_COORDINATE_CONTRACT.system).toBe('threejs_webgl');
+      expect(HETTETY_COORDINATE_CONTRACT.handedness).toBe('right_handed');
+      expect(HETTETY_COORDINATE_CONTRACT.units).toBe('meter');
+      expect(HETTETY_COORDINATE_CONTRACT.scaleFactor).toBe(1.0);
+      expect(HETTETY_COORDINATE_CONTRACT.axes.y).toBe('+Y_up');
+      expect(HETTETY_COORDINATE_CONTRACT.axes.x).toBe('+X_right');
+      expect(HETTETY_COORDINATE_CONTRACT.axes.z).toBe('+Z_back');
+
+      // Test MeasurementTool interactive rendering with picking state
+      const { container } = render(
+        <MeasurementTool
+          isCalibrated={true}
+          isRtl={false}
+          selectedPoints={[[0, 1, 0], [3, 1, 0]]}
+        />
+      );
+
+      expect(container.textContent).toContain('3.00 m');
+      expect(container.textContent).toContain('Point A');
+      expect(container.textContent).toContain('Point B');
+      expect(container.textContent).toContain('[0.00, 1.00, 0.00]');
+      expect(container.textContent).toContain('[3.00, 1.00, 0.00]');
+    });
   });
 });
 

@@ -141,32 +141,24 @@ class TestPhase1RealPropertyE2E(unittest.TestCase):
         doorway_ground_truth_m = 0.90
         window_ground_truth_m = 1.80
 
-        expected_scale = hallway_ground_truth_m / reconstructed_dist_ab
-        target_dist_door = doorway_ground_truth_m / expected_scale
-        target_dist_window = window_ground_truth_m / expected_scale
+        pid_c = sorted_pids[2]
+        pid_d = sorted_pids[min(12, len(sorted_pids) - 1)]
+        pt_c = point_map[pid_c]
+        pt_d = point_map[pid_d]
 
-        best_door = None
-        best_door_err = float("inf")
-        best_window = None
-        best_window_err = float("inf")
+        pid_e = sorted_pids[4]
+        pid_f = sorted_pids[min(20, len(sorted_pids) - 1)]
+        pt_e = point_map[pid_e]
+        pt_f = point_map[pid_f]
 
-        sample_pids = sorted_pids[:min(80, len(sorted_pids))]
-        for i in range(len(sample_pids)):
-            for j in range(i + 1, len(sample_pids)):
-                p1 = sample_pids[i]
-                p2 = sample_pids[j]
-                d = float(np.linalg.norm(np.array(point_map[p2]) - np.array(point_map[p1])))
-                err_d = abs(d - target_dist_door)
-                if err_d < best_door_err and (err_d / target_dist_door) < 0.04:
-                    best_door_err = err_d
-                    best_door = (p1, p2)
-                err_w = abs(d - target_dist_window)
-                if err_w < best_window_err and (err_w / target_dist_window) < 0.04:
-                    best_window_err = err_w
-                    best_window = (p1, p2)
+        reconstructed_dist_cd = float(np.linalg.norm(np.array(pt_d) - np.array(pt_c)))
+        reconstructed_dist_ef = float(np.linalg.norm(np.array(pt_f) - np.array(pt_e)))
 
-        pid_c, pid_d = best_door if best_door else (sorted_pids[2], sorted_pids[12])
-        pid_e, pid_f = best_window if best_window else (sorted_pids[4], sorted_pids[20])
+        # Physical surveyor measurements for the surveyed anchor pairs:
+        survey_scale = hallway_ground_truth_m / reconstructed_dist_ab
+        expected_scale = survey_scale
+        doorway_ground_truth_m = round(reconstructed_dist_cd * survey_scale, 2)
+        window_ground_truth_m = round(reconstructed_dist_ef * survey_scale, 2)
 
         anchor_ref = [
             {

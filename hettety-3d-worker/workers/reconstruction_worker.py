@@ -40,6 +40,7 @@ class ReconstructionWorker:
         self.storage_client = ObjectStorageClient()
         self.queue_consumer = queue_consumer
         self.active_processes: List[subprocess.Popen] = []
+        self._cancellation_requested: Dict[str, bool] = {}
         os.makedirs(self.work_dir, exist_ok=True)
         # P0-1 / Section 59: Production guard against invalid test mode
         if os.environ.get("NODE_ENV") == "production" and os.environ.get("HETTETY_ENV") == "test":
@@ -63,7 +64,9 @@ class ReconstructionWorker:
             logger.warning(f"Error during orphan workspace cleanup: {e}")
 
     def is_cancelled(self, job_id: str) -> bool:
-        """Polls cancellation status from control plane / Redis."""
+        """Polls cancellation status from memory flag, control plane, or Redis."""
+        if self._cancellation_requested.get(job_id):
+            return True
         if self.queue_consumer:
             return self.queue_consumer.is_job_cancelled(job_id)
         return False
@@ -84,7 +87,12 @@ class ReconstructionWorker:
                             "workerId": worker_id,
                             "action": "heartbeat"
                         }
-                        requests.post(callback_url, json=payload, headers={"Authorization": f"Bearer {api_key}"}, timeout=5)
+                        resp = requests.post(callback_url, json=payload, headers={"Authorization": f"Bearer {api_key}"}, timeout=5)
+                        if resp.ok:
+                            data = resp.json()
+                            if data.get("cancelRequested") or data.get("status") == "CANCELLED":
+                                logger.warning(f"Control plane signaled durable cancellation for job {job_id} in heartbeat response.")
+                                self._cancellation_requested[job_id] = True
                     except Exception as ex:
                         logger.debug(f"Heartbeat note for {job_id}: {ex}")
                 if self.queue_consumer and hasattr(self.queue_consumer, "heartbeat"):
@@ -469,7 +477,8 @@ def main():
     args = parser.parse_args()
 
     logger.info(f"Starting HETTETY 3D Reconstruction Worker daemon on queue '{args.queue}'...")
-    consumer = QueueConsumer(queue_name=args.queue, redis_url=args.redis_url)
+    worker_id = os.environ.get("HETTETY_WORKER_ID", "hettety-gpu-worker-1")
+    consumer = QueueConsumer(queue_name=args.queue, redis_url=args.redis_url, worker_id=worker_id)
     worker = ReconstructionWorker(work_dir=args.work_dir, cdn_base_url=args.cdn_url, queue_consumer=consumer)
 
     def job_handler(job: Dict[str, Any]) -> Dict[str, Any]:

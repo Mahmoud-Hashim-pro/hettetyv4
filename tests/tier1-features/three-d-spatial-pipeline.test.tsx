@@ -1783,6 +1783,202 @@ NaN NaN NaN
       fireEvent.click(getByText('Master Suite'));
       expect(onSelect).toHaveBeenCalledWith('room-2');
     });
+
+    it('P1-6: Idempotent job creation replays identical job without duplicating records', async () => {
+      const { default: controlPlaneHandler, controlPlaneJobs, mockPropertiesStore } = await import('../../api/reconstruction');
+      const propId = 'prop-idemp-101';
+      const ownerId = 'owner-idemp-101';
+      mockPropertiesStore.set(propId, { authorUid: ownerId });
+
+      let statusRes1 = 200, jsonRes1: any = null;
+      const mockRes1 = { status: (s: number) => { statusRes1 = s; return { json: (d: any) => { jsonRes1 = d; } }; } };
+
+      // 1. Initial create-job with idempotencyKey
+      await controlPlaneHandler(
+        {
+          method: 'POST',
+          query: { action: 'create-job' },
+          headers: {
+            authorization: 'Bearer token-owner',
+            'x-user-id': ownerId,
+            'idempotency-key': 'idemp-req-alpha-99',
+          },
+          body: {
+            propertyId: propId,
+            type: 'photos',
+            files: [{ name: 'f1.jpg', sizeBytes: 1000 }],
+          },
+        },
+        mockRes1
+      );
+      expect(statusRes1).toBe(200);
+      expect(jsonRes1.job).toBeDefined();
+      const firstJobId = jsonRes1.job.id;
+      expect(jsonRes1.idempotentReplay).toBeUndefined();
+
+      // 2. Re-submit create-job with SAME idempotencyKey
+      let statusRes2 = 200, jsonRes2: any = null;
+      const mockRes2 = { status: (s: number) => { statusRes2 = s; return { json: (d: any) => { jsonRes2 = d; } }; } };
+
+      await controlPlaneHandler(
+        {
+          method: 'POST',
+          query: { action: 'create-job' },
+          headers: {
+            authorization: 'Bearer token-owner',
+            'x-user-id': ownerId,
+            'idempotency-key': 'idemp-req-alpha-99',
+          },
+          body: {
+            propertyId: propId,
+            type: 'photos',
+            files: [{ name: 'f1.jpg', sizeBytes: 1000 }],
+          },
+        },
+        mockRes2
+      );
+      expect(statusRes2).toBe(200);
+      expect(jsonRes2.job.id).toBe(firstJobId);
+      expect(jsonRes2.idempotentReplay).toBe(true);
+    });
+
+    it('P1-7: User cancellation vs worker completion race rejects worker READY with 409 TERMINAL_STATE_LOCKED', async () => {
+      const { default: controlPlaneHandler, controlPlaneJobs, mockPropertiesStore } = await import('../../api/reconstruction');
+      const propId = 'prop-race-cancel-102';
+      const ownerId = 'owner-race-cancel-102';
+      const jobId = `job_race_cancel_${Date.now()}`;
+      mockPropertiesStore.set(propId, { authorUid: ownerId });
+
+      // Job is in progress (TRAINING)
+      controlPlaneJobs.set(jobId, {
+        id: jobId,
+        propertyId: propId,
+        ownerId,
+        type: 'photos',
+        status: 'TRAINING',
+        attemptId: 'attempt_1',
+        workerId: 'worker_alpha',
+        manifest: [],
+        createdAt: new Date().toISOString(),
+        retryCount: 0,
+      });
+
+      // 1. User cancels job
+      let cancelStatus = 200, cancelJson: any = null;
+      const mockCancelRes = { status: (s: number) => { cancelStatus = s; return { json: (d: any) => { cancelJson = d; } }; } };
+
+      await controlPlaneHandler(
+        {
+          method: 'POST',
+          query: { action: 'cancel' },
+          headers: { authorization: 'Bearer token-owner', 'x-user-id': ownerId },
+          body: { jobId },
+        },
+        mockCancelRes
+      );
+      expect(cancelStatus).toBe(200);
+      expect(controlPlaneJobs.get(jobId)?.status).toBe('CANCELLED');
+
+      // 2. Delayed worker Alpha tries to publish READY
+      let readyStatus = 200, readyJson: any = null;
+      const mockReadyRes = { status: (s: number) => { readyStatus = s; return { json: (d: any) => { readyJson = d; } }; } };
+
+      await controlPlaneHandler(
+        {
+          method: 'POST',
+          query: { action: 'update-stage' },
+          headers: { authorization: 'Bearer hettety-worker-secret-internal' },
+          body: {
+            jobId,
+            propertyId: propId,
+            attemptId: 'attempt_1',
+            workerId: 'worker_alpha',
+            status: 'READY',
+            representation: {
+              gaussianSplat: { format: 'spz', url: `https://cdn.hettety.com/properties/${propId}/tour/scene.spz`, splatCount: 1000, sizeBytes: 10000, sha256: 'a'.repeat(64) },
+              mesh: { format: 'glb', url: `https://cdn.hettety.com/properties/${propId}/tour/mesh.glb`, faceCount: 100, sizeBytes: 10000, sha256: 'b'.repeat(64) },
+            },
+            bounds: { min: [-1, -1, -1], max: [1, 1, 1] },
+          },
+        },
+        mockReadyRes
+      );
+
+      // Must be rejected with 409 TERMINAL_STATE_LOCKED
+      expect(readyStatus).toBe(409);
+      expect(readyJson.error).toContain('TERMINAL_STATE_LOCKED');
+      expect(controlPlaneJobs.get(jobId)?.status).toBe('CANCELLED');
+    });
+
+    it('P1-8: Retry vs stale worker completion race rejects old worker callback with 409 STALE_ATTEMPT_IGNORED', async () => {
+      const { default: controlPlaneHandler, controlPlaneJobs, mockPropertiesStore } = await import('../../api/reconstruction');
+      const propId = 'prop-race-retry-103';
+      const ownerId = 'owner-race-retry-103';
+      const jobId = `job_race_retry_${Date.now()}`;
+      mockPropertiesStore.set(propId, { authorUid: ownerId });
+
+      // Job failed on attempt_1
+      controlPlaneJobs.set(jobId, {
+        id: jobId,
+        propertyId: propId,
+        ownerId,
+        type: 'photos',
+        status: 'FAILED',
+        attemptId: 'attempt_1',
+        workerId: 'worker_slow_alpha',
+        manifest: [],
+        createdAt: new Date().toISOString(),
+        retryCount: 0,
+      });
+
+      // 1. User retries job -> spawns attempt_2
+      let retryStatus = 200, retryJson: any = null;
+      const mockRetryRes = { status: (s: number) => { retryStatus = s; return { json: (d: any) => { retryJson = d; } }; } };
+
+      await controlPlaneHandler(
+        {
+          method: 'POST',
+          query: { action: 'retry' },
+          headers: { authorization: 'Bearer token-owner', 'x-user-id': ownerId },
+          body: { jobId },
+        },
+        mockRetryRes
+      );
+      expect(retryStatus).toBe(200);
+      expect(controlPlaneJobs.get(jobId)?.attemptId).toBe('attempt_2');
+      expect(controlPlaneJobs.get(jobId)?.status).toBe('QUEUED');
+
+      // 2. Stale worker from attempt_1 attempts to report READY
+      let staleStatus = 200, staleJson: any = null;
+      const mockStaleRes = { status: (s: number) => { staleStatus = s; return { json: (d: any) => { staleJson = d; } }; } };
+
+      await controlPlaneHandler(
+        {
+          method: 'POST',
+          query: { action: 'update-stage' },
+          headers: { authorization: 'Bearer hettety-worker-secret-internal' },
+          body: {
+            jobId,
+            propertyId: propId,
+            attemptId: 'attempt_1', // Stale attempt!
+            workerId: 'worker_slow_alpha',
+            status: 'READY',
+            representation: {
+              gaussianSplat: { format: 'spz', url: `https://cdn.hettety.com/properties/${propId}/tour/scene.spz`, splatCount: 1000, sizeBytes: 10000, sha256: 'a'.repeat(64) },
+              mesh: { format: 'glb', url: `https://cdn.hettety.com/properties/${propId}/tour/mesh.glb`, faceCount: 100, sizeBytes: 10000, sha256: 'b'.repeat(64) },
+            },
+            bounds: { min: [-1, -1, -1], max: [1, 1, 1] },
+          },
+        },
+        mockStaleRes
+      );
+
+      // Must be rejected with 409 STALE_ATTEMPT_IGNORED
+      expect(staleStatus).toBe(409);
+      expect(staleJson.error).toContain('STALE_ATTEMPT_IGNORED');
+      expect(controlPlaneJobs.get(jobId)?.attemptId).toBe('attempt_2');
+      expect(controlPlaneJobs.get(jobId)?.status).toBe('QUEUED');
+    });
   });
 });
 

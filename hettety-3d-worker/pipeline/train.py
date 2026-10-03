@@ -279,6 +279,25 @@ def run_gaussian_training(
             script_path = os.path.abspath(cand)
             break
 
+    # Section 59 / P0-1: Strict Production Invariant: Reject test mode under production
+    is_prod_env = (os.environ.get("NODE_ENV") == "production") or (os.environ.get("HETTETY_ENV") == "production")
+    if os.environ.get("NODE_ENV") == "production" and os.environ.get("HETTETY_ENV") == "test":
+        logger.error("Production guard: HETTETY_ENV=test is strictly rejected when NODE_ENV=production.")
+        return {
+            "success": False,
+            "error_code": "INVALID_ENVIRONMENT_CONFIGURATION",
+            "message": "HETTETY_ENV=test is strictly forbidden when NODE_ENV=production"
+        }
+
+    # In production, require authentic external 3DGS training runner; fail closed if absent
+    if is_prod_env and not script_path:
+        logger.error("Production fail-closed: external 3DGS training runner script is missing.")
+        return {
+            "success": False,
+            "error_code": "GAUSSIAN_TRAINING_FAILED",
+            "message": "Authoritative Gaussian Splatting training runner is not configured or missing in production environment."
+        }
+
     # If external training script is absent or running in standalone/test mode:
     # Execute genuine mathematical IterativeGaussianOptimizer directly from reconstruction data
     if not script_path or os.environ.get("HETTETY_ENV") == "test":
@@ -407,3 +426,6 @@ def run_gaussian_training(
             "error_code": "TRAINING_FAILED",
             "message": err_msg
         }
+
+run_3dgs_training = run_gaussian_training
+

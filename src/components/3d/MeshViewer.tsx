@@ -42,27 +42,38 @@ export const MeshViewer: React.FC<MeshViewerProps> = ({ tour, activeRoom, isRtl 
     setError(null);
 
     const loader = new GLTFLoader();
-    loader.load(
-      meshUrl,
-      (gltf) => {
-        if (!active) return;
-        const box = new THREE.Box3().setFromObject(gltf.scene);
-        setBounds(box);
-        setLoadedScene(gltf.scene);
-        setLoading(false);
-      },
-      undefined,
-      (err: any) => {
-        if (!active) return;
-        const msg = err && typeof err === 'object' && 'message' in err ? err.message : 'GLB parse error';
+    try {
+      loader.load(
+        meshUrl,
+        (gltf) => {
+          if (!active) return;
+          const box = new THREE.Box3().setFromObject(gltf.scene);
+          setBounds(box);
+          setLoadedScene(gltf.scene);
+          setLoading(false);
+        },
+        undefined,
+        (err: any) => {
+          if (!active) return;
+          const msg = err && typeof err === 'object' && 'message' in err ? err.message : 'GLB parse error';
+          setError(
+            isRtl
+              ? `تعذر تحميل المجسم المتري: ${msg}`
+              : `Failed to load Metric Mesh: ${msg}`
+          );
+          setLoading(false);
+        }
+      );
+    } catch (loadErr: any) {
+      if (active) {
         setError(
           isRtl
-            ? `تعذر تحميل المجسم المتري: ${msg}`
-            : `Failed to load Metric Mesh: ${msg}`
+            ? `تعذر تحميل المجسم المتري: ${loadErr.message || 'Error'}`
+            : `Failed to load Metric Mesh: ${loadErr.message || 'Error'}`
         );
         setLoading(false);
       }
-    );
+    }
 
     return () => {
       active = false;

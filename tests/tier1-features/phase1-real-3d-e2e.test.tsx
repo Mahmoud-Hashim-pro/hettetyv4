@@ -290,6 +290,44 @@ describe('Tier 1 — Phase 1: Real Property Image -> Real 3D E2E Pipeline', () =
     const masterBtn = screen.getByText('Master Suite');
     fireEvent.click(masterBtn);
     expect(masterBtn.closest('button')).toHaveClass('bg-emerald-600');
+
+    // -------------------------------------------------------------------------
+    // Step 5: Full Browser Spatial Interaction Journey (P0-5)
+    // -------------------------------------------------------------------------
+    // 1. Mode Switching: Gaussian Splat -> Metric Mesh -> Gaussian Splat
+    const meshBtn = screen.getByText('Metric Mesh');
+    expect(meshBtn).toBeInTheDocument();
+    fireEvent.click(meshBtn);
+    expect(meshBtn.closest('button')).toHaveClass('bg-emerald-600');
+
+    const splatBtn = screen.getByText('Spatial 3DGS');
+    expect(splatBtn).toBeInTheDocument();
+    fireEvent.click(splatBtn);
+    expect(splatBtn.closest('button')).toHaveClass('bg-emerald-600');
+
+    // 2. Metric Measurement Tool: Toggle Open, Verify UI, Reset & Close
+    const measureBtn = screen.getByTitle('Measure Tool');
+    expect(measureBtn).toBeInTheDocument();
+    fireEvent.click(measureBtn);
+
+    // Measurement modal should appear with 3D Metric title
+    expect(screen.getByText('3D Metric Measurement Tool')).toBeInTheDocument();
+    const resetMeasureBtn = screen.getByTitle('Reset');
+    expect(resetMeasureBtn).toBeInTheDocument();
+    fireEvent.click(resetMeasureBtn);
+
+    // Toggle measurement tool closed
+    fireEvent.click(measureBtn);
+    expect(screen.queryByText('3D Metric Measurement Tool')).not.toBeInTheDocument();
+
+    // 3. Floor Plan Toggle: Open, Verify Interactive Floor Plan UI, Close
+    const floorPlanBtn = screen.getByTitle('Floor Plan');
+    expect(floorPlanBtn).toBeInTheDocument();
+    fireEvent.click(floorPlanBtn);
+    expect(screen.getByText('Interactive Floor Plan')).toBeInTheDocument();
+
+    fireEvent.click(floorPlanBtn);
+    expect(screen.queryByText('Interactive Floor Plan')).not.toBeInTheDocument();
   });
 
   it('strictly rejects READY state if artifact SHA-256 is missing or invalid format', async () => {

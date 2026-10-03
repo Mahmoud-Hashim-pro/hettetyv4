@@ -54,6 +54,11 @@ class ObjectStorageClient:
                             logger.error(f"SECURITY ALERT: Blocked DNS rebinding attempt: {hostname} resolved to private/loopback IP {resolved_ip}")
                             return False
                 except (socket.gaierror, socket.herror, ValueError):
+                    # Strict fail-closed check for production: reject test bypass in production
+                    if os.environ.get("NODE_ENV") == "production":
+                        logger.error(f"SECURITY ALERT: Unresolvable hostname in production download URL: {hostname}")
+                        return False
+
                     allowed_test_hosts = {
                         "storage.googleapis.com", "mock-storage.internal", "localhost",
                         "test.local", "example.com", "fixtures.hettety.internal",

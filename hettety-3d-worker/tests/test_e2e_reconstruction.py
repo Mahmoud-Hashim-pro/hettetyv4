@@ -17,6 +17,11 @@ import shutil
 import tempfile
 import unittest
 import numpy as np
+import sys
+import time
+import json
+import threading
+import subprocess
 from PIL import Image, ImageDraw
 
 from pipeline.validate import validate_keyframes, compute_image_laplacian_variance
@@ -24,6 +29,8 @@ from pipeline.optimize import parse_ply_header_and_bounds, optimize_splat_cloud
 from pipeline.calibrate import calibrate_sparse_scale, apply_metric_scale_to_points
 from pipeline.compress import generate_metric_mesh_glb, validate_glb_file
 from pipeline.publish import publish_tour_assets
+from pipeline.process_manager import run_managed_process, JobCancelledException, kill_process_tree, ACTIVE_PROCESSES
+from pipeline.train import run_gaussian_training
 from storage.object_storage import ObjectStorageClient
 from workers.reconstruction_worker import ReconstructionWorker
 from task_queue.consumer import QueueConsumer
@@ -557,6 +564,161 @@ class TestHettety3DReconstructionE2E(unittest.TestCase):
         self.assertTrue(len(reported_stages) > 0)
         self.assertEqual(reported_stages[0]["attemptId"], "attempt_isolated_42")
         self.assertEqual(reported_stages[0]["workerId"], "worker_h100_1")
+
+    def test_24_redis_lease_heartbeat_renewal_and_xautoclaim_protection(self):
+        """Verifies heartbeat extends Redis lease TTL, touches Stream PEL, and protects active jobs against XAUTOCLAIM theft."""
+        class MockRedisStreamLease:
+            def __init__(self):
+                self.leases = {}
+                self.xclaim_calls = []
+                self.xautoclaim_calls = []
+                self.stream_entries = []
+
+            def set(self, key, value, ex=None):
+                self.leases[key] = {"value": value, "ex": ex}
+                return True
+
+            def get(self, key):
+                entry = self.leases.get(key)
+                return entry["value"] if entry else None
+
+            def xclaim(self, stream, group, worker, min_idle_time, message_ids, justid=False):
+                self.xclaim_calls.append({
+                    "stream": stream, "group": group, "worker": worker,
+                    "min_idle_time": min_idle_time, "message_ids": message_ids, "justid": justid
+                })
+                return message_ids
+
+            def xautoclaim(self, stream, group, worker, min_idle_time, start_id="0-0", count=1):
+                self.xautoclaim_calls.append({"worker": worker, "min_idle_time": min_idle_time})
+                if self.stream_entries:
+                    msg_id, fields = self.stream_entries[0]
+                    return ("0-0", [(msg_id, fields)], [])
+                return ("0-0", [], [])
+
+            def xreadgroup(self, group, worker, streams, count=1, block=None):
+                return []
+
+        mock_redis = MockRedisStreamLease()
+        worker_alpha = QueueConsumer(queue_name="hettety_3d_jobs")
+        worker_alpha.redis_client = mock_redis
+        worker_alpha.use_streams = True
+        worker_alpha.worker_id = "worker_alpha_h100"
+
+        # 1. Simulate job active on worker Alpha
+        job_payload = {"id": "job_stream_lease_001", "propertyId": "prop_test_1"}
+        worker_alpha._in_flight["job_stream_lease_001"] = {
+            "job": job_payload,
+            "leased_at": time.time(),
+            "stream": True,
+            "stream_msg_id": "1720000000000-0"
+        }
+
+        # 2. Worker Alpha issues heartbeat
+        res = worker_alpha.heartbeat("job_stream_lease_001")
+        self.assertTrue(res)
+
+        # Assert lease key was written with TTL >= 60
+        lease_key = "hettety:lease:job_stream_lease_001"
+        self.assertIn(lease_key, mock_redis.leases)
+        self.assertEqual(mock_redis.leases[lease_key]["value"], "worker_alpha_h100")
+        self.assertGreaterEqual(mock_redis.leases[lease_key]["ex"], 60)
+
+        # Assert Stream PEL was touched via XCLAIM with min_idle_time=0 and message_ids=["1720000000000-0"]
+        self.assertEqual(len(mock_redis.xclaim_calls), 1)
+        self.assertEqual(mock_redis.xclaim_calls[0]["message_ids"], ["1720000000000-0"])
+        self.assertEqual(mock_redis.xclaim_calls[0]["min_idle_time"], 0)
+        self.assertTrue(mock_redis.xclaim_calls[0]["justid"])
+
+        # 3. Worker Beta attempts XAUTOCLAIM while lease is actively held by Alpha
+        worker_beta = QueueConsumer(queue_name="hettety_3d_jobs")
+        worker_beta.redis_client = mock_redis
+        worker_beta.use_streams = True
+        worker_beta.worker_id = "worker_beta_a100"
+
+        mock_redis.stream_entries = [("1720000000000-0", {"payload": json.dumps(job_payload)})]
+        claimed_job = worker_beta.poll_job(timeout_sec=0)
+
+        # Beta MUST skip the job because Alpha holds the active lease
+        self.assertIsNone(claimed_job)
+        self.assertNotIn("job_stream_lease_001", worker_beta._in_flight)
+
+        # 4. Now simulate Alpha's lease expiring/clearing
+        del mock_redis.leases[lease_key]
+        claimed_by_beta = worker_beta.poll_job(timeout_sec=0)
+        self.assertIsNotNone(claimed_by_beta)
+        self.assertEqual(claimed_by_beta["id"], "job_stream_lease_001")
+        self.assertEqual(mock_redis.leases[lease_key]["value"], "worker_beta_a100")
+
+    def test_25_managed_process_cancellation_kills_process_tree(self):
+        """Verifies run_managed_process terminates subprocess tree immediately on cancellation signal."""
+        # Spawn a long-running process (15 seconds sleep)
+        cmd = [sys.executable, "-c", "import time; time.sleep(15)"]
+
+        cancel_container = {"cancelled": False}
+        def cancel_check():
+            return cancel_container["cancelled"]
+
+        # Cancel after 0.25 seconds
+        def trigger_cancel():
+            time.sleep(0.25)
+            cancel_container["cancelled"] = True
+
+        cancel_thread = threading.Thread(target=trigger_cancel)
+        cancel_thread.start()
+
+        start = time.time()
+        with self.assertRaises(JobCancelledException):
+            run_managed_process(cmd, check=True, cancel_check=cancel_check, poll_interval=0.05)
+        elapsed = time.time() - start
+
+        cancel_thread.join()
+        # Must have cancelled quickly (under 3s), not waited 15s
+        self.assertLess(elapsed, 3.0)
+        # All managed processes must be unregistered
+        self.assertEqual(len(ACTIVE_PROCESSES), 0)
+
+    def test_26_production_mode_guards_against_test_env_and_missing_runner(self):
+        """Verifies fail-closed production guards against test environment and absent 3DGS runner."""
+        old_node_env = os.environ.get("NODE_ENV")
+        old_hettety_env = os.environ.get("HETTETY_ENV")
+
+        try:
+            # 1. NODE_ENV=production + HETTETY_ENV=test is strictly rejected
+            os.environ["NODE_ENV"] = "production"
+            os.environ["HETTETY_ENV"] = "test"
+
+            with self.assertRaises(RuntimeError) as ctx:
+                ReconstructionWorker(work_dir=self.temp_dir)
+            self.assertIn("INVALID_ENVIRONMENT_CONFIGURATION", str(ctx.exception))
+
+            res = run_gaussian_training(
+                source_dir=self.temp_dir,
+                output_model_dir=os.path.join(self.temp_dir, "out")
+            )
+            self.assertFalse(res["success"])
+            self.assertEqual(res["error_code"], "INVALID_ENVIRONMENT_CONFIGURATION")
+
+            # 2. In production without HETTETY_ENV=test, missing 3DGS runner fails closed
+            del os.environ["HETTETY_ENV"]
+            res_prod = run_gaussian_training(
+                source_dir=self.temp_dir,
+                output_model_dir=os.path.join(self.temp_dir, "out")
+            )
+            self.assertFalse(res_prod["success"])
+            self.assertEqual(res_prod["error_code"], "GAUSSIAN_TRAINING_FAILED")
+            self.assertIn("missing in production", res_prod["message"].lower())
+
+        finally:
+            if old_node_env is not None:
+                os.environ["NODE_ENV"] = old_node_env
+            else:
+                os.environ.pop("NODE_ENV", None)
+
+            if old_hettety_env is not None:
+                os.environ["HETTETY_ENV"] = old_hettety_env
+            else:
+                os.environ.pop("HETTETY_ENV", None)
 
 if __name__ == "__main__":
     unittest.main()

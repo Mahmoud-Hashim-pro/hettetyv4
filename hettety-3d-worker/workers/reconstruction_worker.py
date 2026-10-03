@@ -41,6 +41,9 @@ class ReconstructionWorker:
         self.queue_consumer = queue_consumer
         self.active_processes: List[subprocess.Popen] = []
         os.makedirs(self.work_dir, exist_ok=True)
+        # P0-1 / Section 59: Production guard against invalid test mode
+        if os.environ.get("NODE_ENV") == "production" and os.environ.get("HETTETY_ENV") == "test":
+            raise RuntimeError("INVALID_ENVIRONMENT_CONFIGURATION: HETTETY_ENV=test is strictly forbidden when NODE_ENV=production")
         self.cleanup_orphan_workspaces(max_age_hours=2.0)
 
     def cleanup_orphan_workspaces(self, max_age_hours: float = 2.0):
@@ -194,6 +197,11 @@ class ReconstructionWorker:
         os.makedirs(dist_dir, exist_ok=True)
 
         logger.info(f"==> Starting Reconstruction Pipeline for Job {job_id} (Property: {property_id}, is_video={is_video})")
+
+        # P0-1 / Section 59: Production guard against invalid test mode
+        if os.environ.get("NODE_ENV") == "production" and os.environ.get("HETTETY_ENV") == "test":
+            logger.error("Production guard: HETTETY_ENV=test is strictly rejected when NODE_ENV=production.")
+            return fail("INVALID_ENVIRONMENT_CONFIGURATION", "HETTETY_ENV=test is strictly forbidden when NODE_ENV=production")
 
         heartbeat_stop = None
         try:

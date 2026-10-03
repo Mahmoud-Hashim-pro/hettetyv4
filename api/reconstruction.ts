@@ -27,6 +27,7 @@ export interface ReconstructionJobPayload {
   }>;
   createdAt: string;
   retryCount: number;
+  idempotencyKey?: string;
   scaleReferences?: any[];
   progress?: number;
   stage?: string;
@@ -220,6 +221,7 @@ export async function persistJobToFirestore(job: ReconstructionJobPayload): Prom
       ...(job.errorCode ? { errorCode: job.errorCode } : {}),
       ...(job.errorMessage ? { errorMessage: job.errorMessage } : {}),
       ...(job.completedAt ? { completedAt: job.completedAt } : {}),
+      ...(job.idempotencyKey ? { idempotencyKey: job.idempotencyKey } : {}),
       ...(job.scaleReferences ? { scaleReferences: job.scaleReferences } : {}),
     };
 
@@ -588,6 +590,55 @@ export default async function handler(req: any, res: any) {
         return res.status(ownership.status || 403).json({ error: ownership.reason || 'FORBIDDEN: Ownership verification failed.' });
       }
 
+      // P1-6: Idempotent submission: If idempotencyKey provided, replay existing active job
+      const idempotencyKey = (req.headers?.['idempotency-key'] || req.headers?.['Idempotency-Key'] || req.body?.idempotencyKey)?.toString();
+      if (idempotencyKey) {
+        // 1. Check in-memory store
+        for (const j of controlPlaneJobs.values()) {
+          if (j.ownerId === auth.uid && j.propertyId === propertyId && j.idempotencyKey === idempotencyKey) {
+            return res.status(200).json({
+              job: j,
+              idempotentReplay: true,
+              sessionId: `session_${j.id}`,
+              signedUploadUrls: (j.manifest || []).map((m: any) => ({
+                id: m.id,
+                uploadUrl: m.uploadUrl,
+                storagePath: m.storagePath,
+              })),
+            });
+          }
+        }
+
+        // 2. Check Firestore
+        const { adminDb } = await getAdminServices();
+        if (adminDb) {
+          try {
+            const snap = await adminDb.collection('reconstruction_jobs')
+              .where('propertyId', '==', propertyId)
+              .where('ownerId', '==', auth.uid)
+              .where('idempotencyKey', '==', idempotencyKey)
+              .limit(1)
+              .get();
+            if (!snap.empty) {
+              const existingJob = snap.docs[0].data() as ReconstructionJobPayload;
+              controlPlaneJobs.set(existingJob.id, existingJob);
+              return res.status(200).json({
+                job: existingJob,
+                idempotentReplay: true,
+                sessionId: `session_${existingJob.id}`,
+                signedUploadUrls: (existingJob.manifest || []).map((m: any) => ({
+                  id: m.id,
+                  uploadUrl: m.uploadUrl,
+                  storagePath: m.storagePath,
+                })),
+              });
+            }
+          } catch (queryErr) {
+            console.debug('[ControlPlane] Idempotency query error:', queryErr);
+          }
+        }
+      }
+
       const jobId = `job_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`;
       const bucket = process.env.GCS_BUCKET_NAME || 'hettety-spatial-assets';
 
@@ -619,6 +670,7 @@ export default async function handler(req: any, res: any) {
         createdAt: new Date().toISOString(),
         retryCount: 0,
         scaleReferences: scaleReferences || [],
+        ...(idempotencyKey ? { idempotencyKey } : {}),
       };
 
       await persistJobToFirestore(newJob);

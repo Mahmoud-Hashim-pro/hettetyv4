@@ -41,8 +41,13 @@ def publish_tour_assets(
     spz_filename = os.path.basename(spz_path)
     glb_filename = os.path.basename(glb_path)
     
-    remote_spz_path = f"properties/{property_id}/tour/{spz_filename}"
-    remote_glb_path = f"properties/{property_id}/tour/{glb_filename}"
+    # Immutable versioned paths: properties/{property_id}/3d/{job_id}/{attempt_id}/...
+    attempt_tag = attempt_id or "attempt_1"
+    version_dir = f"properties/{property_id}/3d/{job_id}/{attempt_tag}"
+    remote_spz_path = f"{version_dir}/{spz_filename}"
+    remote_glb_path = f"{version_dir}/{glb_filename}"
+    tour_spz_path = f"properties/{property_id}/tour/{spz_filename}"
+    tour_glb_path = f"properties/{property_id}/tour/{glb_filename}"
 
     spz_url = f"{cdn_base_url}/{remote_spz_path}"
     glb_url = f"{cdn_base_url}/{remote_glb_path}"
@@ -51,8 +56,10 @@ def publish_tour_assets(
         try:
             if os.path.exists(spz_path):
                 storage_client.upload_file(spz_path, remote_spz_path)
+                storage_client.upload_file(spz_path, tour_spz_path)
             if os.path.exists(glb_path):
                 storage_client.upload_file(glb_path, remote_glb_path)
+                storage_client.upload_file(glb_path, tour_glb_path)
         except Exception as upload_err:
             logger.error(f"Cloud Storage upload failed: {upload_err}")
             return {
@@ -189,7 +196,8 @@ def publish_tour_assets(
         }
     }
 
-    remote_manifest_path = f"properties/{property_id}/tour/manifest.json"
+    remote_manifest_path = f"{version_dir}/manifest.json"
+    tour_manifest_path = f"properties/{property_id}/tour/manifest.json"
     manifest_url = f"{cdn_base_url}/{remote_manifest_path}"
     with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as mf:
         json.dump(manifest_content, mf, indent=2)
@@ -199,6 +207,7 @@ def publish_tour_assets(
         manifest_sha256 = compute_sha256(local_manifest_tmp)
         if storage_client:
             storage_client.upload_file(local_manifest_tmp, remote_manifest_path)
+            storage_client.upload_file(local_manifest_tmp, tour_manifest_path)
     finally:
         try:
             os.remove(local_manifest_tmp)

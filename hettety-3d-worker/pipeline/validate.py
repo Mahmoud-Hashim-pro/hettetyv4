@@ -5,7 +5,7 @@ Checks input keyframes for blur (Laplacian variance), minimum resolution, file i
 
 import os
 import logging
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Tuple, Optional
 
 logger = logging.getLogger("hettety-3d-worker.validate")
 
@@ -58,7 +58,34 @@ def verify_image_magic_bytes(file_path: str) -> bool:
     except Exception:
         return False
 
-def validate_keyframes(input_dir: str, min_images: int = 12) -> Dict[str, Any]:
+def verify_image_content_and_structure(
+    file_path: str,
+    min_width: int = 400,
+    min_height: int = 300,
+    max_dimension: int = 16384
+) -> Tuple[bool, str, Optional[Tuple[int, int]]]:
+    """
+    Decodes the image structure using PIL, verifying magic bytes, image headers,
+    pixel integrity, orientation, and resolution constraints.
+    Prevents evil.bin files disguised with fake Content-Type or dummy headers.
+    """
+    if not verify_image_magic_bytes(file_path):
+        return False, "INVALID_MAGIC_HEADER: File does not match JPEG, PNG, or WebP binary signature.", None
+    try:
+        from PIL import Image
+        with Image.open(file_path) as img:
+            img.verify()
+        with Image.open(file_path) as img:
+            w, h = img.size
+            if w < min_width or h < min_height:
+                return False, f"RESOLUTION_TOO_LOW: Image resolution ({w}x{h}) is below minimum {min_width}x{min_height}.", (w, h)
+            if w > max_dimension or h > max_dimension:
+                return False, f"RESOLUTION_TOO_HIGH: Image resolution ({w}x{h}) exceeds maximum {max_dimension}.", (w, h)
+            return True, "OK", (w, h)
+    except Exception as ex:
+        return False, f"IMAGE_DECODE_FAILED: Corrupt or unparseable image content: {ex}", None
+
+def validate_keyframes(input_dir: str, min_images: int = 12, max_images: int = 500) -> Dict[str, Any]:
     valid_exts = ('.jpg', '.jpeg', '.png')
     if not os.path.exists(input_dir):
         return {
@@ -76,16 +103,25 @@ def validate_keyframes(input_dir: str, min_images: int = 12) -> Dict[str, Any]:
             "message": f"Found {len(images)} images, minimum required is {min_images}"
         }
 
-    # Inspect file sizes and integrity (including magic bytes verification)
+    if len(images) > max_images:
+        return {
+            "valid": False,
+            "error_code": "TOO_MANY_IMAGES",
+            "message": f"Found {len(images)} images, maximum supported is {max_images}"
+        }
+
+    # Inspect file sizes and structural integrity (including decoding verification)
     corrupt_files = []
     too_small = 0
     total_bytes = 0
     variances: List[float] = []
 
     for img_path in images:
-        if not verify_image_magic_bytes(img_path):
-            corrupt_files.append(os.path.basename(img_path))
+        is_struct_valid, err_msg, dims = verify_image_content_and_structure(img_path)
+        if not is_struct_valid:
+            corrupt_files.append(f"{os.path.basename(img_path)}: {err_msg}")
             continue
+
         sz = os.path.getsize(img_path)
         total_bytes += sz
         if sz < 10240: # < 10KB is likely corrupt thumbnail
@@ -95,11 +131,19 @@ def validate_keyframes(input_dir: str, min_images: int = 12) -> Dict[str, Any]:
             var = compute_image_laplacian_variance(img_path)
             variances.append(var)
 
+    max_capture_bytes = 2 * 1024 * 1024 * 1024  # 2 GB total capture limit
+    if total_bytes > max_capture_bytes:
+        return {
+            "valid": False,
+            "error_code": "CAPTURE_QUOTA_EXCEEDED",
+            "message": f"Total capture size ({total_bytes / (1024*1024):.1f} MB) exceeds maximum allowed limit of 2 GB."
+        }
+
     if corrupt_files and (len(corrupt_files) > len(images) * 0.2 or (len(images) - len(corrupt_files)) < min_images):
         return {
             "valid": False,
             "error_code": "CORRUPT_OR_LOW_RES_CAPTURES",
-            "message": f"Capture dataset failed validation: {len(corrupt_files)} files appear corrupted, spoofed (failed magic bytes), or below 10KB minimum."
+            "message": f"Capture dataset failed validation: {len(corrupt_files)} files appear corrupted, spoofed (failed decoding/magic bytes), or below minimum resolution."
         }
 
     # Derive genuine sharpness score from average Laplacian variance

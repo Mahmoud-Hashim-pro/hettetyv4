@@ -13,9 +13,17 @@ interface GaussianViewerProps {
   tour: ThreeDTour;
   activeRoom?: Room;
   isRtl?: boolean;
+  isMeasuring?: boolean;
+  onPointPicked?: (pt: [number, number, number]) => void;
 }
 
-export const GaussianViewer: React.FC<GaussianViewerProps> = ({ tour, activeRoom, isRtl = false }) => {
+export const GaussianViewer: React.FC<GaussianViewerProps> = ({
+  tour,
+  activeRoom,
+  isRtl = false,
+  isMeasuring = false,
+  onPointPicked,
+}) => {
   const splatUrl = tour?.representation?.gaussianSplat?.url || tour?.assetUrl;
   const [cloud, setCloud] = useState<ParsedGaussianCloud | null>(null);
   const [loading, setLoading] = useState(Boolean(splatUrl));
@@ -132,7 +140,16 @@ export const GaussianViewer: React.FC<GaussianViewerProps> = ({ tour, activeRoom
           gl={{ antialias: true, alpha: false }}
           className="w-full h-full"
         >
-          <GaussianRenderer cloud={cloud} activeRoom={activeRoom} />
+          <group
+            onPointerDown={(e) => {
+              if (isMeasuring && onPointPicked) {
+                e.stopPropagation();
+                onPointPicked([e.point.x, e.point.y, e.point.z]);
+              }
+            }}
+          >
+            <GaussianRenderer cloud={cloud} activeRoom={activeRoom} />
+          </group>
           <OrbitControls
             enableDamping
             dampingFactor={0.05}

@@ -623,8 +623,8 @@ NaN NaN NaN
       expect(parsed.bounds.max[0]).toBe(3.0);
     });
 
-    it('decodes genuine Niantic SPZ (version 4 NGSP) via official WebAssembly decoder', async () => {
-      const { encodeGaussianSpz, parseGaussianSpz } = await import('../../src/lib/3d/spz-parser');
+    it('decodes genuine Niantic SPZ (version 4 NGSP) via official WebAssembly decoder and verifies bidirectional interoperability', async () => {
+      const { encodeGaussianSpz, parseGaussianSpz, getSpzModule } = await import('../../src/lib/3d/spz-parser');
 
       const sourceCloud = {
         numPoints: 3,
@@ -635,13 +635,13 @@ NaN NaN NaN
         colors: new Float32Array([0.5, 0.6, 0.7, 0.1, 0.2, 0.3, 0.8, 0.9, 1.0]),
       };
 
-      // 1. Encode with official Niantic WASM
+      // 1. Encode with official Niantic WebAssembly encoder
       const spzBytes = await encodeGaussianSpz(sourceCloud);
       expect(spzBytes.length).toBeGreaterThan(50);
       const magic = String.fromCharCode(...spzBytes.subarray(0, 4));
       expect(magic).toBe('NGSP');
 
-      // 2. Decode with parseGaussianSpz
+      // 2. Decode with Hettety parseGaussianSpz
       const decoded = await parseGaussianSpz(spzBytes.buffer);
       expect(decoded.count).toBe(3);
       expect(decoded.positions.length).toBe(9);
@@ -652,6 +652,23 @@ NaN NaN NaN
       expect(decoded.opacities[0]).toBeCloseTo(0.9, 1);
       expect(decoded.bounds.min[0]).toBeCloseTo(-1.5, 1);
       expect(decoded.bounds.max[0]).toBeCloseTo(1.0, 1);
+
+      // 3. Bidirectional test: Official Niantic WASM directly decodes the generated buffer
+      const spzMod = await getSpzModule();
+      expect(spzMod).toBeDefined();
+      if (spzMod && typeof spzMod.loadSpzFromBuffer === 'function') {
+        const officialDirectCloud = spzMod.loadSpzFromBuffer(spzBytes, { to: 0 });
+        expect(officialDirectCloud.numPoints).toBe(3);
+        expect(officialDirectCloud.positions.length).toBe(9);
+        expect(officialDirectCloud.positions[0]).toBeCloseTo(decoded.positions[0], 2);
+        expect(officialDirectCloud.positions[1]).toBeCloseTo(decoded.positions[1], 2);
+        expect(officialDirectCloud.positions[2]).toBeCloseTo(decoded.positions[2], 2);
+      }
+
+      // 4. Verify decoded cloud is renderable by Hettety 3DGS pipeline
+      expect(decoded.scales.length).toBe(9);
+      expect(decoded.rotations.length).toBe(12);
+      expect(decoded.colors.length).toBe(9);
     });
 
     it('generates genuine Google Cloud Storage V4 signed PUT URLs with X-Goog parameters', async () => {

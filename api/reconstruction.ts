@@ -71,6 +71,7 @@ export interface ReconstructionJobPayload {
 // In-memory control plane store for fast local development and testing
 export const controlPlaneJobs = new Map<string, ReconstructionJobPayload>();
 export const controlPlaneIdempotencyKeys = new Map<string, string>();
+export const inFlightIdempotencyLocks = new Map<string, Promise<any>>();
 export const mockPropertiesStore = new Map<string, { authorUid: string; [key: string]: any }>();
 export const mockAttemptsStore = new Map<string, any[]>();
 
@@ -738,7 +739,14 @@ export default async function handler(req: any, res: any) {
       if (idempotencyKey) {
         keyHash = crypto.createHash('sha256').update(`${auth.uid}:${propertyId}:${idempotencyKey}`).digest('hex');
 
-        // 1. Check in-memory store
+        // Await in-flight submission with identical idempotency key to prevent concurrent creation races
+        if (inFlightIdempotencyLocks.has(keyHash)) {
+          try {
+            await inFlightIdempotencyLocks.get(keyHash);
+          } catch (_) {}
+        }
+
+        // 1. Fast-path in-memory store check
         const cachedJobId = controlPlaneIdempotencyKeys.get(keyHash);
         if (cachedJobId && controlPlaneJobs.has(cachedJobId)) {
           const j = controlPlaneJobs.get(cachedJobId)!;
@@ -765,35 +773,6 @@ export default async function handler(req: any, res: any) {
                 storagePath: m.storagePath,
               })),
             });
-          }
-        }
-
-        // 2. Check Firestore atomic idempotency document
-        const { adminDb } = await getAdminServices();
-        if (adminDb) {
-          try {
-            const idempSnap = await adminDb.collection('reconstruction_idempotency').doc(keyHash).get();
-            if (idempSnap.exists) {
-              const existingJobId = idempSnap.data()?.jobId;
-              if (existingJobId) {
-                const existingJob = await getJobFromFirestoreOrMemory(existingJobId);
-                if (existingJob) {
-                  controlPlaneIdempotencyKeys.set(keyHash, existingJob.id);
-                  return res.status(200).json({
-                    job: existingJob,
-                    idempotentReplay: true,
-                    sessionId: `session_${existingJob.id}`,
-                    signedUploadUrls: (existingJob.manifest || []).map((m: any) => ({
-                      id: m.id,
-                      uploadUrl: m.uploadUrl,
-                      storagePath: m.storagePath,
-                    })),
-                  });
-                }
-              }
-            }
-          } catch (queryErr) {
-            console.debug('[ControlPlane] Idempotency query error:', queryErr);
           }
         }
       }
@@ -833,29 +812,60 @@ export default async function handler(req: any, res: any) {
         ...(idempotencyKey ? { idempotencyKey } : {}),
       };
 
-      await persistJobToFirestore(newJob);
+      let resolvedJob = newJob;
+      let isReplay = false;
 
-      if (keyHash) {
-        controlPlaneIdempotencyKeys.set(keyHash, jobId);
-        const { adminDb } = await getAdminServices();
-        if (adminDb) {
-          try {
-            await adminDb.collection('reconstruction_idempotency').doc(keyHash).set({
-              jobId,
-              propertyId,
-              ownerId: auth.uid,
-              createdAt: new Date().toISOString(),
-            });
-          } catch (idempErr) {
-            console.debug('[ControlPlane] Could not record idempotency doc:', idempErr);
+      // P0-AtomicIdempotency: Check & create in the SAME Firestore transaction
+      const { adminDb } = await getAdminServices();
+      if (adminDb && keyHash) {
+        const idempRef = adminDb.collection('reconstruction_idempotency').doc(keyHash);
+        const result = await adminDb.runTransaction(async (t) => {
+          const idempSnap = await t.get(idempRef);
+          if (idempSnap.exists) {
+            const existingJobId = idempSnap.data()?.jobId;
+            if (existingJobId) {
+              const jobSnap = await t.get(adminDb.collection('reconstruction_jobs').doc(existingJobId));
+              if (jobSnap.exists) {
+                return { isReplay: true, job: jobSnap.data() as ReconstructionJobPayload };
+              }
+            }
           }
+          // Atomically reserve the idempotency key and create the job in the same transaction
+          const jobRef = adminDb.collection('reconstruction_jobs').doc(jobId);
+          t.set(jobRef, newJob);
+          t.set(idempRef, {
+            jobId,
+            propertyId,
+            ownerId: auth.uid,
+            createdAt: newJob.createdAt,
+          });
+          return { isReplay: false, job: newJob };
+        });
+
+        resolvedJob = result.job;
+        isReplay = result.isReplay;
+        controlPlaneIdempotencyKeys.set(keyHash, resolvedJob.id);
+        controlPlaneJobs.set(resolvedJob.id, resolvedJob);
+      } else {
+        if (keyHash) {
+          const cachedJobId = controlPlaneIdempotencyKeys.get(keyHash);
+          if (cachedJobId && controlPlaneJobs.has(cachedJobId)) {
+            resolvedJob = controlPlaneJobs.get(cachedJobId)!;
+            isReplay = true;
+          } else {
+            controlPlaneIdempotencyKeys.set(keyHash, jobId);
+            await persistJobToFirestore(newJob);
+          }
+        } else {
+          await persistJobToFirestore(newJob);
         }
       }
 
       return res.status(200).json({
-        job: newJob,
-        sessionId: `session_${jobId}`,
-        signedUploadUrls: manifest.map((m) => ({
+        job: resolvedJob,
+        ...(isReplay ? { idempotentReplay: true } : {}),
+        sessionId: `session_${resolvedJob.id}`,
+        signedUploadUrls: (resolvedJob.manifest || []).map((m: any) => ({
           id: m.id,
           uploadUrl: m.uploadUrl,
           storagePath: m.storagePath,

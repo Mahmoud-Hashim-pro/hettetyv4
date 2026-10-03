@@ -13,9 +13,17 @@ interface MeshViewerProps {
   tour: ThreeDTour;
   activeRoom?: Room;
   isRtl?: boolean;
+  isMeasuring?: boolean;
+  onPointPicked?: (pt: [number, number, number]) => void;
 }
 
-export const MeshViewer: React.FC<MeshViewerProps> = ({ tour, activeRoom, isRtl = false }) => {
+export const MeshViewer: React.FC<MeshViewerProps> = ({
+  tour,
+  activeRoom,
+  isRtl = false,
+  isMeasuring = false,
+  onPointPicked,
+}) => {
   const meshUrl = tour?.representation?.mesh?.url;
   const isCalibrated = Boolean(tour?.representation?.mesh?.isCalibratedMetric);
 
@@ -150,12 +158,21 @@ export const MeshViewer: React.FC<MeshViewerProps> = ({ tour, activeRoom, isRtl 
 
       {loadedScene && (
         <Canvas camera={{ position: [0, 2.5, 5], fov: 60 }} className="w-full h-full">
-          <MeshRenderer
-            scene={loadedScene}
-            wireframe={wireframe}
-            activeRoom={activeRoom}
-            bounds={bounds}
-          />
+          <group
+            onPointerDown={(e) => {
+              if (isMeasuring && onPointPicked) {
+                e.stopPropagation();
+                onPointPicked([e.point.x, e.point.y, e.point.z]);
+              }
+            }}
+          >
+            <MeshRenderer
+              scene={loadedScene}
+              wireframe={wireframe}
+              activeRoom={activeRoom}
+              bounds={bounds}
+            />
+          </group>
           <OrbitControls
             enableDamping
             dampingFactor={0.05}

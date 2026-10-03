@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { ThreeDTour, Room } from '../../types';
+import { Vec3 } from '../../lib/3d/coordinates';
 import { GaussianViewer } from './GaussianViewer';
 import { MeshViewer } from './MeshViewer';
 import { PanoramaViewer } from './PanoramaViewer';
@@ -46,6 +47,15 @@ export const TourViewer: React.FC<TourViewerProps> = ({
   const [showFloorPlan, setShowFloorPlan] = useState(false);
   const [showMeasure, setShowMeasure] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
+  const [measurementPoints, setMeasurementPoints] = useState<[Vec3 | null, Vec3 | null]>([null, null]);
+
+  const handlePointPicked = (pt: Vec3) => {
+    setMeasurementPoints(([a, b]) => {
+      if (!a) return [pt, null];
+      if (!b) return [a, pt];
+      return [pt, null];
+    });
+  };
 
   const activeRoom = tour?.rooms?.find(r => r.id === activeRoomId) || tour?.rooms?.[0];
 
@@ -54,10 +64,22 @@ export const TourViewer: React.FC<TourViewerProps> = ({
       {/* 3D Scene Viewport */}
       <div className="flex-1 w-full h-full relative">
         {currentMode === 'gaussian' && (
-          <GaussianViewer tour={tour || { status: 'ready' }} activeRoom={activeRoom} isRtl={isRtl} />
+          <GaussianViewer
+            tour={tour || { status: 'ready' }}
+            activeRoom={activeRoom}
+            isRtl={isRtl}
+            isMeasuring={showMeasure}
+            onPointPicked={handlePointPicked}
+          />
         )}
         {currentMode === 'mesh' && (
-          <MeshViewer tour={tour || { status: 'ready' }} activeRoom={activeRoom} isRtl={isRtl} />
+          <MeshViewer
+            tour={tour || { status: 'ready' }}
+            activeRoom={activeRoom}
+            isRtl={isRtl}
+            isMeasuring={showMeasure}
+            onPointPicked={handlePointPicked}
+          />
         )}
         {currentMode === 'panorama' && (
           <PanoramaViewer
@@ -105,7 +127,12 @@ export const TourViewer: React.FC<TourViewerProps> = ({
         {/* Floating Measurement Tool (Bottom End) */}
         {showMeasure && (
           <div className="absolute bottom-20 end-4 z-20 animate-fade-in">
-            <MeasurementTool isCalibrated={tour?.representation?.mesh?.isCalibratedMetric} isRtl={isRtl} />
+            <MeasurementTool
+              isCalibrated={tour?.representation?.mesh?.isCalibratedMetric}
+              isRtl={isRtl}
+              selectedPoints={measurementPoints}
+              onPointSelect={handlePointPicked}
+            />
           </div>
         )}
       </div>

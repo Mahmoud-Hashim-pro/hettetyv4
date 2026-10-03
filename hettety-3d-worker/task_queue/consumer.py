@@ -8,9 +8,22 @@ import os
 import json
 import time
 import logging
-from typing import Optional, Dict, Any, Callable
+from typing import Optional, Dict, Any, Callable, Tuple
 
 logger = logging.getLogger("hettety-3d-worker.queue")
+
+LUA_ACQUIRE_LEASE = """
+local lease_key = KEYS[1]
+local worker_id = ARGV[1]
+local lease_ttl = tonumber(ARGV[2])
+local current = redis.call('GET', lease_key)
+if not current or current == worker_id then
+    redis.call('SET', lease_key, worker_id, 'EX', lease_ttl)
+    return {1, worker_id}
+else
+    return {0, current}
+end
+"""
 
 class QueueConsumer:
     def __init__(
@@ -50,6 +63,32 @@ class QueueConsumer:
             except Exception as e:
                 logger.warning(f"Could not connect to Redis: {e}. Running in local mock mode.")
 
+    def _try_acquire_lease(self, job_id: str) -> Tuple[bool, Optional[str]]:
+        """Atomically checks and acquires job lease via Lua script to prevent race conditions."""
+        if not self.redis_client or not job_id:
+            return True, self.worker_id
+        try:
+            res = self.redis_client.eval(
+                LUA_ACQUIRE_LEASE, 1,
+                f"hettety:lease:{job_id}",
+                self.worker_id,
+                int(max(60, self.lease_timeout_sec))
+            )
+            if isinstance(res, (list, tuple)) and len(res) >= 2:
+                acquired = bool(res[0] == 1)
+                holder = res[1].decode("utf-8") if isinstance(res[1], bytes) else str(res[1])
+                return acquired, holder
+            return True, self.worker_id
+        except Exception as ex:
+            logger.debug(f"Lua lease acquire fallback: {ex}")
+            holder = self.redis_client.get(f"hettety:lease:{job_id}")
+            if hasattr(holder, "decode"):
+                holder = holder.decode("utf-8")
+            if holder and holder != self.worker_id:
+                return False, holder
+            self.redis_client.set(f"hettety:lease:{job_id}", self.worker_id, ex=int(max(60, self.lease_timeout_sec)))
+            return True, self.worker_id
+
     def poll_job(self, timeout_sec: int = 5) -> Optional[Dict[str, Any]]:
         """
         Polls for the next pending reconstruction job.
@@ -75,11 +114,11 @@ class QueueConsumer:
                                     job = json.loads(payload_str)
                                     job_id = job.get("id", f"job-{time.time()}")
 
-                                    # Check if active lease is held by another worker (prevent concurrent stealing)
-                                    lease_holder = self.redis_client.get(f"hettety:lease:{job_id}")
-                                    if lease_holder and lease_holder != self.worker_id:
+                                    # Atomic Lua lease check: Prevents concurrent message theft
+                                    acquired, lease_holder = self._try_acquire_lease(job_id)
+                                    if not acquired and lease_holder != self.worker_id:
                                         logger.info(f"Skipping XAUTOCLAIM for job {job_id}: active lease held by {lease_holder}")
-                                        # Revert message back to lease_holder's PEL immediately to prevent message theft
+                                        # Revert message back to lease_holder's PEL immediately
                                         try:
                                             self.redis_client.xclaim(
                                                 self.stream_name, self.group_name, lease_holder,
@@ -113,6 +152,13 @@ class QueueConsumer:
                         if payload_str:
                             job = json.loads(payload_str)
                             job_id = job.get("id", f"job-{time.time()}")
+
+                            # Atomic Lua lease acquisition
+                            acquired, lease_holder = self._try_acquire_lease(job_id)
+                            if not acquired and lease_holder != self.worker_id:
+                                logger.info(f"Skipping stream message for job {job_id}: active lease held by {lease_holder}")
+                                return None
+
                             self._in_flight[job_id] = {
                                 "job": job,
                                 "leased_at": time.time(),

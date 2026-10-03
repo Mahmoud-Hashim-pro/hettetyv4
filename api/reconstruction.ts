@@ -14,7 +14,7 @@ export interface ReconstructionJobPayload {
   type: 'photos' | 'video' | 'hybrid';
   status: 'QUEUED' | 'UPLOADING' | 'VALIDATING' | 'RECONSTRUCTING' | 'TRAINING' | 'OPTIMIZING' | 'PUBLISHING' | 'READY' | 'FAILED' | 'CANCELLED';
   attemptId: string;
-  manifest?: Array<{
+  manifest: Array<{
     id: string;
     storagePath: string;
     uploadUrl: string;
@@ -83,129 +83,191 @@ let adminAuthInstance: any = null;
 /**
  * Authoritative Server-Side Firebase Admin Services
  */
-async function getAdminServices(): Promise<{ adminDb: any; adminAuth: any }> {
+export async function getAdminServices(): Promise<{ adminDb: any; adminAuth: any }> {
+  if (adminDbInstance || adminAuthInstance) {
+    return { adminDb: adminDbInstance, adminAuth: adminAuthInstance };
+  }
+
   if (process.env.NODE_ENV === 'test' && !process.env.FIREBASE_SERVICE_ACCOUNT_KEY) {
     return { adminDb: null, adminAuth: null };
   }
 
-  if (adminDbInstance && adminAuthInstance) {
-    return { adminDb: adminDbInstance, adminAuth: adminAuthInstance };
+  if (process.env.NODE_ENV === 'production') {
+    if (!process.env.FIREBASE_SERVICE_ACCOUNT_KEY) {
+      throw new Error('CONFIGURATION_ERROR: FIREBASE_SERVICE_ACCOUNT_KEY is mandatory in production.');
+    }
+    if (!process.env.FIREBASE_PROJECT_ID && !process.env.GOOGLE_CLOUD_PROJECT) {
+      throw new Error('CONFIGURATION_ERROR: FIREBASE_PROJECT_ID or GOOGLE_CLOUD_PROJECT is mandatory in production.');
+    }
+    if (!process.env.FIRESTORE_DATABASE_ID) {
+      throw new Error('CONFIGURATION_ERROR: FIRESTORE_DATABASE_ID is mandatory in production.');
+    }
   }
 
   try {
-    const adminModule = await import('firebase-admin');
+    const adminPkg = 'firebase-admin';
+    const adminModule = await import(/* @vite-ignore */ adminPkg);
     const admin = (adminModule as any).default || adminModule;
-    const { getApps, initializeApp, cert } = await import('firebase-admin/app');
-    const { getFirestore } = await import('firebase-admin/firestore');
-    const { getAuth } = await import('firebase-admin/auth');
+    const appPkg = 'firebase-admin/app';
+    const { getApps, initializeApp, cert } = await import(/* @vite-ignore */ appPkg);
+    const firestorePkg = 'firebase-admin/firestore';
+    const { getFirestore } = await import(/* @vite-ignore */ firestorePkg);
+    const authPkg = 'firebase-admin/auth';
+    const { getAuth } = await import(/* @vite-ignore */ authPkg);
 
     if (getApps().length === 0) {
       if (process.env.FIREBASE_SERVICE_ACCOUNT_KEY) {
+        let sa: any;
         try {
-          const sa = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_KEY);
-          initializeApp({ credential: cert(sa), projectId: sa.project_id });
-        } catch {
-          initializeApp({ projectId: 'gen-lang-client-0748002195' });
+          sa = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_KEY);
+        } catch (parseErr: any) {
+          throw new Error(`FIREBASE_ADMIN_CONFIG_INVALID: Failed to parse FIREBASE_SERVICE_ACCOUNT_KEY JSON: ${parseErr.message}`);
         }
+        const projectId = sa.project_id || process.env.FIREBASE_PROJECT_ID || process.env.GOOGLE_CLOUD_PROJECT;
+        if (!projectId && process.env.NODE_ENV === 'production') {
+          throw new Error('CONFIGURATION_ERROR: Missing projectId for Firebase Admin initialization.');
+        }
+        initializeApp({ credential: cert(sa), ...(projectId ? { projectId } : {}) });
       } else {
-        initializeApp({ projectId: process.env.GOOGLE_CLOUD_PROJECT || 'gen-lang-client-0748002195' });
+        const projectId = process.env.FIREBASE_PROJECT_ID || process.env.GOOGLE_CLOUD_PROJECT;
+        if (!projectId && process.env.NODE_ENV === 'production') {
+          throw new Error('CONFIGURATION_ERROR: Missing projectId for Firebase Admin initialization.');
+        }
+        initializeApp(projectId ? { projectId } : undefined);
       }
     }
 
-    const dbId = process.env.FIRESTORE_DATABASE_ID || 'ai-studio-7dc9cb2d-ccba-48fa-8d31-f2b7a4759743';
-    adminDbInstance = getFirestore(dbId);
+    const dbId = process.env.FIRESTORE_DATABASE_ID;
+    adminDbInstance = dbId ? getFirestore(dbId) : getFirestore();
     adminAuthInstance = getAuth();
     return { adminDb: adminDbInstance, adminAuth: adminAuthInstance };
   } catch (err: any) {
-    if (process.env.NODE_ENV === 'test') {
+    if (process.env.NODE_ENV === 'test' && !err.message?.includes('FIREBASE_ADMIN_CONFIG_INVALID') && !err.message?.includes('CONFIGURATION_ERROR')) {
       return { adminDb: null, adminAuth: null };
     }
     throw new Error(`FIREBASE_ADMIN_INIT_FAILED: Could not initialize Firebase Admin SDK: ${err.message}`);
   }
 }
 
+export function setAdminServicesForTesting(db: any, auth: any) {
+  adminDbInstance = db;
+  adminAuthInstance = auth;
+}
+
+export function resetAdminServicesForTesting() {
+  adminDbInstance = null;
+  adminAuthInstance = null;
+}
+
 /**
- * Persists job record into Firestore Admin 'reconstruction_jobs' and 'attempts' subcollection
+ * Persists job record into Firestore Admin 'reconstruction_jobs', 'attempts' subcollection,
+ * and atomically commits 'three_d_assets' and 'versions' via a single atomic batched write.
+ * Fails closed on any persistence error without updating in-memory cache.
  */
 export async function persistJobToFirestore(job: ReconstructionJobPayload): Promise<void> {
-  controlPlaneJobs.set(job.id, job);
   const { adminDb } = await getAdminServices();
-  if (adminDb) {
-    try {
-      const now = new Date().toISOString();
-      const jobDocRef = adminDb.collection('reconstruction_jobs').doc(job.id);
-      
-      const payload: any = {
-        id: job.id,
-        propertyId: job.propertyId,
-        ownerId: job.ownerId,
-        type: job.type,
+  if (!adminDb) {
+    controlPlaneJobs.set(job.id, job);
+    return;
+  }
+
+  try {
+    const now = new Date().toISOString();
+    const batch = adminDb.batch();
+
+    const jobDocRef = adminDb.collection('reconstruction_jobs').doc(job.id);
+    const jobPayload: any = {
+      id: job.id,
+      propertyId: job.propertyId,
+      ownerId: job.ownerId,
+      type: job.type,
+      status: job.status,
+      stage: job.stage || job.status,
+      progress: job.progress ?? (job.status === 'QUEUED' ? 10 : job.status === 'READY' ? 100 : 0),
+      attemptId: job.attemptId,
+      retryCount: job.retryCount,
+      manifest: job.manifest,
+      createdAt: job.createdAt,
+      updatedAt: now,
+      ...(job.workerId ? { workerId: job.workerId } : {}),
+      ...(job.representation ? { representation: job.representation } : {}),
+      ...(job.bounds ? { bounds: job.bounds } : {}),
+      ...(job.qualityReport ? { qualityReport: job.qualityReport } : {}),
+      ...(job.errorCode ? { errorCode: job.errorCode } : {}),
+      ...(job.errorMessage ? { errorMessage: job.errorMessage } : {}),
+      ...(job.completedAt ? { completedAt: job.completedAt } : {}),
+      ...(job.scaleReferences ? { scaleReferences: job.scaleReferences } : {}),
+    };
+
+    batch.set(jobDocRef, jobPayload, { merge: true });
+
+    // Persist attempt subdocument for full audit trail & attempt isolation
+    if (job.attemptId) {
+      const attemptDocRef = jobDocRef.collection('attempts').doc(job.attemptId);
+      const attemptPayload: any = {
+        attemptId: job.attemptId,
+        jobId: job.id,
+        workerId: job.workerId || null,
         status: job.status,
         stage: job.stage || job.status,
-        progress: job.progress ?? (job.status === 'QUEUED' ? 10 : job.status === 'READY' ? 100 : 0),
+        progress: job.progress ?? 0,
+        updatedAt: now,
+        ...(job.completedAt ? { completedAt: job.completedAt } : {}),
+        ...(job.errorCode ? { errorCode: job.errorCode, errorMessage: job.errorMessage } : {}),
+      };
+      batch.set(attemptDocRef, attemptPayload, { merge: true });
+    }
+
+    // If READY, atomically register spatial asset in three_d_assets and versions in the SAME batch
+    if (job.status === 'READY' && job.representation) {
+      const assetPayload: any = {
+        id: job.propertyId,
+        propertyId: job.propertyId,
+        jobId: job.id,
         attemptId: job.attemptId,
-        retryCount: job.retryCount,
-        manifest: job.manifest,
+        status: 'PUBLISHED',
+        representation: job.representation,
+        bounds: job.bounds || null,
+        qualityReport: job.qualityReport || null,
+        publishedAt: now,
         createdAt: job.createdAt,
         updatedAt: now,
-        ...(job.workerId ? { workerId: job.workerId } : {}),
-        ...(job.representation ? { representation: job.representation } : {}),
-        ...(job.bounds ? { bounds: job.bounds } : {}),
-        ...(job.qualityReport ? { qualityReport: job.qualityReport } : {}),
-        ...(job.errorCode ? { errorCode: job.errorCode } : {}),
-        ...(job.errorMessage ? { errorMessage: job.errorMessage } : {}),
-        ...(job.completedAt ? { completedAt: job.completedAt } : {}),
-        ...(job.scaleReferences ? { scaleReferences: job.scaleReferences } : {}),
       };
 
-      await jobDocRef.set(payload, { merge: true });
+      // 1. Property-level active spatial asset
+      const propAssetDocRef = adminDb.collection('three_d_assets').doc(job.propertyId);
+      batch.set(propAssetDocRef, assetPayload, { merge: true });
 
-      // Persist attempt subdocument for full audit trail & attempt isolation
-      if (job.attemptId) {
-        const attemptDocRef = jobDocRef.collection('attempts').doc(job.attemptId);
-        await attemptDocRef.set({
-          attemptId: job.attemptId,
-          jobId: job.id,
-          workerId: job.workerId || null,
-          status: job.status,
-          stage: job.stage || job.status,
-          progress: job.progress ?? 0,
-          updatedAt: now,
-          ...(job.completedAt ? { completedAt: job.completedAt } : {}),
-          ...(job.errorCode ? { errorCode: job.errorCode, errorMessage: job.errorMessage } : {}),
-        }, { merge: true });
-      }
+      // 2. Job-level alias
+      const jobAssetDocRef = adminDb.collection('three_d_assets').doc(job.id);
+      batch.set(jobAssetDocRef, assetPayload, { merge: true });
 
-      // If READY, atomically register spatial asset in three_d_assets for public property tour delivery
-      if (job.status === 'READY' && job.representation) {
-        const assetDocRef = adminDb.collection('three_d_assets').doc(job.id);
-        await assetDocRef.set({
-          id: job.id,
-          propertyId: job.propertyId,
-          jobId: job.id,
-          attemptId: job.attemptId,
-          status: 'PUBLISHED',
-          representation: job.representation,
-          bounds: job.bounds || null,
-          qualityReport: job.qualityReport || null,
-          publishedAt: now,
-          createdAt: job.createdAt,
-        }, { merge: true });
-      }
-    } catch (e: any) {
-      if (process.env.NODE_ENV !== 'test') {
-        console.warn(`[ControlPlane] Firestore persistence error for job ${job.id}:`, e.message);
-      }
+      // 3. Immutable version history record
+      const versionDocRef = adminDb
+        .collection('three_d_assets')
+        .doc(job.propertyId)
+        .collection('versions')
+        .doc(`${job.id}_${job.attemptId}`);
+      batch.set(versionDocRef, {
+        ...assetPayload,
+        versionId: `${job.id}_${job.attemptId}`,
+      }, { merge: true });
     }
+
+    await batch.commit();
+
+    // Cache updated ONLY AFTER successful Firestore commit!
+    controlPlaneJobs.set(job.id, job);
+  } catch (err: any) {
+    throw new Error(`PERSISTENCE_FAILED: Failed to persist job ${job.id} to Firestore: ${err.message}`);
   }
 }
 
 /**
- * Retrieves job from in-memory cache or Firestore Admin
+ * Retrieves job from Firestore Admin as authoritative source of truth,
+ * updating the ephemeral in-memory cache upon read.
  */
 export async function getJobFromFirestoreOrMemory(jobId: string): Promise<ReconstructionJobPayload | null> {
-  const cached = controlPlaneJobs.get(jobId);
-  if (cached) return cached;
   const { adminDb } = await getAdminServices();
   if (adminDb) {
     try {
@@ -215,11 +277,15 @@ export async function getJobFromFirestoreOrMemory(jobId: string): Promise<Recons
         controlPlaneJobs.set(jobId, data);
         return data;
       }
-    } catch {
-      // Fallback
+      return null;
+    } catch (err: any) {
+      if (process.env.NODE_ENV === 'test') {
+        return controlPlaneJobs.get(jobId) || null;
+      }
+      throw new Error(`PERSISTENCE_FAILED: Failed to fetch job ${jobId} from Firestore: ${err.message}`);
     }
   }
-  return null;
+  return controlPlaneJobs.get(jobId) || null;
 }
 
 /**
@@ -687,6 +753,10 @@ export default async function handler(req: any, res: any) {
       job.retryCount += 1;
       const newAttemptId = `attempt_${job.retryCount + 1}`;
       job.attemptId = newAttemptId;
+      delete job.workerId;
+      delete job.errorCode;
+      delete job.errorMessage;
+      delete job.completedAt;
 
       // Enqueue to Redis stream BEFORE setting QUEUED
       const enqueued = await enqueueToRedis(job);
@@ -784,6 +854,13 @@ export default async function handler(req: any, res: any) {
         return res.status(404).json({ error: `JOB_NOT_FOUND: Cannot update unknown job ${jobId}.` });
       }
 
+      // Lock terminal states: READY and CANCELLED cannot be mutated further
+      if (['READY', 'CANCELLED'].includes(job.status)) {
+        return res.status(409).json({
+          error: `TERMINAL_STATE_LOCKED: Job ${jobId} is in terminal state ${job.status} and cannot be modified.`,
+        });
+      }
+
       // Verify property match
       if (propertyId && propertyId !== job.propertyId) {
         return res.status(400).json({ error: `PROPERTY_MISMATCH: Property ${propertyId} does not match job ${job.propertyId}.` });
@@ -794,6 +871,16 @@ export default async function handler(req: any, res: any) {
         return res.status(409).json({
           error: `STALE_ATTEMPT_IGNORED: Callback attempt ${attemptId} is stale. Current active attempt is ${job.attemptId}.`,
         });
+      }
+
+      // Enforce worker identity: lock to the first bound workerId; reject competing or mismatched workers
+      if (workerId) {
+        if (job.workerId && job.workerId !== workerId) {
+          return res.status(409).json({
+            error: `WORKER_MISMATCH_IGNORED: Job ${jobId} is currently assigned to worker ${job.workerId}. Callback from worker ${workerId} was rejected.`,
+          });
+        }
+        job.workerId = workerId;
       }
 
       const currentStatus = job.status;
@@ -829,6 +916,16 @@ export default async function handler(req: any, res: any) {
         if (!bounds || !bounds.min || !bounds.max || bounds.min.some((v: any) => !isFinite(v)) || bounds.max.some((v: any) => !isFinite(v))) {
           return res.status(422).json({
             error: 'ARTIFACT_VALIDATION_FAILED: Spatial bounds must contain finite coordinates.',
+          });
+        }
+
+        // Scope verification: representation URLs must be scoped to properties/${job.propertyId}/tour/
+        const expectedPrefix = `properties/${job.propertyId}/tour/`;
+        const splatUrl = String(representation.gaussianSplat.url || '');
+        const meshUrl = String(representation.mesh.url || '');
+        if (!splatUrl.includes(expectedPrefix) || !meshUrl.includes(expectedPrefix)) {
+          return res.status(422).json({
+            error: `ARTIFACT_VALIDATION_FAILED: Representation URLs must be scoped to property tour path ${expectedPrefix}.`,
           });
         }
       }
@@ -868,6 +965,15 @@ export default async function handler(req: any, res: any) {
     return res.status(400).json({ error: `UNKNOWN_ACTION: ${action}` });
   } catch (err: any) {
     console.error('[ControlPlane] Unhandled error:', err);
-    return res.status(err.message?.startsWith('AUTHENTICATION') ? 401 : 500).json({ error: err.message || 'Internal control plane error.' });
+    if (err.message?.startsWith('AUTHENTICATION')) {
+      return res.status(401).json({ error: err.message });
+    }
+    if (err.message?.startsWith('PERSISTENCE_FAILED')) {
+      return res.status(503).json({ error: err.message });
+    }
+    if (err.message?.startsWith('CONFIGURATION_ERROR')) {
+      return res.status(500).json({ error: err.message });
+    }
+    return res.status(500).json({ error: err.message || 'Internal control plane error.' });
   }
 }

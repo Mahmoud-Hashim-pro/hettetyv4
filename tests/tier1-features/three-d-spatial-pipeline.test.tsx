@@ -744,8 +744,8 @@ NaN NaN NaN
             progress: 100,
             stage: 'PUBLISHED',
             representation: {
-              gaussianSplat: { format: 'spz', url: 'https://cdn.hettety.com/scene.spz', splatCount: 350000 },
-              mesh: { format: 'glb', url: 'https://cdn.hettety.com/mesh.glb', faceCount: 15000 },
+              gaussianSplat: { format: 'spz', url: 'https://cdn.hettety.com/properties/prop-api-101/tour/scene.spz', splatCount: 350000 },
+              mesh: { format: 'glb', url: 'https://cdn.hettety.com/properties/prop-api-101/tour/mesh.glb', faceCount: 15000 },
             },
             bounds: { min: [-2, -2, -1], max: [2, 2, 1] },
             qualityReport: { overallScore: 92 },
@@ -796,6 +796,7 @@ NaN NaN NaN
         status: 'TRAINING',
         attemptId: 'attempt_2',
         retryCount: 1,
+        manifest: [],
         createdAt: new Date().toISOString(),
       });
 
@@ -825,7 +826,7 @@ NaN NaN NaN
       expect(jsonRes.error).toContain('STALE_ATTEMPT_IGNORED');
     });
 
-    it('enforces state machine transitions and blocks illegal state jumps with 400 INVALID_STATE_TRANSITION', async () => {
+    it('enforces state machine transitions and blocks illegal state jumps with 400 INVALID_STATE_TRANSITION or 409 TERMINAL_STATE_LOCKED', async () => {
       const { default: controlPlaneHandler, controlPlaneJobs } = await import('../../api/reconstruction');
       const jobId = `job_sm_${Date.now()}`;
       controlPlaneJobs.set(jobId, {
@@ -836,6 +837,7 @@ NaN NaN NaN
         status: 'READY',
         attemptId: 'attempt_1',
         retryCount: 0,
+        manifest: [],
         createdAt: new Date().toISOString(),
       });
 
@@ -861,8 +863,8 @@ NaN NaN NaN
         mockRes
       );
 
-      // In test env, state machine validation is enabled when transition is illegal
-      expect([400, 200]).toContain(statusRes);
+      // Terminal state locked (409) or state machine transition invalid (400)
+      expect([400, 409]).toContain(statusRes);
     });
 
     it('enforces fail-closed property ownership on create-job (404 missing, 403 unowned)', async () => {
@@ -941,6 +943,7 @@ NaN NaN NaN
         status: 'PUBLISHING',
         attemptId: 'attempt_1',
         retryCount: 0,
+        manifest: [],
         createdAt: new Date().toISOString(),
       });
 
@@ -961,8 +964,8 @@ NaN NaN NaN
             attemptId: 'attempt_1',
             status: 'READY',
             representation: {
-              gaussianSplat: { format: 'spz', url: 'https://cdn.hettety.com/s.spz', splatCount: 50000 },
-              mesh: { format: 'glb', url: 'https://cdn.hettety.com/m.glb', faceCount: 500 },
+              gaussianSplat: { format: 'spz', url: 'https://cdn.hettety.com/properties/prop-api-101/tour/s.spz', splatCount: 50000 },
+              mesh: { format: 'glb', url: 'https://cdn.hettety.com/properties/prop-api-101/tour/m.glb', faceCount: 500 },
             },
           },
         },
@@ -982,8 +985,8 @@ NaN NaN NaN
             attemptId: 'attempt_1',
             status: 'READY',
             representation: {
-              gaussianSplat: { format: 'spz', url: 'https://cdn.hettety.com/s.spz', splatCount: 0 },
-              mesh: { format: 'glb', url: 'https://cdn.hettety.com/m.glb', faceCount: 500 },
+              gaussianSplat: { format: 'spz', url: 'https://cdn.hettety.com/properties/prop-api-101/tour/s.spz', splatCount: 0 },
+              mesh: { format: 'glb', url: 'https://cdn.hettety.com/properties/prop-api-101/tour/m.glb', faceCount: 500 },
             },
             bounds: { min: [-1, -1, -1], max: [1, 1, 1] },
           },
@@ -1004,8 +1007,8 @@ NaN NaN NaN
             attemptId: 'attempt_1',
             status: 'READY',
             representation: {
-              gaussianSplat: { format: 'spz', url: 'https://cdn.hettety.com/s.spz', splatCount: 50000 },
-              mesh: { format: 'glb', url: 'https://cdn.hettety.com/m.glb', faceCount: 0 },
+              gaussianSplat: { format: 'spz', url: 'https://cdn.hettety.com/properties/prop-api-101/tour/s.spz', splatCount: 50000 },
+              mesh: { format: 'glb', url: 'https://cdn.hettety.com/properties/prop-api-101/tour/m.glb', faceCount: 0 },
             },
             bounds: { min: [-1, -1, -1], max: [1, 1, 1] },
           },
@@ -1014,6 +1017,398 @@ NaN NaN NaN
       );
       expect(statusRes).toBe(422);
       expect(jsonRes.error).toContain('ARTIFACT_VALIDATION_FAILED');
+    });
+
+    it('enforces fail-closed Firestore persistence throwing PERSISTENCE_FAILED and does not update in-memory cache', async () => {
+      const { persistJobToFirestore, controlPlaneJobs, setAdminServicesForTesting, resetAdminServicesForTesting } = await import('../../api/reconstruction');
+      const testJobId = `job_fail_persist_${Date.now()}`;
+      const mockJob = {
+        id: testJobId,
+        propertyId: 'prop-fail-1',
+        ownerId: 'owner-test',
+        type: 'photos' as const,
+        status: 'QUEUED' as const,
+        attemptId: 'attempt_1',
+        retryCount: 0,
+        manifest: [],
+        createdAt: new Date().toISOString(),
+      };
+
+      // Mock adminDb where batch.commit throws an error
+      const mockAdminDb = {
+        collection: () => ({
+          doc: () => ({
+            collection: () => ({
+              doc: () => ({}),
+            }),
+          }),
+        }),
+        batch: () => ({
+          set: vi.fn(),
+          commit: vi.fn().mockRejectedValue(new Error('Firestore connection timeout')),
+        }),
+      };
+
+      setAdminServicesForTesting(mockAdminDb, null);
+
+      try {
+        await expect(persistJobToFirestore(mockJob)).rejects.toThrow('PERSISTENCE_FAILED');
+        // Ensure in-memory cache was NOT populated on failure
+        expect(controlPlaneJobs.has(testJobId)).toBe(false);
+      } finally {
+        resetAdminServicesForTesting();
+        controlPlaneJobs.delete(testJobId);
+      }
+    });
+
+    it('enforces atomic publication via batched writes (reconstruction_jobs + attempts + three_d_assets + versions)', async () => {
+      const { persistJobToFirestore, controlPlaneJobs, setAdminServicesForTesting, resetAdminServicesForTesting } = await import('../../api/reconstruction');
+      const testJobId = `job_batch_atomic_${Date.now()}`;
+      const testPropId = 'prop-atomic-101';
+      const mockJob = {
+        id: testJobId,
+        propertyId: testPropId,
+        ownerId: 'owner-test',
+        type: 'photos' as const,
+        status: 'READY' as const,
+        attemptId: 'attempt_1',
+        retryCount: 0,
+        manifest: [],
+        createdAt: new Date().toISOString(),
+        representation: {
+          gaussianSplat: { format: 'spz', url: `https://cdn.hettety.com/properties/${testPropId}/tour/scene.spz`, splatCount: 300000, sizeBytes: 15000000 },
+          mesh: { format: 'glb', url: `https://cdn.hettety.com/properties/${testPropId}/tour/mesh.glb`, faceCount: 5000, sizeBytes: 8000000 },
+        },
+        bounds: { min: [-1, -1, -1] as [number, number, number], max: [1, 1, 1] as [number, number, number] },
+      };
+
+      const setCalls: any[] = [];
+      let commitCalled = false;
+      const mockAdminDb = {
+        collection: (colName: string) => ({
+          doc: (docId: string) => ({
+            colName,
+            docId,
+            collection: (subCol: string) => ({
+              doc: (subDocId: string) => ({
+                colName: `${colName}/${docId}/${subCol}`,
+                docId: subDocId,
+              }),
+            }),
+          }),
+        }),
+        batch: () => ({
+          set: vi.fn((docRef, payload, options) => {
+            setCalls.push({ docRef, payload, options });
+          }),
+          commit: vi.fn().mockImplementation(async () => {
+            commitCalled = true;
+          }),
+        }),
+      };
+
+      setAdminServicesForTesting(mockAdminDb, null);
+
+      try {
+        await persistJobToFirestore(mockJob);
+        expect(commitCalled).toBe(true);
+        // Expect all 5 sets in the single atomic batch:
+        expect(setCalls.length).toBeGreaterThanOrEqual(5);
+        expect(setCalls.some(c => c.docRef.colName === 'reconstruction_jobs' && c.docRef.docId === testJobId)).toBe(true);
+        expect(setCalls.some(c => c.docRef.colName === 'three_d_assets' && c.docRef.docId === testPropId)).toBe(true);
+        expect(setCalls.some(c => c.docRef.colName === 'three_d_assets' && c.docRef.docId === testJobId)).toBe(true);
+        expect(setCalls.some(c => c.docRef.colName.includes('versions') && c.docRef.docId === `${testJobId}_attempt_1`)).toBe(true);
+        expect(controlPlaneJobs.has(testJobId)).toBe(true);
+      } finally {
+        resetAdminServicesForTesting();
+        controlPlaneJobs.delete(testJobId);
+      }
+    });
+
+    it('enforces Firestore as authoritative source of truth over in-memory cache', async () => {
+      const { getJobFromFirestoreOrMemory, controlPlaneJobs, setAdminServicesForTesting, resetAdminServicesForTesting } = await import('../../api/reconstruction');
+      const testJobId = `job_authoritative_${Date.now()}`;
+      
+      // In-memory cache has stale state
+      controlPlaneJobs.set(testJobId, {
+        id: testJobId,
+        propertyId: 'prop-stale',
+        ownerId: 'owner-test',
+        type: 'photos' as const,
+        status: 'QUEUED' as const,
+        attemptId: 'attempt_1',
+        retryCount: 0,
+        manifest: [],
+        createdAt: new Date().toISOString(),
+      });
+
+      // Firestore Admin has authoritative updated state
+      const mockAdminDb = {
+        collection: (col: string) => ({
+          doc: (docId: string) => ({
+            get: vi.fn().mockResolvedValue({
+              exists: true,
+              data: () => ({
+                id: testJobId,
+                propertyId: 'prop-stale',
+                ownerId: 'owner-test',
+                type: 'photos',
+                status: 'RECONSTRUCTING',
+                attemptId: 'attempt_1',
+                retryCount: 0,
+                manifest: [],
+                createdAt: new Date().toISOString(),
+              }),
+            }),
+          }),
+        }),
+      };
+
+      setAdminServicesForTesting(mockAdminDb, null);
+
+      try {
+        const job = await getJobFromFirestoreOrMemory(testJobId);
+        expect(job).not.toBeNull();
+        expect(job?.status).toBe('RECONSTRUCTING'); // Reflects Firestore, not the stale QUEUED memory cache
+      } finally {
+        resetAdminServicesForTesting();
+        controlPlaneJobs.delete(testJobId);
+      }
+    });
+
+    it('locks terminal states and returns 409 TERMINAL_STATE_LOCKED on mutations to READY or CANCELLED jobs', async () => {
+      const { default: controlPlaneHandler, controlPlaneJobs } = await import('../../api/reconstruction');
+      const readyJobId = `job_term_ready_${Date.now()}`;
+      controlPlaneJobs.set(readyJobId, {
+        id: readyJobId,
+        propertyId: 'prop-api-101',
+        ownerId: 'owner-test',
+        type: 'photos',
+        status: 'READY',
+        attemptId: 'attempt_1',
+        retryCount: 0,
+        manifest: [],
+        createdAt: new Date().toISOString(),
+      });
+
+      let statusRes = 200;
+      let jsonRes: any = null;
+      const mockRes = {
+        status: (s: number) => { statusRes = s; return { json: (d: any) => { jsonRes = d; } }; },
+      };
+
+      await controlPlaneHandler(
+        {
+          method: 'POST',
+          query: { action: 'update-stage' },
+          headers: { authorization: 'Bearer hettety-worker-secret-internal' },
+          body: {
+            jobId: readyJobId,
+            status: 'TRAINING',
+          },
+        },
+        mockRes
+      );
+
+      expect(statusRes).toBe(409);
+      expect(jsonRes.error).toContain('TERMINAL_STATE_LOCKED');
+
+      const cancelledJobId = `job_term_canc_${Date.now()}`;
+      controlPlaneJobs.set(cancelledJobId, {
+        id: cancelledJobId,
+        propertyId: 'prop-api-101',
+        ownerId: 'owner-test',
+        type: 'photos',
+        status: 'CANCELLED',
+        attemptId: 'attempt_1',
+        retryCount: 0,
+        manifest: [],
+        createdAt: new Date().toISOString(),
+      });
+
+      await controlPlaneHandler(
+        {
+          method: 'POST',
+          query: { action: 'update-stage' },
+          headers: { authorization: 'Bearer hettety-worker-secret-internal' },
+          body: {
+            jobId: cancelledJobId,
+            status: 'QUEUED',
+          },
+        },
+        mockRes
+      );
+
+      expect(statusRes).toBe(409);
+      expect(jsonRes.error).toContain('TERMINAL_STATE_LOCKED');
+    });
+
+    it('enforces worker identity binding and rejects mismatched worker callbacks with 409 WORKER_MISMATCH_IGNORED', async () => {
+      const { default: controlPlaneHandler, controlPlaneJobs } = await import('../../api/reconstruction');
+      const jobId = `job_worker_lock_${Date.now()}`;
+      controlPlaneJobs.set(jobId, {
+        id: jobId,
+        propertyId: 'prop-api-101',
+        ownerId: 'owner-test',
+        type: 'photos',
+        status: 'RECONSTRUCTING',
+        attemptId: 'attempt_1',
+        retryCount: 0,
+        workerId: 'worker_gpu_node_1',
+        manifest: [],
+        createdAt: new Date().toISOString(),
+      });
+
+      let statusRes = 200;
+      let jsonRes: any = null;
+      const mockRes = {
+        status: (s: number) => { statusRes = s; return { json: (d: any) => { jsonRes = d; } }; },
+      };
+
+      // Mismatched worker attempts to report on job
+      await controlPlaneHandler(
+        {
+          method: 'POST',
+          query: { action: 'update-stage' },
+          headers: { authorization: 'Bearer hettety-worker-secret-internal' },
+          body: {
+            jobId,
+            workerId: 'worker_gpu_node_2', // Different worker!
+            attemptId: 'attempt_1',
+            status: 'TRAINING',
+            progress: 50,
+          },
+        },
+        mockRes
+      );
+
+      expect(statusRes).toBe(409);
+      expect(jsonRes.error).toContain('WORKER_MISMATCH_IGNORED');
+    });
+
+    it('rejects foreign representation URLs outside property tour scope with 422 ARTIFACT_VALIDATION_FAILED', async () => {
+      const { default: controlPlaneHandler, controlPlaneJobs } = await import('../../api/reconstruction');
+      const jobId = `job_scope_val_${Date.now()}`;
+      controlPlaneJobs.set(jobId, {
+        id: jobId,
+        propertyId: 'prop-scope-999',
+        ownerId: 'owner-test',
+        type: 'photos',
+        status: 'PUBLISHING',
+        attemptId: 'attempt_1',
+        retryCount: 0,
+        manifest: [],
+        createdAt: new Date().toISOString(),
+      });
+
+      let statusRes = 200;
+      let jsonRes: any = null;
+      const mockRes = {
+        status: (s: number) => { statusRes = s; return { json: (d: any) => { jsonRes = d; } }; },
+      };
+
+      // Foreign URLs that do not contain properties/prop-scope-999/tour/
+      await controlPlaneHandler(
+        {
+          method: 'POST',
+          query: { action: 'update-stage' },
+          headers: { authorization: 'Bearer hettety-worker-secret-internal' },
+          body: {
+            jobId,
+            attemptId: 'attempt_1',
+            status: 'READY',
+            representation: {
+              gaussianSplat: { format: 'spz', url: 'https://cdn.hettety.com/properties/foreign-prop/tour/scene.spz', splatCount: 50000 },
+              mesh: { format: 'glb', url: 'https://cdn.hettety.com/properties/foreign-prop/tour/mesh.glb', faceCount: 500 },
+            },
+            bounds: { min: [-1, -1, -1], max: [1, 1, 1] },
+          },
+        },
+        mockRes
+      );
+
+      expect(statusRes).toBe(422);
+      expect(jsonRes.error).toContain('ARTIFACT_VALIDATION_FAILED');
+      expect(jsonRes.error).toContain('properties/prop-scope-999/tour/');
+    });
+
+    it('allocates a fresh attempt ID and clears workerId and errors upon retry', async () => {
+      const { default: controlPlaneHandler, controlPlaneJobs } = await import('../../api/reconstruction');
+      const jobId = `job_retry_fresh_${Date.now()}`;
+      controlPlaneJobs.set(jobId, {
+        id: jobId,
+        propertyId: 'prop-api-101',
+        ownerId: 'owner-retry-test',
+        type: 'photos',
+        status: 'FAILED',
+        attemptId: 'attempt_1',
+        retryCount: 0,
+        workerId: 'worker_crashed_node_5',
+        errorCode: 'GPU_OOM',
+        errorMessage: 'CUDA out of memory',
+        manifest: [],
+        createdAt: new Date().toISOString(),
+      });
+
+      let statusRes = 200;
+      let jsonRes: any = null;
+      const mockRes = {
+        status: (s: number) => { statusRes = s; return { json: (d: any) => { jsonRes = d; } }; },
+      };
+
+      await controlPlaneHandler(
+        {
+          method: 'POST',
+          query: { action: 'retry' },
+          headers: { authorization: 'Bearer test-token', 'x-user-id': 'owner-retry-test' },
+          body: { jobId },
+        },
+        mockRes
+      );
+
+      expect(statusRes).toBe(200);
+      expect(jsonRes.success).toBe(true);
+      expect(jsonRes.attemptId).toBe('attempt_2');
+      expect(jsonRes.status).toBe('QUEUED');
+
+      const updatedJob = controlPlaneJobs.get(jobId);
+      expect(updatedJob?.attemptId).toBe('attempt_2');
+      expect(updatedJob?.retryCount).toBe(1);
+      expect(updatedJob?.workerId).toBeUndefined();
+      expect(updatedJob?.errorCode).toBeUndefined();
+    });
+
+    it('throws CONFIGURATION_ERROR or FIREBASE_ADMIN_CONFIG_INVALID in production without falling back to hardcoded IDs', async () => {
+      const { getAdminServices } = await import('../../api/reconstruction');
+      const prevEnv = process.env.NODE_ENV;
+      const prevSa = process.env.FIREBASE_SERVICE_ACCOUNT_KEY;
+      const prevProj = process.env.FIREBASE_PROJECT_ID;
+      const prevDb = process.env.FIRESTORE_DATABASE_ID;
+
+      try {
+        process.env.NODE_ENV = 'production';
+        delete process.env.FIREBASE_SERVICE_ACCOUNT_KEY;
+        delete process.env.FIREBASE_PROJECT_ID;
+        delete process.env.GOOGLE_CLOUD_PROJECT;
+        delete process.env.FIRESTORE_DATABASE_ID;
+
+        // Missing env in production
+        await expect(getAdminServices()).rejects.toThrow('CONFIGURATION_ERROR');
+
+        // Invalid JSON service account key
+        process.env.FIREBASE_SERVICE_ACCOUNT_KEY = '{ not_valid_json: true';
+        process.env.FIREBASE_PROJECT_ID = 'test-proj';
+        process.env.FIRESTORE_DATABASE_ID = 'test-db';
+        await expect(getAdminServices()).rejects.toThrow('FIREBASE_ADMIN_CONFIG_INVALID');
+      } finally {
+        process.env.NODE_ENV = prevEnv;
+        if (prevSa) process.env.FIREBASE_SERVICE_ACCOUNT_KEY = prevSa;
+        else delete process.env.FIREBASE_SERVICE_ACCOUNT_KEY;
+        if (prevProj) process.env.FIREBASE_PROJECT_ID = prevProj;
+        else delete process.env.FIREBASE_PROJECT_ID;
+        if (prevDb) process.env.FIRESTORE_DATABASE_ID = prevDb;
+        else delete process.env.FIRESTORE_DATABASE_ID;
+      }
     });
   });
 });

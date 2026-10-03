@@ -1,17 +1,18 @@
 """
 HETTETY 3D GPU Worker — Master Coordinator
 Executes the full reconstruction lifecycle from raw keyframes to SPZ / GLB dual representations.
-Enforces strict failure invariants: no silent progression past failed SfM or training.
+Enforces strict failure invariants: no silent progression past failed SfM, training, or meshing.
+Includes durable consumer daemon loop with lease timeout, cancellation checks, and DLQ handling.
 """
 
 import os
 import shutil
 import logging
 import argparse
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 
 from pipeline.validate import validate_keyframes
-from pipeline.colmap import run_sfm
+from pipeline.colmap import run_sfm, run_dense_stereo
 from pipeline.train import run_gaussian_training
 from pipeline.optimize import optimize_splat_cloud
 from pipeline.compress import convert_ply_to_spz, generate_metric_mesh_glb
@@ -27,11 +28,23 @@ logging.basicConfig(
 logger = logging.getLogger("hettety-3d-worker.master")
 
 class ReconstructionWorker:
-    def __init__(self, work_dir: str = "/tmp/hettety_3d", cdn_base_url: str = "https://storage.googleapis.com/hettety-spatial-assets"):
+    def __init__(
+        self,
+        work_dir: str = "/tmp/hettety_3d",
+        cdn_base_url: str = "https://storage.googleapis.com/hettety-spatial-assets",
+        queue_consumer: Optional[QueueConsumer] = None
+    ):
         self.work_dir = work_dir
         self.cdn_base_url = cdn_base_url
         self.storage_client = ObjectStorageClient()
+        self.queue_consumer = queue_consumer
         os.makedirs(self.work_dir, exist_ok=True)
+
+    def is_cancelled(self, job_id: str) -> bool:
+        """Polls cancellation status from control plane / Redis."""
+        if self.queue_consumer:
+            return self.queue_consumer.is_job_cancelled(job_id)
+        return False
 
     def _report_stage(self, job_id: str, property_id: str, status: str, progress: int, stage: str, callback_url: str, api_key: str):
         """Emits live stage and progress updates to the control plane."""
@@ -74,9 +87,19 @@ class ReconstructionWorker:
         logger.info(f"==> Starting Reconstruction Pipeline for Job {job_id} (Property: {property_id}, is_video={is_video})")
 
         try:
+            # Check pre-flight cancellation
+            if self.is_cancelled(job_id):
+                logger.info(f"Job {job_id} was cancelled before starting. Aborting.")
+                self._report_stage(job_id, property_id, "CANCELLED", 0, "Job cancelled by user", callback_url, api_key)
+                return {"status": "cancelled", "jobId": job_id, "propertyId": property_id}
+
             # Stage 1: Download captures
             self._report_stage(job_id, property_id, "UPLOADING", 10, "Downloading capture keyframes", callback_url, api_key)
             self.storage_client.download_capture_files(capture_urls, raw_images_dir)
+
+            if self.is_cancelled(job_id):
+                self._report_stage(job_id, property_id, "CANCELLED", 15, "Job cancelled by user", callback_url, api_key)
+                return {"status": "cancelled", "jobId": job_id, "propertyId": property_id}
 
             # Stage 2: Validate keyframe dataset
             self._report_stage(job_id, property_id, "VALIDATING", 20, "Analyzing Laplacian sharpness and count", callback_url, api_key)
@@ -84,8 +107,12 @@ class ReconstructionWorker:
             if not val_res.get("valid"):
                 return self._fail_job(job_id, property_id, val_res.get("error_code", "VALIDATION_FAILED"), val_res.get("message", "Validation failed"), callback_url, api_key)
 
+            if self.is_cancelled(job_id):
+                self._report_stage(job_id, property_id, "CANCELLED", 25, "Job cancelled by user", callback_url, api_key)
+                return {"status": "cancelled", "jobId": job_id, "propertyId": property_id}
+
             # Stage 3: SfM (Structure-from-Motion)
-            self._report_stage(job_id, property_id, "RECONSTRUCTING", 40, "COLMAP feature extraction & camera alignment", callback_url, api_key)
+            self._report_stage(job_id, property_id, "RECONSTRUCTING", 35, "COLMAP feature extraction & camera alignment", callback_url, api_key)
             try:
                 sfm_res = run_sfm(raw_images_dir, colmap_dir, is_video=is_video)
                 if not sfm_res:
@@ -101,6 +128,22 @@ class ReconstructionWorker:
                 logger.error(f"COLMAP execution failed: {e}")
                 return self._fail_job(job_id, property_id, "SFM_FAILED", f"COLMAP feature matching failed: {e}", callback_url, api_key)
 
+            if self.is_cancelled(job_id):
+                self._report_stage(job_id, property_id, "CANCELLED", 45, "Job cancelled by user", callback_url, api_key)
+                return {"status": "cancelled", "jobId": job_id, "propertyId": property_id}
+
+            # Stage 3.5: Dense Stereo Reconstruction (undistort -> patch match stereo -> stereo fusion)
+            dense_dir = os.path.join(colmap_dir, "dense")
+            try:
+                self._report_stage(job_id, property_id, "RECONSTRUCTING", 50, "Executing dense multi-view stereo fusion", callback_url, api_key)
+                run_dense_stereo(sparse_dir=colmap_dir, image_dir=raw_images_dir, dense_dir=dense_dir)
+            except Exception as dense_err:
+                logger.warning(f"Dense stereo reconstruction note for {job_id}: {dense_err}. Proceeding with sparse SfM.")
+
+            if self.is_cancelled(job_id):
+                self._report_stage(job_id, property_id, "CANCELLED", 55, "Job cancelled by user", callback_url, api_key)
+                return {"status": "cancelled", "jobId": job_id, "propertyId": property_id}
+
             # Stage 4: 3DGS Optimization / Training
             self._report_stage(job_id, property_id, "TRAINING", 65, "Optimizing 3D Gaussian Splatting scene", callback_url, api_key)
             train_res = run_gaussian_training(colmap_dir, model_dir, iterations=30000)
@@ -115,7 +158,11 @@ class ReconstructionWorker:
                 )
             target_ply = train_res.get("target_ply")
 
-            # Stage 5: Floater pruning & bounding box extraction
+            if self.is_cancelled(job_id):
+                self._report_stage(job_id, property_id, "CANCELLED", 75, "Job cancelled by user", callback_url, api_key)
+                return {"status": "cancelled", "jobId": job_id, "propertyId": property_id}
+
+            # Stage 5: Floater pruning & dynamic bounding box extraction
             self._report_stage(job_id, property_id, "OPTIMIZING", 80, "Pruning floaters and computing spatial boundaries", callback_url, api_key)
             optimized_ply = os.path.join(model_dir, "point_cloud_clean.ply")
             opt_res = optimize_splat_cloud(target_ply, optimized_ply)
@@ -130,16 +177,22 @@ class ReconstructionWorker:
                 )
             bounds = opt_res.get("bounds", {"min": [-5.0, -1.0, -5.0], "max": [5.0, 3.5, 5.0]})
 
+            if self.is_cancelled(job_id):
+                self._report_stage(job_id, property_id, "CANCELLED", 85, "Job cancelled by user", callback_url, api_key)
+                return {"status": "cancelled", "jobId": job_id, "propertyId": property_id}
+
             # Stage 6: Metric Calibration & Compression
             self._report_stage(job_id, property_id, "OPTIMIZING", 90, "Calibrating scale and generating metric GLB mesh", callback_url, api_key)
             sparse_pts = []
             candidate_pts_paths = [
+                os.path.join(dense_dir, "fused.ply"),
                 os.path.join(colmap_dir, "sparse", "0", "points3D.txt"),
                 os.path.join(colmap_dir, "sparse", "points3D.txt"),
                 os.path.join(colmap_dir, "0", "points3D.txt"),
+                os.path.join(colmap_dir, "points3D.txt"),
             ]
             for p_path in candidate_pts_paths:
-                if os.path.exists(p_path):
+                if os.path.exists(p_path) and os.path.getsize(p_path) > 0:
                     try:
                         with open(p_path, "r", encoding="utf-8", errors="ignore") as f:
                             for line in f:
@@ -150,7 +203,7 @@ class ReconstructionWorker:
                         if sparse_pts:
                             break
                     except Exception as ex:
-                        logger.debug(f"Could not read sparse points for calibration: {ex}")
+                        logger.debug(f"Could not read points for calibration from {p_path}: {ex}")
 
             calib_res = calibrate_sparse_scale(sparse_pts, reference_anchors)
             scale_factor = calib_res.get("scale_factor", 1.0)
@@ -158,7 +211,7 @@ class ReconstructionWorker:
 
             spz_path = os.path.join(dist_dir, "scene.spz")
             glb_path = os.path.join(dist_dir, "mesh.glb")
-            
+
             convert_res = convert_ply_to_spz(optimized_ply, spz_path)
             mesh_res = generate_metric_mesh_glb(colmap_dir, glb_path, scale_factor=scale_factor)
 
@@ -228,3 +281,33 @@ class ReconstructionWorker:
             except Exception as ex:
                 logger.warning(f"Failed to post error callback: {ex}")
         return payload
+
+def main():
+    parser = argparse.ArgumentParser(description="HETTETY 3D GPU Worker Daemon")
+    parser.add_argument("--redis-url", default=os.environ.get("REDIS_URL", "redis://localhost:6379/0"), help="Redis connection URL")
+    parser.add_argument("--queue", default=os.environ.get("REDIS_QUEUE", "hettety_3d_jobs"), help="Queue name")
+    parser.add_argument("--work-dir", default=os.environ.get("WORK_DIR", "/tmp/hettety_3d"), help="Scratch directory for reconstructions")
+    parser.add_argument("--cdn-url", default=os.environ.get("CDN_BASE_URL", "https://storage.googleapis.com/hettety-spatial-assets"), help="CDN base URL")
+    parser.add_argument("--once", action="store_true", help="Process at most one job and exit")
+    parser.add_argument("--max-jobs", type=int, default=None, help="Max jobs to process before exiting")
+    args = parser.parse_args()
+
+    logger.info(f"Starting HETTETY 3D Reconstruction Worker daemon on queue '{args.queue}'...")
+    consumer = QueueConsumer(queue_name=args.queue, redis_url=args.redis_url)
+    worker = ReconstructionWorker(work_dir=args.work_dir, cdn_base_url=args.cdn_url, queue_consumer=consumer)
+
+    def job_handler(job: Dict[str, Any]) -> Dict[str, Any]:
+        logger.info(f"Processing job {job.get('id')} from queue...")
+        return worker.process_job(job)
+
+    if args.once:
+        job = consumer.poll_job(timeout_sec=5)
+        if job:
+            job_handler(job)
+        else:
+            logger.info("No pending jobs found in queue (--once mode). Exiting.")
+    else:
+        consumer.listen(job_handler, max_iterations=args.max_jobs)
+
+if __name__ == "__main__":
+    main()

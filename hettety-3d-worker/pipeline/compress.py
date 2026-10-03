@@ -159,43 +159,126 @@ def generate_metric_mesh_glb(
     logger.info(f"Extracting true metric surface GLB mesh to: {output_glb} (scale_factor={scale_factor})")
     os.makedirs(os.path.dirname(output_glb), exist_ok=True)
 
-    # 1. Gather 3D points from sparse/dense reconstruction
+    # 1. Gather 3D points prioritizing dense stereo reconstruction (fused.ply), then sparse SfM
     points: List[Tuple[float, float, float]] = []
     candidate_paths = [
+        os.path.join(colmap_sparse_dir, "dense", "fused.ply"),
+        os.path.join(colmap_sparse_dir, "fused.ply"),
+        os.path.join(colmap_sparse_dir, "..", "dense", "fused.ply"),
+        os.path.join(colmap_sparse_dir, "..", "sfm", "dense", "fused.ply"),
         os.path.join(colmap_sparse_dir, "0", "points3D.txt"),
         os.path.join(colmap_sparse_dir, "points3D.txt"),
         os.path.join(colmap_sparse_dir, "0", "sparse_points.ply"),
         os.path.join(colmap_sparse_dir, "sparse_points.ply"),
-        os.path.join(colmap_sparse_dir, "fused.ply"),
     ]
+
+    def _read_ply_points(p_path: str) -> List[Tuple[float, float, float]]:
+        p_pts = []
+        try:
+            with open(p_path, "rb") as f:
+                header_bytes = f.read(4096)
+            header_text = header_bytes.decode("ascii", errors="ignore")
+            header_end = -1
+            for i in range(len(header_bytes) - 10):
+                if header_bytes[i:i+10] == b"end_header":
+                    header_end = i + 10
+                    if i + 11 < len(header_bytes) and header_bytes[i+10] in (10, 13):
+                        header_end += 1
+                    if i + 12 < len(header_bytes) and header_bytes[i+11] in (10, 13):
+                        header_end += 1
+                    break
+
+            import re
+            m = re.search(r"element vertex (\d+)", header_text)
+            v_count = int(m.group(1)) if m else 0
+            if v_count <= 0:
+                return p_pts
+
+            props = []
+            for line in header_text[:header_end].splitlines():
+                line = line.strip()
+                if line.startswith("property "):
+                    parts = line.split()
+                    if len(parts) >= 3:
+                        props.append((parts[1], parts[2]))
+
+            x_off, y_off, z_off = -1, -1, -1
+            curr_off = 0
+            for p_type, p_name in props:
+                p_size = 4 if p_type in ("float", "float32", "int", "uint", "int32", "uint32") else (8 if p_type in ("double", "float64") else 1)
+                if p_name == "x": x_off = curr_off
+                elif p_name == "y": y_off = curr_off
+                elif p_name == "z": z_off = curr_off
+                curr_off += p_size
+            stride = curr_off
+
+            is_binary = "format binary_little_endian" in header_text
+            with open(p_path, "rb") as f:
+                f.seek(header_end if header_end != -1 else 0)
+                subsample = max(1, v_count // 15000)
+                if is_binary and stride > 0 and x_off != -1:
+                    for idx in range(v_count):
+                        chunk = f.read(stride)
+                        if len(chunk) < stride: break
+                        if idx % subsample == 0:
+                            px = struct.unpack_from("<f", chunk, x_off)[0]
+                            py = struct.unpack_from("<f", chunk, y_off)[0]
+                            pz = struct.unpack_from("<f", chunk, z_off)[0]
+                            if abs(px) < 1000 and abs(py) < 1000 and abs(pz) < 1000:
+                                p_pts.append((px, py, pz))
+                else:
+                    idx = 0
+                    for line in f:
+                        line_str = line.decode("ascii", errors="ignore").strip()
+                        if not line_str or line_str.startswith("#"): continue
+                        parts = line_str.split()
+                        if len(parts) >= 3 and idx % subsample == 0:
+                            try:
+                                px, py, pz = float(parts[0]), float(parts[1]), float(parts[2])
+                                if abs(px) < 1000 and abs(py) < 1000 and abs(pz) < 1000:
+                                    p_pts.append((px, py, pz))
+                            except ValueError:
+                                pass
+                        idx += 1
+        except Exception as e:
+            logger.warning(f"Failed to read points from {p_path}: {e}")
+        return p_pts
 
     for p_path in candidate_paths:
         if os.path.exists(p_path) and os.path.getsize(p_path) > 0:
-            try:
-                with open(p_path, "r", encoding="utf-8", errors="ignore") as f:
-                    for line in f:
-                        if line.startswith("#") or not line.strip():
-                            continue
-                        parts = line.split()
-                        if len(parts) >= 4:
-                            try:
-                                px, py, pz = float(parts[1]), float(parts[2]), float(parts[3])
-                                if abs(px) < 1000 and abs(py) < 1000 and abs(pz) < 1000:
-                                    points.append((px, py, pz))
-                            except ValueError:
-                                continue
-                if len(points) >= 8:
+            if p_path.endswith(".ply"):
+                pts = _read_ply_points(p_path)
+                if len(pts) >= 8:
+                    points = pts
+                    logger.info(f"Loaded {len(points)} reconstructed 3D points from {p_path}")
                     break
-            except Exception as e:
-                logger.warning(f"Could not parse candidate points at {p_path}: {e}")
+            else:
+                try:
+                    with open(p_path, "r", encoding="utf-8", errors="ignore") as f:
+                        for line in f:
+                            if line.startswith("#") or not line.strip():
+                                continue
+                            parts = line.split()
+                            if len(parts) >= 4:
+                                try:
+                                    px, py, pz = float(parts[1]), float(parts[2]), float(parts[3])
+                                    if abs(px) < 1000 and abs(py) < 1000 and abs(pz) < 1000:
+                                        points.append((px, py, pz))
+                                except ValueError:
+                                    continue
+                    if len(points) >= 8:
+                        logger.info(f"Loaded {len(points)} reconstructed 3D points from {p_path}")
+                        break
+                except Exception as e:
+                    logger.warning(f"Could not parse candidate points at {p_path}: {e}")
 
     # STRICT INVARIANT: Never synthesize a fake room. Fail explicitly if geometry was not reconstructed.
     if len(points) < 8:
-        logger.error(f"Cannot generate metric mesh: sparse reconstruction in '{colmap_sparse_dir}' produced only {len(points)} valid 3D points.")
+        logger.error(f"Cannot generate metric mesh: reconstruction in '{colmap_sparse_dir}' produced only {len(points)} valid 3D points.")
         return {
             "success": False,
             "error_code": "INSUFFICIENT_GEOMETRY_FOR_MESH",
-            "message": f"COLMAP sparse reconstruction produced only {len(points)} points (minimum 8 required). Real mesh extraction cannot proceed without reconstructed geometry."
+            "message": f"COLMAP reconstruction produced only {len(points)} points (minimum 8 required). Real mesh extraction cannot proceed without reconstructed geometry."
         }
 
     # Apply calibrated metric scale transform if present
@@ -204,7 +287,7 @@ def generate_metric_mesh_glb(
 
     # 2. Genuine Surface Reconstruction via 3D Alpha Shape / Concave Hull
     import numpy as np
-    from scipy.spatial import Delaunay, ConvexHull, distance
+    from scipy.spatial import Delaunay, distance
     from collections import Counter
 
     pts_arr = np.array(points, dtype=np.float32)
@@ -220,11 +303,10 @@ def generate_metric_mesh_glb(
 
     boundary_triangles = []
     try:
-        tri = Delaunay(unique_pts)
-        sample_subset = unique_pts[:min(len(unique_pts), 300)]
+        tri = Delaunay(unique_pts, qhull_options="QJ")
+        sample_subset = unique_pts[:min(len(unique_pts), 500)]
         dists = distance.pdist(sample_subset)
         med_dist = float(np.median(dists)) if len(dists) > 0 else 1.0
-        alpha = max(med_dist * 2.2, 1.2)
 
         tetra_pts = unique_pts[tri.simplices] # (N, 4, 3)
         A = tetra_pts[:, 0]
@@ -251,21 +333,36 @@ def generate_metric_mesh_glb(
         R = np.full(len(tri.simplices), np.inf)
         R[valid_det] = np.linalg.norm(num[valid_det], axis=1) / det[valid_det]
 
-        valid_tetra = np.where(R <= alpha)[0]
-        faces = []
-        for s_idx in valid_tetra:
-            s = tri.simplices[s_idx]
-            for i in range(4):
-                faces.append(tuple(sorted([int(s[j]) for j in range(4) if j != i])))
+        # Multi-scale alpha candidate search to preserve tightest non-convex boundary
+        valid_R = R[valid_det]
+        if len(valid_R) > 0:
+            for alpha_mult in [1.5, 2.5, 3.5, 5.0, 8.0]:
+                alpha = max(med_dist * alpha_mult, 0.8)
+                valid_tetra = np.where(R <= alpha)[0]
+                if len(valid_tetra) == 0:
+                    continue
+                faces = []
+                for s_idx in valid_tetra:
+                    s = tri.simplices[s_idx]
+                    for i in range(4):
+                        faces.append(tuple(sorted([int(s[j]) for j in range(4) if j != i])))
+                counts = Counter(faces)
+                candidates = [f for f, cnt in counts.items() if cnt == 1]
+                if len(candidates) >= 4:
+                    boundary_triangles = candidates
+                    break
 
-        counts = Counter(faces)
-        boundary_triangles = [f for f, cnt in counts.items() if cnt == 1]
     except Exception as alpha_err:
-        logger.warning(f"Alpha shape extraction note: {alpha_err}, falling back to geometric hull boundary.")
+        logger.warning(f"Alpha shape surface extraction note: {alpha_err}")
 
+    # STRICT INVARIANT: Never fall back to ConvexHull. It destroys non-convex room topology.
     if len(boundary_triangles) < 4:
-        hull = ConvexHull(unique_pts)
-        boundary_triangles = [tuple(int(x) for x in s) for s in hull.simplices]
+        logger.error(f"Cannot generate metric mesh: Alpha shape produced {len(boundary_triangles)} boundary triangles. Convex hull fallback is prohibited.")
+        return {
+            "success": False,
+            "error_code": "INSUFFICIENT_GEOMETRY_FOR_MESH",
+            "message": f"Surface alpha-shape reconstruction failed to extract valid boundary triangles ({len(boundary_triangles)} found). Convex hull fallback is prohibited to prevent architectural distortion."
+        }
 
     # Re-orient triangles outward from point cloud centroid
     centroid = np.mean(unique_pts, axis=0)

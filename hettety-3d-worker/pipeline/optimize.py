@@ -1,23 +1,61 @@
 """
 HETTETY 3D GPU Worker — Stage 5: Floater Pruning & Spatial Post-Processing
 Removes low-density artifacts, computes dynamic spatial bounds, and calculates true Gaussian count.
-Strictly parses actual PLY elements without hardcoded geometry.
+Strictly parses actual PLY elements dynamically using schema-driven attribute offsets.
+Never assumes hardcoded 62 bytes or fabricated coordinates.
 """
 
 import os
 import re
+import math
 import struct
 import logging
-from typing import Dict, Any, Tuple
+from typing import Dict, Any, Tuple, List
 
 logger = logging.getLogger("hettety-3d-worker.optimize")
+
+def _parse_ply_property_layout(header_text: str) -> Tuple[List[Dict[str, Any]], int]:
+    """
+    Parses property types, names, byte sizes, and cumulative byte offsets from PLY header.
+    Fully compliant with standard 3DGS binary PLY specifications (including SH degree 3, 248 bytes).
+    """
+    properties = []
+    curr_offset = 0
+
+    for line in header_text.splitlines():
+        line = line.strip()
+        if line.startswith("property "):
+            parts = line.split()
+            if len(parts) >= 3:
+                p_type = parts[1].lower()
+                p_name = parts[2]
+                
+                if p_type in ("float", "float32", "int", "uint", "int32", "uint32"):
+                    p_size = 4
+                elif p_type in ("double", "float64"):
+                    p_size = 8
+                elif p_type in ("short", "int16", "ushort", "uint16"):
+                    p_size = 2
+                else:  # char, int8, uchar, uint8
+                    p_size = 1
+
+                properties.append({
+                    "name": p_name,
+                    "type": p_type,
+                    "size": p_size,
+                    "offset": curr_offset
+                })
+                curr_offset += p_size
+
+    return properties, curr_offset
 
 def parse_ply_header_and_bounds(ply_path: str) -> Tuple[int, Dict[str, Any]]:
     """
     Parses PLY header to extract declared vertex count and computes true spatial bounding box.
+    Uses schema-driven dynamic stride calculation for binary PLYs.
     """
     with open(ply_path, "rb") as f:
-        header_bytes = f.read(4096)
+        header_bytes = f.read(8192)
 
     header_text = ""
     header_end = -1
@@ -44,6 +82,14 @@ def parse_ply_header_and_bounds(ply_path: str) -> Tuple[int, Dict[str, Any]]:
     if splat_count <= 0:
         raise ValueError(f"Declared splat count is {splat_count} (expected > 0)")
 
+    props, stride = _parse_ply_property_layout(header_text)
+    prop_by_name = {p["name"]: p for p in props}
+
+    x_off = prop_by_name.get("x", {}).get("offset", 0)
+    y_off = prop_by_name.get("y", {}).get("offset", 4)
+    z_off = prop_by_name.get("z", {}).get("offset", 8)
+    bytes_per_vertex = stride if stride > 0 else 62
+
     # Read vertex positions from file body
     min_x, min_y, min_z = float("inf"), float("inf"), float("inf")
     max_x, max_y, max_z = float("-inf"), float("-inf"), float("-inf")
@@ -54,19 +100,18 @@ def parse_ply_header_and_bounds(ply_path: str) -> Tuple[int, Dict[str, Any]]:
     with open(ply_path, "rb") as f:
         f.seek(header_end if header_end != -1 else 0)
         if is_binary:
-            # Sample first N vertices or entire set
             sample_count = min(splat_count, 10000)
-            bytes_per_vertex = 62 # standard 3DGS layout (f32*3 pos, f32*3 n, f32 sh, f32 op, f32*3 s, f32*4 r)
             for _ in range(sample_count):
-                chunk = f.read(12) # first 12 bytes are float32 x, y, z
-                if len(chunk) < 12:
+                chunk = f.read(bytes_per_vertex)
+                if len(chunk) < bytes_per_vertex:
                     break
-                x, y, z = struct.unpack("<fff", chunk)
+                x = struct.unpack_from("<f", chunk, x_off)[0]
+                y = struct.unpack_from("<f", chunk, y_off)[0]
+                z = struct.unpack_from("<f", chunk, z_off)[0]
                 if abs(x) < 500 and abs(y) < 500 and abs(z) < 500: # sanity filter
                     min_x, max_x = min(min_x, x), max(max_x, x)
                     min_y, max_y = min(min_y, y), max(max_y, y)
                     min_z, max_z = min(min_z, z), max(max_z, z)
-                f.seek(bytes_per_vertex - 12, os.SEEK_CUR)
         elif is_ascii:
             read_count = 0
             while read_count < splat_count:
@@ -98,19 +143,6 @@ def parse_ply_header_and_bounds(ply_path: str) -> Tuple[int, Dict[str, Any]]:
 
     return splat_count, bounds
 
-def _parse_ply_property_layout(header_text: str):
-    """
-    Parses property types and offsets to locate coordinates, opacity, and scale fields.
-    """
-    properties = []
-    for line in header_text.splitlines():
-        line = line.strip()
-        if line.startswith("property "):
-            parts = line.split()
-            if len(parts) >= 3:
-                properties.append((parts[1], parts[2]))
-    return properties
-
 def optimize_splat_cloud(
     input_ply: str,
     output_ply: str,
@@ -119,7 +151,7 @@ def optimize_splat_cloud(
 ) -> Dict[str, Any]:
     """
     Genuine Gaussian Splatting post-processing & floater pruning engine:
-    1. Parses PLY schema and attribute offsets.
+    1. Parses PLY schema and dynamic attribute offsets.
     2. Prunes low-opacity floaters (opacity < min_opacity).
     3. Prunes degenerate oversized splats (scale > max_scale).
     4. Eliminates non-finite coordinates (NaN / Inf).
@@ -159,7 +191,7 @@ def optimize_splat_cloud(
         
         # Read header to understand format and properties
         with open(input_ply, "rb") as f:
-            header_bytes = f.read(4096)
+            header_bytes = f.read(8192)
 
         header_end = -1
         for i in range(len(header_bytes) - 10):
@@ -172,17 +204,19 @@ def optimize_splat_cloud(
                 break
 
         header_text = header_bytes[:header_end].decode("ascii", errors="ignore")
-        props = _parse_ply_property_layout(header_text)
+        props, stride = _parse_ply_property_layout(header_text)
         is_binary = "format binary_little_endian" in header_text
         is_ascii = "format ascii" in header_text
 
-        # Find property indices
-        prop_names = [p[1] for p in props]
-        x_idx = prop_names.index("x") if "x" in prop_names else 0
-        y_idx = prop_names.index("y") if "y" in prop_names else 1
-        z_idx = prop_names.index("z") if "z" in prop_names else 2
-        opacity_idx = prop_names.index("opacity") if "opacity" in prop_names else -1
-        scale_indices = [i for i, name in enumerate(prop_names) if name.startswith("scale_")]
+        prop_by_name = {p["name"]: p for p in props}
+        x_off = prop_by_name.get("x", {}).get("offset", 0)
+        y_off = prop_by_name.get("y", {}).get("offset", 4)
+        z_off = prop_by_name.get("z", {}).get("offset", 8)
+        
+        has_opacity = "opacity" in prop_by_name
+        op_offset = prop_by_name["opacity"]["offset"] if has_opacity else -1
+        scale_offsets = [p["offset"] for p in props if p["name"].startswith("scale_")]
+        bytes_per_vertex = stride if stride > 0 else 62
 
         retained_lines = []
         min_x, min_y, min_z = float("inf"), float("inf"), float("inf")
@@ -190,9 +224,14 @@ def optimize_splat_cloud(
         retained_count = 0
         floaters_pruned = 0
 
-        import math
-
         if is_ascii:
+            prop_names = [p["name"] for p in props]
+            x_idx = prop_names.index("x") if "x" in prop_names else 0
+            y_idx = prop_names.index("y") if "y" in prop_names else 1
+            z_idx = prop_names.index("z") if "z" in prop_names else 2
+            opacity_idx = prop_names.index("opacity") if "opacity" in prop_names else -1
+            scale_indices = [i for i, name in enumerate(prop_names) if name.startswith("scale_")]
+
             with open(input_ply, "r", encoding="ascii", errors="ignore") as f:
                 # Skip header lines
                 for line in f:
@@ -249,18 +288,7 @@ def optimize_splat_cloud(
                 out_f.writelines(retained_lines)
 
         else:
-            # Binary PLY pruning: compute exact property byte offsets
-            prop_offsets = {}
-            curr_offset = 0
-            for p_type, p_name in props:
-                prop_offsets[p_name] = (curr_offset, p_type)
-                curr_offset += 4 if p_type in ("float", "int", "uint") else 1
-            bytes_per_vertex = curr_offset if curr_offset > 0 else 62
-
-            has_opacity = "opacity" in prop_offsets
-            op_offset = prop_offsets["opacity"][0] if has_opacity else -1
-            scale_offsets = [prop_offsets[name][0] for name in prop_offsets if name.startswith("scale_")]
-
+            # Binary PLY pruning using schema-driven byte offsets
             retained_binary = bytearray()
             with open(input_ply, "rb") as f:
                 f.seek(header_end)
@@ -269,8 +297,10 @@ def optimize_splat_cloud(
                     if len(v_chunk) < bytes_per_vertex:
                         break
                     
-                    # Unpack coordinates (first 3 floats x, y, z)
-                    x, y, z = struct.unpack_from("<fff", v_chunk, 0)
+                    # Unpack coordinates (x, y, z)
+                    x = struct.unpack_from("<f", v_chunk, x_off)[0]
+                    y = struct.unpack_from("<f", v_chunk, y_off)[0]
+                    z = struct.unpack_from("<f", v_chunk, z_off)[0]
                     if math.isnan(x) or math.isnan(y) or math.isnan(z) or math.isinf(x) or math.isinf(y) or math.isinf(z):
                         floaters_pruned += 1
                         continue

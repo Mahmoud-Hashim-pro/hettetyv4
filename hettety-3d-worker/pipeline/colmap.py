@@ -238,3 +238,97 @@ def run_sfm(image_dir: str, output_dir: str, is_video: bool = False) -> SfMResul
         "total_images": image_count,
         **metrics
     })
+
+def run_dense_stereo(
+    sparse_dir: str,
+    image_dir: str,
+    dense_dir: str,
+    max_image_size: int = 2000
+) -> Dict[str, Any]:
+    """
+    Executes genuine multi-view dense stereo reconstruction:
+    1. colmap image_undistorter
+    2. colmap patch_match_stereo
+    3. colmap stereo_fusion -> produces fused.ply point cloud
+    """
+    logger.info(f"Running COLMAP dense stereo reconstruction in: {dense_dir}")
+    os.makedirs(dense_dir, exist_ok=True)
+    fused_ply = os.path.join(dense_dir, "fused.ply")
+
+    # Verify sparse model exists
+    candidate_sparse = sparse_dir
+    if os.path.exists(os.path.join(sparse_dir, "0")):
+        candidate_sparse = os.path.join(sparse_dir, "0")
+
+    try:
+        # 1. Image Undistortion
+        logger.info("Stage 1/3: Undistorting camera frames for dense stereo...")
+        cmd_undistort = [
+            "colmap", "image_undistorter",
+            "--image_path", image_dir,
+            "--input_path", candidate_sparse,
+            "--output_path", dense_dir,
+            "--output_type", "COLMAP",
+            "--max_image_size", str(max_image_size)
+        ]
+        subprocess.run(cmd_undistort, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+        # 2. Patch Match Stereo (Photometric + Geometric depth consistency)
+        logger.info("Stage 2/3: Computing dense photometric depth maps (PatchMatchStereo)...")
+        cmd_stereo = [
+            "colmap", "patch_match_stereo",
+            "--workspace_path", dense_dir,
+            "--workspace_format", "COLMAP",
+            "--PatchMatchStereo.geom_consistency", "true"
+        ]
+        subprocess.run(cmd_stereo, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+        # 3. Stereo Fusion (Fusing multiview depth maps into dense 3D point cloud)
+        logger.info("Stage 3/3: Fusing depth maps into dense 3D point cloud (StereoFusion)...")
+        cmd_fuse = [
+            "colmap", "stereo_fusion",
+            "--workspace_path", dense_dir,
+            "--workspace_format", "COLMAP",
+            "--input_type", "geometric",
+            "--output_path", fused_ply
+        ]
+        subprocess.run(cmd_fuse, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+        if not os.path.exists(fused_ply) or os.path.getsize(fused_ply) < 100:
+            return {
+                "success": False,
+                "error_code": "DENSE_FUSION_EMPTY",
+                "message": "COLMAP stereo fusion produced an empty or missing fused.ply point cloud."
+            }
+
+        logger.info(f"Dense stereo reconstruction completed successfully: {fused_ply} ({os.path.getsize(fused_ply)} bytes)")
+        return {
+            "success": True,
+            "fused_ply": fused_ply,
+            "dense_dir": dense_dir,
+            "size_bytes": os.path.getsize(fused_ply)
+        }
+
+    except subprocess.CalledProcessError as e:
+        err_msg = e.stderr.decode("utf-8", errors="ignore") if isinstance(e.stderr, bytes) else str(e)
+        logger.error(f"COLMAP dense stereo subprocess error: {err_msg}")
+        return {
+            "success": False,
+            "error_code": "DENSE_STEREO_FAILED",
+            "message": f"COLMAP dense stereo failed: {err_msg}"
+        }
+    except FileNotFoundError:
+        logger.warning("COLMAP executable not found on PATH for dense stereo.")
+        return {
+            "success": False,
+            "error_code": "COLMAP_NOT_FOUND",
+            "message": "COLMAP is not installed in worker environment."
+        }
+    except Exception as ex:
+        logger.exception(f"Unexpected error in dense stereo reconstruction: {ex}")
+        return {
+            "success": False,
+            "error_code": "DENSE_STEREO_ERROR",
+            "message": str(ex)
+        }
+

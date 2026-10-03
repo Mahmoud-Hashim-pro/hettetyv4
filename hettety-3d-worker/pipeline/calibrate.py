@@ -52,9 +52,17 @@ def calibrate_sparse_scale(
         ref_type = ref.get("type", "custom")
         known = ref.get("known_meters", 0.0)
 
-        # Check for explicit 3D endpoint correspondences
-        pt_a = ref.get("point_a")
-        pt_b = ref.get("point_b")
+        # Check for explicit 3D endpoint correspondences mapped to reconstruction points
+        pt_a = ref.get("reconstruction_point_a") or ref.get("point_a")
+        pt_b = ref.get("reconstruction_point_b") or ref.get("point_b")
+        idx_a = ref.get("point_idx_a")
+        idx_b = ref.get("point_idx_b")
+
+        if idx_a is not None and idx_b is not None and scene_has_points:
+            if 0 <= idx_a < len(sparse_points) and 0 <= idx_b < len(sparse_points):
+                pt_a = sparse_points[idx_a]
+                pt_b = sparse_points[idx_b]
+
         if pt_a and pt_b and len(pt_a) >= 3 and len(pt_b) >= 3:
             dx = float(pt_b[0]) - float(pt_a[0])
             dy = float(pt_b[1]) - float(pt_a[1])

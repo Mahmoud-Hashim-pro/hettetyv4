@@ -13,6 +13,7 @@ import { calculateDistanceMeters, formatDistance } from '../../src/lib/3d/coordi
 import { detectSpatialCapabilities } from '../../src/lib/3d/capabilities';
 import { resolveOptimalSpatialAsset } from '../../src/lib/3d/lod';
 import { buildDefaultThreeDTour, hasValidTourRepresentation } from '../../src/services/3d/tour-service';
+import { ReconstructionApiClient } from '../../src/services/3d/reconstruction-api';
 import { MeasurementTool } from '../../src/components/3d/MeasurementTool';
 import { FloorPlan } from '../../src/components/3d/FloorPlan';
 import { PREMIER_LANDMARK_PROPERTIES } from '../../src/lib/inventoryData';
@@ -548,6 +549,76 @@ NaN NaN NaN
       expect(frames.length).toBe(12);
       expect(frames[0].name).toContain('frame_');
       expect(frames[0].type).toBe('image/jpeg');
+    });
+  });
+
+  describe('ReconstructionApiClient & Standard 3DGS Binary PLY Schema Parsing', () => {
+    it('submits reconstruction job with authenticated owner ID and uploads capture session', async () => {
+      const mockFiles = [
+        new File([new Uint8Array([0xff, 0xd8, 0xff])], 'cam_01.jpg', { type: 'image/jpeg' }),
+        new File([new Uint8Array([0xff, 0xd8, 0xff])], 'cam_02.jpg', { type: 'image/jpeg' }),
+      ];
+
+      const res = await ReconstructionApiClient.submitJob({
+        propertyId: 'prop-client-test',
+        files: mockFiles,
+        type: 'photos',
+      });
+
+      expect(res.job).toBeDefined();
+      expect(res.job.ownerId).toBe('test-owner-uid');
+      expect(res.job.propertyId).toBe('prop-client-test');
+      expect(res.uploadSession.signedUploadUrls.length).toBe(2);
+    });
+
+    it('parses standard 3DGS binary PLY with 62 floats (248 bytes per vertex) schema-driven layout', () => {
+      let header = 'ply\nformat binary_little_endian 1.0\nelement vertex 2\n';
+      header += 'property float x\nproperty float y\nproperty float z\n';
+      header += 'property float nx\nproperty float ny\nproperty float nz\n';
+      header += 'property float f_dc_0\nproperty float f_dc_1\nproperty float f_dc_2\n';
+      for (let k = 0; k < 45; k++) header += `property float f_rest_${k}\n`;
+      header += 'property float opacity\n';
+      header += 'property float scale_0\nproperty float scale_1\nproperty float scale_2\n';
+      header += 'property float rot_0\nproperty float rot_1\nproperty float rot_2\nproperty float rot_3\n';
+      header += 'end_header\n';
+
+      const headerBytes = new TextEncoder().encode(header);
+      const vertexBytes = 62 * 4; // 248 bytes per vertex
+      const buffer = new ArrayBuffer(headerBytes.length + 2 * vertexBytes);
+      new Uint8Array(buffer).set(headerBytes, 0);
+
+      const view = new DataView(buffer, headerBytes.length);
+      for (let v = 0; v < 2; v++) {
+        const off = v * vertexBytes;
+        view.setFloat32(off, 1.5 * (v + 1), true); // x
+        view.setFloat32(off + 4, 2.5 * (v + 1), true); // y
+        view.setFloat32(off + 8, 3.5 * (v + 1), true); // z
+        // f_dc_0, 1, 2 at offset 24, 28, 32
+        view.setFloat32(off + 24, 1.0, true);
+        view.setFloat32(off + 28, 0.5, true);
+        view.setFloat32(off + 32, -0.2, true);
+        // opacity at offset 24 + 12 + 180 = 216
+        view.setFloat32(off + 216, 2.0, true);
+        // scale_0, 1, 2 at offset 220, 224, 228
+        view.setFloat32(off + 220, -1.0, true);
+        view.setFloat32(off + 224, -1.0, true);
+        view.setFloat32(off + 228, -1.0, true);
+        // rot_0, 1, 2, 3 at offset 232, 236, 240, 244
+        view.setFloat32(off + 232, 1.0, true);
+        view.setFloat32(off + 236, 0.0, true);
+        view.setFloat32(off + 240, 0.0, true);
+        view.setFloat32(off + 244, 0.0, true);
+      }
+
+      const parsed = parseGaussianPly(buffer);
+      expect(parsed.count).toBe(2);
+      expect(parsed.positions[0]).toBe(1.5);
+      expect(parsed.positions[1]).toBe(2.5);
+      expect(parsed.positions[2]).toBe(3.5);
+      expect(parsed.scales[0]).toBeCloseTo(Math.exp(-1.0), 2);
+      expect(parsed.rotations[0]).toBe(1.0);
+      expect(parsed.bounds.min[0]).toBe(1.5);
+      expect(parsed.bounds.max[0]).toBe(3.0);
     });
   });
 });

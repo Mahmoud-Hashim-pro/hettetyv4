@@ -249,5 +249,80 @@ class TestHettety3DReconstructionE2E(unittest.TestCase):
         # Verify job workspace was cleaned up
         self.assertFalse(os.path.exists(job_work_dir))
 
+    def test_13_standard_3dgs_sh3_binary_ply_parsing(self):
+        """Validates schema-driven parser on standard 3DGS binary PLY with 62 floats (248 bytes/vertex)."""
+        import struct
+        ply_path = os.path.join(self.temp_dir, "gaussian_3dgs_sh3.ply")
+        clean_ply_path = os.path.join(self.temp_dir, "gaussian_3dgs_sh3_clean.ply")
+
+        # Construct full standard 3DGS PLY header (62 floats total = 248 bytes)
+        props = [
+            "property float x", "property float y", "property float z",
+            "property float nx", "property float ny", "property float nz",
+            "property float f_dc_0", "property float f_dc_1", "property float f_dc_2",
+        ]
+        for k in range(45):
+            props.append(f"property float f_rest_{k}")
+        props.extend([
+            "property float opacity",
+            "property float scale_0", "property float scale_1", "property float scale_2",
+            "property float rot_0", "property float rot_1", "property float rot_2", "property float rot_3"
+        ])
+        header = "ply\nformat binary_little_endian 1.0\nelement vertex 10\n" + "\n".join(props) + "\nend_header\n"
+
+        with open(ply_path, "wb") as f:
+            f.write(header.encode("ascii"))
+            for i in range(10):
+                # 62 float32 values
+                vals = [float(i), 2.0, 3.0] # x, y, z
+                vals.extend([0.0, 0.0, 1.0]) # nx, ny, nz
+                vals.extend([0.5, 0.5, 0.5]) # f_dc_0, 1, 2
+                vals.extend([0.0] * 45) # f_rest_0..44
+                vals.append(2.0 if i < 9 else -20.0) # opacity (sigmoid: valid vs floater)
+                vals.extend([-1.0, -1.0, -1.0]) # scale_0, 1, 2 (exp scale ~0.36)
+                vals.extend([1.0, 0.0, 0.0, 0.0]) # rot_0, 1, 2, 3
+                f.write(struct.pack(f"<{len(vals)}f", *vals))
+
+        count, bounds = parse_ply_header_and_bounds(ply_path)
+        self.assertEqual(count, 10)
+        self.assertAlmostEqual(bounds["min"][0], 0.0, places=1)
+        self.assertAlmostEqual(bounds["max"][0], 9.0, places=1)
+
+        opt_res = optimize_splat_cloud(ply_path, clean_ply_path, min_opacity=0.05)
+        self.assertTrue(opt_res["success"])
+        self.assertEqual(opt_res["splat_count"], 9)
+        self.assertEqual(opt_res["floaters_pruned"], 1)
+
+    def test_14_queue_consumer_durable_loop_and_cancellation(self):
+        """Tests QueueConsumer poll, lease tracking, ACK, and cancellation flags."""
+        from task_queue.consumer import QueueConsumer
+
+        # Initialize mock consumer
+        consumer = QueueConsumer(queue_name="test_queue", redis_url="mock://redis")
+        self.assertFalse(consumer.is_job_cancelled("non_existent_job"))
+
+        processed = []
+        def handler(job):
+            processed.append(job.get("id"))
+            return {"status": "READY"}
+
+        # Run one iteration with no pending jobs (returns gracefully without error)
+        consumer.listen(handler, poll_interval=0.01, max_iterations=1)
+        self.assertEqual(len(processed), 0)
+
+    def test_15_dense_stereo_reconstruction_interface(self):
+        """Tests COLMAP dense stereo execution interface and missing binary handling."""
+        from pipeline.colmap import run_dense_stereo
+        dense_out = os.path.join(self.temp_dir, "dense_workspace")
+
+        res = run_dense_stereo(
+            sparse_dir=os.path.join(self.temp_dir, "nonexistent_sparse"),
+            image_dir=os.path.join(self.temp_dir, "nonexistent_images"),
+            dense_dir=dense_out
+        )
+        self.assertFalse(res["success"])
+        self.assertIn(res["error_code"], ["DENSE_STEREO_FAILED", "COLMAP_NOT_FOUND", "DENSE_STEREO_ERROR"])
+
 if __name__ == "__main__":
     unittest.main()
+

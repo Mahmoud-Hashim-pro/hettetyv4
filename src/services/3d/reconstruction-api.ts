@@ -72,21 +72,23 @@ export class ReconstructionApiClient {
     });
 
     // 3. Upload files to session
-    updateJobStatus(job.id, 'UPLOADING', 15, 'Uploading capture keyframes');
     const totalFiles = Math.min(files.length, uploadSession.signedUploadUrls.length);
+    const uploadedAssetIds: string[] = [];
 
     for (let i = 0; i < totalFiles; i++) {
       const file = files[i];
       const target = uploadSession.signedUploadUrls[i];
       await uploadFileToSession(target.uploadUrl, file, (filePercent) => {
         if (onProgress) {
-          const overall = Math.round(15 + (i / totalFiles) * 20 + (filePercent / 100) * (20 / totalFiles));
+          const overall = Math.round(15 + (i / totalFiles) * 70 + (filePercent / 100) * (70 / totalFiles));
           onProgress({ stage: 'UPLOADING', percent: overall });
         }
       });
 
+      const assetId = `cap-${job.id}-${i}`;
+      uploadedAssetIds.push(assetId);
       await registerCaptureAsset({
-        id: `cap-${job.id}-${i}`,
+        id: assetId,
         jobId: job.id,
         type: type === 'video' ? 'video' : 'photo',
         storagePath: target.storagePath,
@@ -96,25 +98,66 @@ export class ReconstructionApiClient {
       });
     }
 
-    updateJobStatus(job.id, 'VALIDATING', 35, 'Media uploaded — waiting for worker SfM processing');
+    // 4. Notify backend control plane: verify uploads, seal manifest, and enqueue to Redis worker
+    try {
+      if (typeof fetch !== 'undefined' && process.env.NODE_ENV !== 'test') {
+        await fetch('/api/reconstruction?action=complete-uploads', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${currentUid}`,
+          },
+          body: JSON.stringify({
+            jobId: job.id,
+            propertyId,
+            uploadedAssetIds,
+          }),
+        });
+      }
+    } catch (e) {
+      console.debug('Control plane notification note:', e);
+    }
+
     if (onProgress) {
-      onProgress({ stage: 'VALIDATING', percent: 35 });
+      onProgress({ stage: 'QUEUED', percent: 85 });
     }
 
     return { job, uploadSession };
   }
 
   /**
-   * Requests cancellation of an in-flight reconstruction job.
+   * Requests cancellation of an in-flight reconstruction job via control plane.
    */
-  static cancelJob(jobId: string): boolean {
+  static async cancelJob(jobId: string): Promise<boolean> {
+    try {
+      if (typeof fetch !== 'undefined' && process.env.NODE_ENV !== 'test') {
+        await fetch('/api/reconstruction?action=cancel', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ jobId }),
+        });
+      }
+    } catch (e) {
+      console.debug('Control plane cancel note:', e);
+    }
     return cancelReconstructionJob(jobId);
   }
 
   /**
-   * Requests durable retry of a failed or cancelled reconstruction job.
+   * Requests durable retry of a failed or cancelled reconstruction job via control plane.
    */
-  static retryJob(jobId: string): ReconstructionJob | null {
+  static async retryJob(jobId: string): Promise<ReconstructionJob | null> {
+    try {
+      if (typeof fetch !== 'undefined' && process.env.NODE_ENV !== 'test') {
+        await fetch('/api/reconstruction?action=retry', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ jobId }),
+        });
+      }
+    } catch (e) {
+      console.debug('Control plane retry note:', e);
+    }
     return retryReconstructionJob(jobId);
   }
 

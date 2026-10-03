@@ -12,6 +12,7 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@adobe/spz": "^0.2.3",
     "@google/genai": "^1.46.0",
     "@react-three/drei": "^10.7.7",
     "@react-three/fiber": "^9.5.0",

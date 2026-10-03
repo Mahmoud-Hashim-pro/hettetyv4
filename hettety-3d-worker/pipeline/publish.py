@@ -62,19 +62,45 @@ def publish_tour_assets(
     spz_size = os.path.getsize(spz_path) if os.path.exists(spz_path) else 0
     glb_size = os.path.getsize(glb_path) if os.path.exists(glb_path) else 0
 
-    # Grounded quality metrics calculated from actual reconstruction telemetry
-    effective_reg = registered_cameras if registered_cameras > 0 else image_count
-    reg_ratio = min(1.0, effective_reg / max(1, image_count))
-    coverage_score = int(min(100, max(20, reg_ratio * 70.0 + min(30.0, (image_count / 40.0) * 30.0))))
+    # Strictly grounded quality telemetry: REAL, UNKNOWN, FAIL (no fabricated estimates)
+    reg_val = registered_cameras if registered_cameras is not None else 0
+    reg_status = "REAL" if reg_val > 0 else ("FAIL" if image_count > 0 else "UNKNOWN")
 
-    # Density based on exact surviving splat count from PLY header
-    effective_splats = splat_count if splat_count > 0 else max(1000, spz_size // 12)
-    density_score = min(100, max(20, int((min(effective_splats, 600000) / 400000.0) * 100)))
+    splat_val = splat_count if splat_count is not None else 0
+    splat_status = "REAL" if splat_val > 0 else "FAIL"
 
-    # Mesh score evaluated from real face topology and metric calibration state
-    mesh_score = min(100, max(25, int((min(mesh_face_count, 500) / 200.0) * 60 + (40 if is_calibrated_metric else 10)))) if mesh_face_count > 0 else 40
+    sharpness_val = sharpness_score
+    sharpness_status = "REAL" if sharpness_val is not None else "UNKNOWN"
+
+    reg_ratio = min(1.0, reg_val / max(1, image_count)) if image_count > 0 else 0.0
+    coverage_score = int(min(100, max(0, reg_ratio * 70.0 + min(30.0, (image_count / 40.0) * 30.0)))) if reg_val > 0 else 0
+
+    density_score = min(100, max(0, int((min(splat_val, 600000) / 400000.0) * 100))) if splat_val > 0 else 0
+
+    mesh_score = min(100, max(0, int((min(mesh_face_count, 500) / 200.0) * 60 + (40 if is_calibrated_metric else 10)))) if mesh_face_count > 0 else 0
     
-    overall_score = int(coverage_score * 0.35 + density_score * 0.35 + mesh_score * 0.15 + sharpness_score * 0.15)
+    # Calculate overall score only across verified metrics
+    valid_components = []
+    if reg_val > 0:
+        valid_components.append(coverage_score * 0.4)
+    if splat_val > 0:
+        valid_components.append(density_score * 0.4)
+    if mesh_face_count > 0:
+        valid_components.append(mesh_score * 0.2)
+    if sharpness_val is not None and sharpness_status == "REAL":
+        valid_components.append(sharpness_val * 0.1)
+
+    overall_weights = []
+    if reg_val > 0:
+        overall_weights.append(0.4)
+    if splat_val > 0:
+        overall_weights.append(0.4)
+    if mesh_face_count > 0:
+        overall_weights.append(0.2)
+    if sharpness_val is not None and sharpness_status == "REAL":
+        overall_weights.append(0.1)
+
+    overall_score = int(sum(valid_components) / max(0.1, sum(overall_weights))) if valid_components else 0
     
     payload = {
         "jobId": job_id,
@@ -85,7 +111,7 @@ def publish_tour_assets(
                 "format": "spz",
                 "url": spz_url,
                 "sizeBytes": spz_size,
-                "splatCount": effective_splats
+                "splatCount": splat_val
             },
             "mesh": {
                 "format": "glb",
@@ -101,11 +127,22 @@ def publish_tour_assets(
             "overallScore": overall_score,
             "metrics": {
                 "coverage": coverage_score,
-                "sharpness": sharpness_score,
+                "sharpness": sharpness_val,
                 "density": density_score,
                 "meshCompleteness": mesh_score,
-                "registeredCameras": effective_reg,
+                "registeredCameras": {
+                    "value": reg_val,
+                    "status": reg_status
+                },
                 "totalCameras": image_count,
+                "splatCount": {
+                    "value": splat_val,
+                    "status": splat_status
+                },
+                "sharpnessScore": {
+                    "value": sharpness_val,
+                    "status": sharpness_status
+                },
                 "isCalibratedMetric": is_calibrated_metric
             }
         }

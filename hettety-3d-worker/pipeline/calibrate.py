@@ -19,14 +19,15 @@ ARCHITECTURAL_STANDARDS = {
 
 def calibrate_sparse_scale(
     sparse_points: List[Tuple[float, float, float]],
-    reference_anchors: Optional[List[Dict[str, Any]]] = None
+    reference_anchors: Optional[List[Dict[str, Any]]] = None,
+    point3d_map: Optional[Dict[int, Tuple[float, float, float]]] = None
 ) -> Dict[str, Any]:
     """
     Evaluates physical scale from reference anchors (LiDAR benchmarks, surveyor markers, or measured spatial correspondences).
     STRICT METRIC INTEGRITY:
     - Standard architectural assumptions (e.g. door 2.15m) alone do NOT award is_calibrated = True.
     - True metric calibration requires explicit spatial endpoints (point_a, point_b) corresponding
-      to actual reconstructed geometry, or a verified lidar_benchmark/surveyor_marker, with
+      to actual reconstructed geometry (or stable COLMAP POINT3D_IDs), or a verified lidar_benchmark/surveyor_marker, with
       confidence >= 0.90 and error margin <= 5.0%.
     """
     if not reference_anchors or len(reference_anchors) == 0:
@@ -52,16 +53,33 @@ def calibrate_sparse_scale(
         ref_type = ref.get("type", "custom")
         known = ref.get("known_meters", 0.0)
 
-        # Check for explicit 3D endpoint correspondences mapped to reconstruction points
-        pt_a = ref.get("reconstruction_point_a") or ref.get("point_a")
-        pt_b = ref.get("reconstruction_point_b") or ref.get("point_b")
-        idx_a = ref.get("point_idx_a")
-        idx_b = ref.get("point_idx_b")
+        # 1. Check for stable COLMAP POINT3D_ID mapping
+        pt_a = None
+        pt_b = None
+        p3d_a = ref.get("point3d_id_a") or ref.get("colmap_point3d_id_a")
+        p3d_b = ref.get("point3d_id_b") or ref.get("colmap_point3d_id_b")
 
-        if idx_a is not None and idx_b is not None and scene_has_points:
-            if 0 <= idx_a < len(sparse_points) and 0 <= idx_b < len(sparse_points):
-                pt_a = sparse_points[idx_a]
-                pt_b = sparse_points[idx_b]
+        if p3d_a is not None and p3d_b is not None and point3d_map:
+            try:
+                id_a = int(p3d_a)
+                id_b = int(p3d_b)
+                if id_a in point3d_map and id_b in point3d_map:
+                    pt_a = point3d_map[id_a]
+                    pt_b = point3d_map[id_b]
+            except (ValueError, TypeError):
+                pass
+
+        # 2. Check for explicit 3D endpoint correspondences mapped to reconstruction points
+        if not pt_a or not pt_b:
+            pt_a = ref.get("reconstruction_point_a") or ref.get("point_a")
+            pt_b = ref.get("reconstruction_point_b") or ref.get("point_b")
+            idx_a = ref.get("point_idx_a")
+            idx_b = ref.get("point_idx_b")
+
+            if idx_a is not None and idx_b is not None and scene_has_points:
+                if 0 <= idx_a < len(sparse_points) and 0 <= idx_b < len(sparse_points):
+                    pt_a = sparse_points[idx_a]
+                    pt_b = sparse_points[idx_b]
 
         if pt_a and pt_b and len(pt_a) >= 3 and len(pt_b) >= 3:
             dx = float(pt_b[0]) - float(pt_a[0])

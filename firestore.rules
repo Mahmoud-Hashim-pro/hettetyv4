@@ -161,6 +161,8 @@ service cloud.firestore {
     // Fields:
     //   - propertyId: string (required) - Associated property listing ID
     //   - jobId: string (required) - Associated reconstruction job ID
+    //   - ownerId: string (optional) - Job/asset owner UID
+    //   - status: string (optional, default: 'PUBLISHED') - Asset publication status
     //   - type: string (required, enum: ['GAUSSIAN_SPLAT', 'MESH', 'PANORAMA', 'THUMBNAIL', 'FLOORPLAN'])
     //   - format: string (required, enum: ['spz', 'glb', 'ply', 'jpg', 'png'])
     //   - storagePath: string (required) - Storage bucket path
@@ -663,7 +665,8 @@ service cloud.firestore {
     }
 
     match /three_d_assets/{assetId} {
-      allow read: if true; // Or public view for property tours
+      allow read: if resource.data.get('status', 'PUBLISHED') == 'PUBLISHED'
+                  || (isAuthenticated() && (resource.data.get('ownerId', '') == request.auth.uid || isAdmin()));
       allow create, update: if isAdmin(); // Strictly backend worker / admin only. Client users can NEVER inject or overwrite 3D assets directly.
       allow delete: if isAdmin();
     }

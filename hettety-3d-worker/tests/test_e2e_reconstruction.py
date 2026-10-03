@@ -323,6 +323,87 @@ class TestHettety3DReconstructionE2E(unittest.TestCase):
         self.assertFalse(res["success"])
         self.assertIn(res["error_code"], ["DENSE_STEREO_FAILED", "COLMAP_NOT_FOUND", "DENSE_STEREO_ERROR"])
 
+    def test_16_colmap_point3d_id_calibration_binding(self):
+        """Verifies that point3d_id_a and point3d_id_b bind to COLMAP 3D point IDs stably."""
+        point_map = {
+            101: (0.0, 0.0, 0.0),
+            202: (2.4, 0.0, 0.0),
+        }
+        ref_anchors = [{
+            "type": "surveyor_marker",
+            "point3d_id_a": 101,
+            "point3d_id_b": 202,
+            "known_meters": 2.40,
+        }]
+        res = calibrate_sparse_scale([(0, 0, 0), (2.4, 0, 0)], ref_anchors, point3d_map=point_map)
+        self.assertTrue(res["is_calibrated"])
+        self.assertAlmostEqual(res["scale_factor"], 1.0, places=2)
+        self.assertGreaterEqual(res["confidence_score"], 0.90)
+
+    def test_17_grounded_quality_metrics_real_unknown_fail(self):
+        """Verifies that publish_tour_assets produces strictly REAL/UNKNOWN/FAIL telemetry without fake defaults."""
+        pub_res = publish_tour_assets(
+            job_id="test_job_metrics",
+            property_id="test_prop",
+            spz_path=os.path.join(self.temp_dir, "nonexistent.spz"),
+            glb_path=os.path.join(self.temp_dir, "nonexistent.glb"),
+            bounds={"min": [-2, -1, -2], "max": [2, 1, 2]},
+            cdn_base_url="https://cdn.hettety.com",
+            callback_url="mock://callback",
+            api_key="mock_key",
+            image_count=30,
+            splat_count=50000,
+            sharpness_score=None,
+            registered_cameras=28,
+            mesh_vertex_count=120,
+            mesh_face_count=80,
+            is_calibrated_metric=True,
+        )
+        self.assertTrue(pub_res["success"])
+        metrics = pub_res["payload"]["qualityReport"]["metrics"]
+        self.assertEqual(metrics["registeredCameras"]["status"], "REAL")
+        self.assertEqual(metrics["registeredCameras"]["value"], 28)
+        self.assertEqual(metrics["splatCount"]["status"], "REAL")
+        self.assertEqual(metrics["splatCount"]["value"], 50000)
+        self.assertEqual(metrics["sharpnessScore"]["status"], "UNKNOWN")
+        self.assertIsNone(metrics["sharpnessScore"]["value"])
+
+    def test_18_strict_bounds_validation_no_synthetic_box(self):
+        """Worker strictly fails with MESH_VALIDATION_FAILED if bounds are missing, rather than inventing room boxes."""
+        worker = ReconstructionWorker(work_dir=os.path.join(self.temp_dir, "worker_bounds_test"))
+        job_id = "test_bounds_fail_job"
+
+        # Mock optimize_splat_cloud to return success=True but missing bounds
+        import workers.reconstruction_worker as rw_mod
+        orig_validate = rw_mod.validate_keyframes
+        orig_sfm = rw_mod.run_sfm
+        orig_dense = rw_mod.run_dense_stereo
+        orig_train = rw_mod.run_gaussian_training
+        orig_opt = rw_mod.optimize_splat_cloud
+
+        try:
+            rw_mod.validate_keyframes = lambda *a, **k: {"valid": True, "image_count": 15, "sharpness_score": 75}
+            rw_mod.run_sfm = lambda *a, **k: {"success": True, "registered_images": 15}
+            rw_mod.run_dense_stereo = lambda *a, **k: {"success": True}
+            rw_mod.run_gaussian_training = lambda *a, **k: {"success": True, "target_ply": "mock.ply"}
+            # Return no bounds
+            rw_mod.optimize_splat_cloud = lambda *a, **k: {"success": True, "splat_count": 5000, "bounds": None}
+
+            res = worker.process_job({
+                "id": job_id,
+                "propertyId": "test_prop",
+                "captureUrls": ["https://cdn.hettety.com/f1.jpg"] * 15,
+                "callbackUrl": "mock://callback"
+            })
+            self.assertEqual(res["status"], "failed")
+            self.assertEqual(res["errorCode"], "MESH_VALIDATION_FAILED")
+        finally:
+            rw_mod.validate_keyframes = orig_validate
+            rw_mod.run_sfm = orig_sfm
+            rw_mod.run_dense_stereo = orig_dense
+            rw_mod.run_gaussian_training = orig_train
+            rw_mod.optimize_splat_cloud = orig_opt
+
 if __name__ == "__main__":
     unittest.main()
 

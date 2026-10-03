@@ -28,13 +28,27 @@ def run_gaussian_training(
     logger.info(f"Starting 3DGS training: source={source_dir}, iters={iterations}")
 
     import sys
-    script_path = "submodules/gaussian-splatting/train.py"
-    if not os.path.exists(script_path):
-        logger.error(f"Gaussian Splatting training script not present at {script_path}.")
+    base_env_path = os.environ.get("GAUSSIAN_SPLATTING_PATH", "/opt/gaussian-splatting")
+    candidates = [
+        os.path.join(base_env_path, "train.py"),
+        "/opt/gaussian-splatting/train.py",
+        "submodules/gaussian-splatting/train.py",
+        os.path.join(os.path.dirname(__file__), "..", "submodules", "gaussian-splatting", "train.py"),
+        os.path.join(os.path.dirname(__file__), "..", "..", "submodules", "gaussian-splatting", "train.py"),
+    ]
+
+    script_path = None
+    for cand in candidates:
+        if os.path.exists(cand):
+            script_path = os.path.abspath(cand)
+            break
+
+    if not script_path:
+        logger.error(f"Gaussian Splatting training script not present in candidate paths: {candidates}.")
         return {
             "success": False,
             "error_code": "GAUSSIAN_TRAINING_FAILED",
-            "message": "3DGS training script missing. Simulation/proxy 0-vertex output prohibited in production."
+            "message": f"3DGS training script missing (checked {base_env_path} and submodules). Simulation/proxy 0-vertex output prohibited in production."
         }
 
     cmd = [

@@ -286,9 +286,28 @@ export const CaptureWizard: React.FC<CaptureWizardProps> = ({
         });
       }
 
+      // Step 4: Notify control plane to verify upload manifest and enqueue to Redis worker
+      try {
+        if (typeof fetch !== 'undefined' && process.env.NODE_ENV !== 'test') {
+          await fetch('/api/reconstruction?action=complete-uploads', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              Authorization: `Bearer ${currentUid}`,
+            },
+            body: JSON.stringify({
+              jobId: job.id,
+              propertyId,
+              uploadedAssetIds: captureFiles.map((_, i) => `cap-${job.id}-${i}`),
+            }),
+          });
+        }
+      } catch (e) {
+        console.debug('Complete uploads notification note:', e);
+      }
+
       setStatusMessage(isRtl ? 'تم الرفع بنجاح — بانتظار معالجة خادم البناء الفراغي...' : 'Media uploaded — waiting for 3D reconstruction worker...');
     } catch (err: any) {
-      updateJobStatus(job.id, 'FAILED', 25, 'Upload Failed', 'STORAGE_ERROR', err?.message || 'Upload failed');
       setProcessing(false);
       setStatusMessage(isRtl ? 'فشل رفع اللقطات إلى السحابة' : 'Failed to upload media files');
     }

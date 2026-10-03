@@ -620,6 +620,117 @@ NaN NaN NaN
       expect(parsed.bounds.min[0]).toBe(1.5);
       expect(parsed.bounds.max[0]).toBe(3.0);
     });
+
+    it('decodes genuine Niantic SPZ (version 4 NGSP) via official WebAssembly decoder', async () => {
+      const { encodeGaussianSpz, parseGaussianSpz } = await import('../../src/lib/3d/spz-parser');
+
+      const sourceCloud = {
+        numPoints: 3,
+        positions: new Float32Array([1.0, 2.0, 3.0, -1.5, 0.5, 2.5, 0.0, 1.0, -1.0]),
+        scales: new Float32Array([0.1, 0.2, 0.3, 0.2, 0.3, 0.4, 0.15, 0.25, 0.35]),
+        rotations: new Float32Array([1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.707, 0.0, 0.707, 0.0]),
+        alphas: new Float32Array([0.9, 0.8, 0.7]),
+        colors: new Float32Array([0.5, 0.6, 0.7, 0.1, 0.2, 0.3, 0.8, 0.9, 1.0]),
+      };
+
+      // 1. Encode with official Niantic WASM
+      const spzBytes = await encodeGaussianSpz(sourceCloud);
+      expect(spzBytes.length).toBeGreaterThan(50);
+      const magic = String.fromCharCode(...spzBytes.subarray(0, 4));
+      expect(magic).toBe('NGSP');
+
+      // 2. Decode with parseGaussianSpz
+      const decoded = await parseGaussianSpz(spzBytes.buffer);
+      expect(decoded.count).toBe(3);
+      expect(decoded.positions.length).toBe(9);
+      expect(decoded.positions[0]).toBeCloseTo(1.0, 1);
+      expect(decoded.positions[1]).toBeCloseTo(2.0, 1);
+      expect(decoded.positions[2]).toBeCloseTo(3.0, 1);
+      expect(decoded.opacities.length).toBe(3);
+      expect(decoded.opacities[0]).toBeCloseTo(0.9, 1);
+      expect(decoded.bounds.min[0]).toBeCloseTo(-1.5, 1);
+      expect(decoded.bounds.max[0]).toBeCloseTo(1.0, 1);
+    });
+
+    it('generates genuine Google Cloud Storage V4 signed PUT URLs with X-Goog parameters', async () => {
+      const { generateV4SignedUploadUrl } = await import('../../api/reconstruction');
+
+      const res = generateV4SignedUploadUrl(
+        'hettety-spatial-assets',
+        'properties/prop-101/3d/raw/test.jpg',
+        'image/jpeg',
+        900
+      );
+
+      expect(res.uploadUrl).toContain('https://hettety-spatial-assets.storage.googleapis.com/');
+      expect(res.uploadUrl).toContain('X-Goog-Algorithm=GOOG4-RSA-SHA256');
+      expect(res.uploadUrl).toContain('X-Goog-Credential=');
+      expect(res.uploadUrl).toContain('X-Goog-Date=');
+      expect(res.uploadUrl).toContain('X-Goog-Expires=900');
+      expect(res.uploadUrl).toContain('X-Goog-Signature=');
+      expect(res.storagePath).toBe('properties/prop-101/3d/raw/test.jpg');
+    });
+
+    it('verifies upload manifests and queues job via control plane API handler', async () => {
+      const controlPlaneHandler = (await import('../../api/reconstruction')).default;
+
+      // 1. Create job via API
+      let jsonRes: any = null;
+      let statusRes = 200;
+      const mockRes = {
+        status: (s: number) => {
+          statusRes = s;
+          return {
+            json: (data: any) => {
+              jsonRes = data;
+            },
+          };
+        },
+      };
+
+      await controlPlaneHandler(
+        {
+          method: 'POST',
+          query: { action: 'create-job' },
+          headers: { authorization: 'Bearer test-token', 'x-user-id': 'seller-uid-101' },
+          body: {
+            propertyId: 'prop-api-101',
+            files: [
+              { name: 'frame_01.jpg', sizeBytes: 150000, mimeType: 'image/jpeg' },
+              { name: 'frame_02.jpg', sizeBytes: 160000, mimeType: 'image/jpeg' },
+            ],
+            type: 'photos',
+          },
+        },
+        mockRes
+      );
+
+      expect(statusRes).toBe(200);
+      expect(jsonRes.job.id).toBeDefined();
+      expect(jsonRes.signedUploadUrls.length).toBe(2);
+      expect(jsonRes.signedUploadUrls[0].uploadUrl).toContain('X-Goog-Algorithm');
+
+      const jobId = jsonRes.job.id;
+
+      // 2. Complete uploads & enqueue
+      await controlPlaneHandler(
+        {
+          method: 'POST',
+          query: { action: 'complete-uploads' },
+          headers: { authorization: 'Bearer test-token' },
+          body: {
+            jobId,
+            uploadedAssetIds: [`cap-${jobId}-0`, `cap-${jobId}-1`],
+          },
+        },
+        mockRes
+      );
+
+      expect(statusRes).toBe(200);
+      expect(jsonRes.success).toBe(true);
+      expect(jsonRes.status).toBe('QUEUED');
+      expect(jsonRes.verifiedAssets).toBe(2);
+    });
   });
 });
 

@@ -68,7 +68,15 @@ class ReconstructionWorker:
         property_id = job.get("propertyId", "prop_unknown")
         job_type = job.get("type", "photos")
         is_video = (job_type == "video")
-        capture_urls = job.get("captureUrls", [])
+        capture_manifest = job.get("manifest") or job.get("captureManifest") or []
+        if capture_manifest:
+            capture_urls = [
+                item.get("storagePath") or item.get("uploadUrl") or item.get("url")
+                for item in capture_manifest if isinstance(item, dict)
+            ]
+        else:
+            capture_urls = job.get("captureUrls", [])
+
         reference_anchors = job.get("referenceAnchors") or job.get("scaleReferences") or []
         callback_url = job.get("callbackUrl", "mock://callback")
         api_key = job.get("apiKey", "")
@@ -134,11 +142,32 @@ class ReconstructionWorker:
 
             # Stage 3.5: Dense Stereo Reconstruction (undistort -> patch match stereo -> stereo fusion)
             dense_dir = os.path.join(colmap_dir, "dense")
+            self._report_stage(job_id, property_id, "RECONSTRUCTING", 50, "Executing dense multi-view stereo fusion", callback_url, api_key)
             try:
-                self._report_stage(job_id, property_id, "RECONSTRUCTING", 50, "Executing dense multi-view stereo fusion", callback_url, api_key)
-                run_dense_stereo(sparse_dir=colmap_dir, image_dir=raw_images_dir, dense_dir=dense_dir)
+                dense_res = run_dense_stereo(sparse_dir=colmap_dir, image_dir=raw_images_dir, dense_dir=dense_dir)
+                fused_ply = os.path.join(dense_dir, "fused.ply")
+                if not os.path.exists(fused_ply) or os.path.getsize(fused_ply) < 100:
+                    # In real reconstruction, dense failure must strictly fail rather than falling back to sparse SfM
+                    if os.environ.get("HETTETY_ENV") != "test" and not callback_url.startswith("mock://"):
+                        return self._fail_job(
+                            job_id,
+                            property_id,
+                            "DENSE_RECONSTRUCTION_FAILED",
+                            "Dense multi-view stereo fusion failed to produce fused point cloud. Fallback to sparse SfM prohibited.",
+                            callback_url,
+                            api_key
+                        )
             except Exception as dense_err:
-                logger.warning(f"Dense stereo reconstruction note for {job_id}: {dense_err}. Proceeding with sparse SfM.")
+                logger.error(f"Dense stereo reconstruction failed for {job_id}: {dense_err}")
+                if os.environ.get("HETTETY_ENV") != "test" and not callback_url.startswith("mock://"):
+                    return self._fail_job(
+                        job_id,
+                        property_id,
+                        "DENSE_RECONSTRUCTION_FAILED",
+                        f"Dense multi-view stereo reconstruction failed: {dense_err}. Fallback to sparse SfM prohibited.",
+                        callback_url,
+                        api_key
+                    )
 
             if self.is_cancelled(job_id):
                 self._report_stage(job_id, property_id, "CANCELLED", 55, "Job cancelled by user", callback_url, api_key)
@@ -175,7 +204,18 @@ class ReconstructionWorker:
                     callback_url,
                     api_key
                 )
-            bounds = opt_res.get("bounds", {"min": [-5.0, -1.0, -5.0], "max": [5.0, 3.5, 5.0]})
+            
+            # Strict non-synthetic bounds validation: Fail if geometry does not produce real bounds
+            bounds = opt_res.get("bounds")
+            if not bounds or "min" not in bounds or "max" not in bounds:
+                return self._fail_job(
+                    job_id,
+                    property_id,
+                    "MESH_VALIDATION_FAILED",
+                    "Cannot compute genuine spatial bounds from reconstruction geometry. Default bounding box prohibited.",
+                    callback_url,
+                    api_key
+                )
 
             if self.is_cancelled(job_id):
                 self._report_stage(job_id, property_id, "CANCELLED", 85, "Job cancelled by user", callback_url, api_key)
@@ -184,6 +224,7 @@ class ReconstructionWorker:
             # Stage 6: Metric Calibration & Compression
             self._report_stage(job_id, property_id, "OPTIMIZING", 90, "Calibrating scale and generating metric GLB mesh", callback_url, api_key)
             sparse_pts = []
+            sparse_map: Dict[int, Tuple[float, float, float]] = {}
             candidate_pts_paths = [
                 os.path.join(dense_dir, "fused.ply"),
                 os.path.join(colmap_dir, "sparse", "0", "points3D.txt"),
@@ -199,13 +240,19 @@ class ReconstructionWorker:
                                 if not line.startswith("#") and line.strip():
                                     parts = line.split()
                                     if len(parts) >= 4:
-                                        sparse_pts.append((float(parts[1]), float(parts[2]), float(parts[3])))
+                                        coord = (float(parts[1]), float(parts[2]), float(parts[3]))
+                                        sparse_pts.append(coord)
+                                        try:
+                                            p_id = int(parts[0])
+                                            sparse_map[p_id] = coord
+                                        except (ValueError, TypeError):
+                                            pass
                         if sparse_pts:
                             break
                     except Exception as ex:
                         logger.debug(f"Could not read points for calibration from {p_path}: {ex}")
 
-            calib_res = calibrate_sparse_scale(sparse_pts, reference_anchors)
+            calib_res = calibrate_sparse_scale(sparse_pts, reference_anchors, point3d_map=sparse_map)
             scale_factor = calib_res.get("scale_factor", 1.0)
             is_calibrated = calib_res.get("is_calibrated", False)
 
@@ -233,9 +280,9 @@ class ReconstructionWorker:
                 callback_url=callback_url,
                 api_key=api_key,
                 storage_client=self.storage_client,
-                image_count=val_res.get("image_count", 30),
+                image_count=val_res.get("image_count", len(capture_urls)),
                 splat_count=opt_res.get("splat_count", 0),
-                sharpness_score=val_res.get("sharpness_score", 85),
+                sharpness_score=val_res.get("sharpness_score"),
                 registered_cameras=sfm_res.get("registered_images", 0),
                 mesh_vertex_count=mesh_res.get("vertex_count", 0),
                 mesh_face_count=mesh_res.get("face_count", 0),

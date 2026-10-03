@@ -315,9 +315,62 @@ export const parseGaussianPly = (buffer: ArrayBuffer): ParsedGaussianCloud => {
   };
 };
 
+let cachedSpzMod: any = null;
+
+/**
+ * Lazily loads and caches the official Niantic @adobe/spz WebAssembly decoding module
+ */
+export const getSpzModule = async (): Promise<any> => {
+  if (!cachedSpzMod) {
+    try {
+      const createSpzModule = (await import('@adobe/spz')).default;
+      cachedSpzMod = await createSpzModule();
+    } catch (e) {
+      // Non-fatal if WASM is unavailable in specific test runtimes
+      console.warn('Could not load official @adobe/spz WASM module:', e);
+    }
+  }
+  return cachedSpzMod;
+};
+
+/**
+ * Encodes a Gaussian cloud to verified Niantic SPZ format using official WASM encoder
+ */
+export const encodeGaussianSpz = async (
+  cloud: {
+    numPoints: number;
+    positions: Float32Array;
+    scales: Float32Array;
+    rotations: Float32Array;
+    alphas: Float32Array;
+    colors: Float32Array;
+    sh?: Float32Array;
+  }
+): Promise<Uint8Array> => {
+  const mod = await getSpzModule();
+  if (!mod || typeof mod.saveSpzToBuffer !== 'function') {
+    throw new Error('Official Niantic SPZ encoder module is not loaded.');
+  }
+  return mod.saveSpzToBuffer(
+    {
+      numPoints: cloud.numPoints,
+      shDegree: 0,
+      antialiased: false,
+      extensions: [],
+      positions: cloud.positions,
+      scales: cloud.scales,
+      rotations: cloud.rotations,
+      alphas: cloud.alphas,
+      colors: cloud.colors,
+      sh: cloud.sh || new Float32Array([]),
+    },
+    { version: 4, from: 0, sh1Bits: 5, shRestBits: 4 }
+  );
+};
+
 /**
  * Parses compressed Niantic .spz container format
- * Specification: SPZ magic header (0x5053) + quantized spatial Gaussian buffers
+ * Specification: SPZ NGSP magic header (version 4) or legacy gzip (v1-v3)
  * Decodes positions, colors, scales, rotations without synthetic fallbacks.
  */
 export const parseGaussianSpz = async (buffer: ArrayBuffer): Promise<ParsedGaussianCloud> => {
@@ -326,7 +379,50 @@ export const parseGaussianSpz = async (buffer: ArrayBuffer): Promise<ParsedGauss
     throw new InvalidGaussianDataError('Corrupt SPZ artifact: buffer smaller than minimum header.');
   }
 
-  // Decompress if gzip compressed container (starts with 0x1F 0x8B)
+  // 1. Primary path: Official Niantic WebAssembly SPZ decoder
+  const spzMod = await getSpzModule();
+  if (spzMod && typeof spzMod.loadSpzFromBuffer === 'function') {
+    try {
+      const cloud = spzMod.loadSpzFromBuffer(bytes, { to: 0 });
+      if (cloud && cloud.numPoints > 0) {
+        let minX = Infinity, minY = Infinity, minZ = Infinity;
+        let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
+
+        for (let i = 0; i < cloud.numPoints; i++) {
+          const x = cloud.positions[i * 3];
+          const y = cloud.positions[i * 3 + 1];
+          const z = cloud.positions[i * 3 + 2];
+          if (isFinite(x) && isFinite(y) && isFinite(z)) {
+            minX = Math.min(minX, x); maxX = Math.max(maxX, x);
+            minY = Math.min(minY, y); maxY = Math.max(maxY, y);
+            minZ = Math.min(minZ, z); maxZ = Math.max(maxZ, z);
+          }
+        }
+
+        if (!isFinite(minX) || !isFinite(maxX) || !isFinite(minY) || !isFinite(maxY) || !isFinite(minZ) || !isFinite(maxZ)) {
+          throw new InvalidGaussianDataError('CANNOT_DETERMINE_BOUNDS: Parsed SPZ primitives contained no finite coordinates.');
+        }
+
+        return {
+          count: cloud.numPoints,
+          positions: cloud.positions,
+          colors: cloud.colors,
+          opacities: cloud.alphas,
+          scales: cloud.scales,
+          rotations: cloud.rotations,
+          bounds: {
+            min: [minX, minY, minZ],
+            max: [maxX, maxY, maxZ],
+          },
+        };
+      }
+    } catch (err: any) {
+      if (err instanceof InvalidGaussianDataError) throw err;
+      // If wasm failed on a non-NGSP buffer, proceed to secondary decoder
+    }
+  }
+
+  // 2. Secondary path: Decompress if gzip compressed container (starts with 0x1F 0x8B)
   let rawBuffer = buffer;
   if (bytes[0] === 0x1f && bytes[1] === 0x8b) {
     if (typeof DecompressionStream !== 'undefined') {

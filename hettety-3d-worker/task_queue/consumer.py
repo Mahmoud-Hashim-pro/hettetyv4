@@ -20,26 +20,93 @@ class QueueConsumer:
         dlq_name: Optional[str] = None
     ):
         self.queue_name = queue_name
+        self.stream_name = f"{queue_name}:stream"
+        self.group_name = "hettety_workers"
+        self.worker_id = f"worker_{time.time()}"
         self.dlq_name = dlq_name or f"{queue_name}:dead_letter"
         self.redis_url = redis_url
         self.lease_timeout_sec = lease_timeout_sec
         self.redis_client = None
+        self.use_streams = False
         self._in_flight: Dict[str, Dict[str, Any]] = {}
 
         if redis_url and not redis_url.startswith("mock://"):
             try:
                 import redis
                 self.redis_client = redis.from_url(redis_url, decode_responses=True)
-                logger.info(f"Connected to Redis queue: {queue_name} (DLQ: {self.dlq_name})")
+                logger.info(f"Connected to Redis queue: {queue_name} (Stream: {self.stream_name}, DLQ: {self.dlq_name})")
+                # Attempt to create consumer group for Redis Streams
+                try:
+                    self.redis_client.xgroup_create(self.stream_name, self.group_name, id="0", mkstream=True)
+                    self.use_streams = True
+                    logger.info(f"Initialized Redis Stream consumer group: {self.group_name}")
+                except Exception as stream_err:
+                    if "BUSYGROUP" in str(stream_err):
+                        self.use_streams = True
+                    else:
+                        logger.debug(f"Redis Streams not active or unavailable: {stream_err}. Falling back to list queue.")
             except Exception as e:
                 logger.warning(f"Could not connect to Redis: {e}. Running in local mock mode.")
 
     def poll_job(self, timeout_sec: int = 5) -> Optional[Dict[str, Any]]:
         """
         Polls for the next pending reconstruction job.
-        Records job in-flight tracking with lease timestamp.
+        Prioritizes Redis Streams with durable consumer groups and pending recovery.
+        Falls back to BLPOP list queue.
         """
         if self.redis_client:
+            # 1. Redis Streams path (Durable with Pending Entries List)
+            if self.use_streams:
+                try:
+                    # Auto-claim abandoned/crashed messages older than lease_timeout_sec
+                    if hasattr(self.redis_client, "xautoclaim"):
+                        try:
+                            claimed = self.redis_client.xautoclaim(
+                                self.stream_name, self.group_name, self.worker_id,
+                                min_idle_time=int(self.lease_timeout_sec * 1000),
+                                start_id="0-0", count=1
+                            )
+                            if claimed and len(claimed) >= 2 and claimed[1]:
+                                msg_id, fields = claimed[1][0]
+                                payload_str = fields.get("payload") or fields.get("job")
+                                if payload_str:
+                                    job = json.loads(payload_str)
+                                    job_id = job.get("id", f"job-{time.time()}")
+                                    self._in_flight[job_id] = {
+                                        "job": job,
+                                        "leased_at": time.time(),
+                                        "stream": True,
+                                        "stream_msg_id": msg_id
+                                    }
+                                    logger.info(f"Re-claimed pending job {job_id} from stream (msg {msg_id})")
+                                    return job
+                        except Exception as claim_err:
+                            logger.debug(f"xautoclaim note: {claim_err}")
+
+                    # Read new stream messages
+                    entries = self.redis_client.xreadgroup(
+                        self.group_name, self.worker_id,
+                        {self.stream_name: ">"},
+                        count=1,
+                        block=timeout_sec * 1000
+                    )
+                    if entries and entries[0][1]:
+                        msg_id, fields = entries[0][1][0]
+                        payload_str = fields.get("payload") or fields.get("job")
+                        if payload_str:
+                            job = json.loads(payload_str)
+                            job_id = job.get("id", f"job-{time.time()}")
+                            self._in_flight[job_id] = {
+                                "job": job,
+                                "leased_at": time.time(),
+                                "stream": True,
+                                "stream_msg_id": msg_id
+                            }
+                            return job
+                except Exception as e:
+                    logger.debug(f"Error reading from Redis Stream: {e}. Falling back to list queue.")
+
+            # 2. Redis List BLPOP path
             try:
                 item = self.redis_client.blpop(self.queue_name, timeout=timeout_sec)
                 if item:
@@ -49,7 +116,8 @@ class QueueConsumer:
                     self._in_flight[job_id] = {
                         "job": job,
                         "leased_at": time.time(),
-                        "raw_data": raw_data
+                        "raw_data": raw_data,
+                        "stream": False
                     }
                     return job
             except Exception as e:
@@ -58,10 +126,19 @@ class QueueConsumer:
 
     def ack_job(self, job_id: str) -> None:
         """
-        Durable ACK: Confirms job was successfully processed, clearing lease.
+        Durable ACK: Confirms job was successfully processed, clearing lease and stream message.
         """
-        if job_id in self._in_flight:
+        flight = self._in_flight.get(job_id)
+        if flight:
             del self._in_flight[job_id]
+            if self.redis_client and flight.get("stream"):
+                msg_id = flight.get("stream_msg_id")
+                try:
+                    self.redis_client.xack(self.stream_name, self.group_name, msg_id)
+                    self.redis_client.xdel(self.stream_name, msg_id)
+                except Exception as ex:
+                    logger.debug(f"Error acknowledging stream msg {msg_id}: {ex}")
+
         if self.redis_client:
             try:
                 self.redis_client.delete(f"hettety:lease:{job_id}")
@@ -79,6 +156,7 @@ class QueueConsumer:
         job["lastError"] = error_message
         job["failedAt"] = time.time()
 
+        flight = self._in_flight.get(job_id)
         if job_id in self._in_flight:
             del self._in_flight[job_id]
 
@@ -90,9 +168,21 @@ class QueueConsumer:
             if retry_count >= max_retries:
                 logger.error(f"Job {job_id} exceeded max retries ({max_retries}). Routing to DLQ: {self.dlq_name}")
                 self.redis_client.rpush(self.dlq_name, json.dumps(job))
+                if self.use_streams:
+                    try:
+                        self.redis_client.xadd(f"{self.stream_name}:dead_letter", {"payload": json.dumps(job)})
+                        if flight and flight.get("stream"):
+                            self.redis_client.xack(self.stream_name, self.group_name, flight.get("stream_msg_id"))
+                    except Exception as stream_nack_err:
+                        logger.debug(f"Stream DLQ note: {stream_nack_err}")
             else:
                 logger.warning(f"Re-queueing job {job_id} for retry {retry_count}/{max_retries}...")
                 self.redis_client.rpush(self.queue_name, json.dumps(job))
+                if self.use_streams and flight and flight.get("stream"):
+                    try:
+                        self.redis_client.xack(self.stream_name, self.group_name, flight.get("stream_msg_id"))
+                    except Exception:
+                        pass
         except Exception as e:
             logger.error(f"Failed to handle NACK routing in Redis: {e}")
 

@@ -86,6 +86,7 @@ export interface GaussianSplatRepresentation {
     low?: string;
   };
   splatCount?: number;
+  sha256?: string;
 }
 
 export interface MeshRepresentation {
@@ -95,6 +96,7 @@ export interface MeshRepresentation {
   vertexCount?: number;
   faceCount?: number;
   isCalibratedMetric?: boolean;
+  sha256?: string;
 }
 
 export interface PanoramaRepresentation {

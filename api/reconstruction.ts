@@ -39,6 +39,7 @@ export interface ReconstructionJobPayload {
       url: string;
       sizeBytes: number;
       splatCount: number;
+      sha256?: string;
     };
     mesh?: {
       format: string;
@@ -47,6 +48,7 @@ export interface ReconstructionJobPayload {
       vertexCount?: number;
       faceCount: number;
       isCalibratedMetric?: boolean;
+      sha256?: string;
     };
   };
   bounds?: {

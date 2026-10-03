@@ -61,8 +61,21 @@ def publish_tour_assets(
                 "message": str(upload_err)
             }
 
+    import hashlib
+
+    def compute_sha256(path: str) -> str:
+        if not path or not os.path.exists(path):
+            return ""
+        h = hashlib.sha256()
+        with open(path, "rb") as f:
+            while chunk := f.read(65536):
+                h.update(chunk)
+        return h.hexdigest()
+
     spz_size = os.path.getsize(spz_path) if os.path.exists(spz_path) else 0
     glb_size = os.path.getsize(glb_path) if os.path.exists(glb_path) else 0
+    spz_sha256 = compute_sha256(spz_path)
+    glb_sha256 = compute_sha256(glb_path)
 
     # Strictly grounded quality telemetry: REAL, UNKNOWN, FAIL (no fabricated estimates)
     reg_val = registered_cameras if registered_cameras is not None else 0
@@ -115,7 +128,8 @@ def publish_tour_assets(
                 "format": "spz",
                 "url": spz_url,
                 "sizeBytes": spz_size,
-                "splatCount": splat_val
+                "splatCount": splat_val,
+                **({"sha256": spz_sha256} if spz_sha256 else {})
             },
             "mesh": {
                 "format": "glb",
@@ -123,7 +137,8 @@ def publish_tour_assets(
                 "sizeBytes": glb_size,
                 "vertexCount": mesh_vertex_count,
                 "faceCount": mesh_face_count,
-                "isCalibratedMetric": is_calibrated_metric
+                "isCalibratedMetric": is_calibrated_metric,
+                **({"sha256": glb_sha256} if glb_sha256 else {})
             }
         },
         "bounds": bounds,

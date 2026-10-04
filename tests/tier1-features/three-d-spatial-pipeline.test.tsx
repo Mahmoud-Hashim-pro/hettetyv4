@@ -226,11 +226,11 @@ describe('Tier 1 — HETTETY Real 3D Reconstruction Pipeline & Architecture', ()
     });
 
     it('renders MeasurementTool and allows measuring room spans', () => {
-      render(<MeasurementTool isRtl={false} />);
+      render(<MeasurementTool isRtl={false} showDemoPresets={true} />);
       expect(screen.getByText(/3D Metric Measurement Tool/i)).toBeInTheDocument();
       expect(screen.getByText(/Calculated Distance/i)).toBeInTheDocument();
 
-      const measureBtn = screen.getByRole('button', { name: /Measure Reception/i });
+      const measureBtn = screen.getByRole('button', { name: /Demo: Reception/i });
       fireEvent.click(measureBtn);
       expect(screen.getByText('4.72 m')).toBeInTheDocument();
     });
@@ -2119,8 +2119,8 @@ NaN NaN NaN
         status: 'UPLOADING',
         attemptId: 'attempt_1',
         manifest: [
-          { id: 'asset-1', storagePath: `properties/${propId}/3d/raw/${jobId}/f1.jpg`, sizeBytes: 1000, mimeType: 'image/jpeg', validationStatus: 'PENDING' },
-          { id: 'asset-2', storagePath: `properties/${propId}/3d/raw/${jobId}/f2.jpg`, sizeBytes: 1000, mimeType: 'image/jpeg', validationStatus: 'PENDING' },
+          { id: 'asset-1', storagePath: `properties/${propId}/3d/raw/${jobId}/f1.jpg`, uploadUrl: 'https://storage.googleapis.com/test-bucket/f1.jpg', sizeBytes: 1000, mimeType: 'image/jpeg', validationStatus: 'PENDING' },
+          { id: 'asset-2', storagePath: `properties/${propId}/3d/raw/${jobId}/f2.jpg`, uploadUrl: 'https://storage.googleapis.com/test-bucket/f2.jpg', sizeBytes: 1000, mimeType: 'image/jpeg', validationStatus: 'PENDING' },
         ],
         createdAt: new Date().toISOString(),
         retryCount: 0,
@@ -2277,11 +2277,19 @@ NaN NaN NaN
     });
 
     it('P0-AuthoritativeStateMachine: validates transitions and blocks direct ad-hoc jumps', async () => {
-      const { assertValidJobTransition, runJobTransaction, controlPlaneJobs } = await import('../../api/reconstruction');
+      const { assertValidJobTransition } = await import('../../api/reconstruction');
       // 1. Direct invalid transitions throw
       expect(() => assertValidJobTransition('QUEUED', 'READY')).toThrow(/INVALID_STATE_TRANSITION/);
       expect(() => assertValidJobTransition('FAILED', 'TRAINING')).toThrow(/INVALID_STATE_TRANSITION/);
       expect(() => assertValidJobTransition('READY', 'QUEUED')).toThrow(/INVALID_STATE_TRANSITION/);
+
+      // Adversarial Forbidden Transitions (P0/P1 Requirements)
+      expect(() => assertValidJobTransition('READY', 'TRAINING')).toThrow(/INVALID_STATE_TRANSITION/);
+      expect(() => assertValidJobTransition('READY', 'CANCELLED')).toThrow(/INVALID_STATE_TRANSITION/);
+      expect(() => assertValidJobTransition('CANCELLED', 'READY')).toThrow(/INVALID_STATE_TRANSITION/);
+      expect(() => assertValidJobTransition('CANCEL_REQUESTED', 'TRAINING')).toThrow(/INVALID_STATE_TRANSITION/);
+      expect(() => assertValidJobTransition('CANCEL_REQUESTED', 'READY')).toThrow(/INVALID_STATE_TRANSITION/);
+      expect(() => assertValidJobTransition('FAILED', 'READY')).toThrow(/INVALID_STATE_TRANSITION/);
 
       // 2. Valid transitions succeed
       expect(() => assertValidJobTransition('QUEUED', 'VALIDATING')).not.toThrow();
@@ -2292,6 +2300,93 @@ NaN NaN NaN
       expect(() => assertValidJobTransition('PUBLISHING', 'READY')).not.toThrow();
       expect(() => assertValidJobTransition('TRAINING', 'CANCEL_REQUESTED')).not.toThrow();
       expect(() => assertValidJobTransition('CANCEL_REQUESTED', 'CANCELLED')).not.toThrow();
+    });
+
+    it('P1-UploadSessionExpiry: rejects complete-uploads when session has expired', async () => {
+      const { default: controlPlaneHandler, controlPlaneJobs, mockPropertiesStore } = await import('../../api/reconstruction');
+      const jobId = 'job-upload-expired-001';
+      const propId = 'prop-upload-expired-001';
+      mockPropertiesStore.set(propId, { authorUid: 'owner-expired-user' });
+
+      // Create an expired job session (expired 1 hour ago)
+      controlPlaneJobs.set(jobId, {
+        id: jobId,
+        propertyId: propId,
+        ownerId: 'owner-expired-user',
+        status: 'UPLOADING',
+        manifest: [{ id: 'asset_1', storagePath: `properties/${propId}/3d/raw/${jobId}/f1.jpg`, mimeType: 'image/jpeg', sizeBytes: 1000 }],
+        uploadSessionExpiresAt: new Date(Date.now() - 3600000).toISOString(),
+        createdAt: new Date(Date.now() - 7200000).toISOString(),
+      } as any);
+
+      let statusRes = 200, jsonRes: any = null;
+      const mockRes = { status: (s: number) => { statusRes = s; return { json: (d: any) => { jsonRes = d; } }; } };
+
+      await controlPlaneHandler(
+        {
+          method: 'POST',
+          query: { action: 'complete-uploads' },
+          headers: { authorization: 'Bearer token-exp', 'x-user-id': 'owner-expired-user' },
+          body: {
+            jobId,
+            uploadedAssetIds: ['asset_1'],
+          },
+        },
+        mockRes
+      );
+
+      expect(statusRes).toBe(410);
+      expect(jsonRes.error).toContain('UPLOAD_SESSION_EXPIRED');
+      expect(jsonRes.code).toBe('UPLOAD_SESSION_EXPIRED');
+    });
+
+    it('P0-QualityGateRejection: rejects transition to READY when quality report indicates failure', async () => {
+      const { default: controlPlaneHandler, controlPlaneJobs } = await import('../../api/reconstruction');
+      const jobId = 'job-qg-fail-001';
+      const propId = 'prop-qg-fail-001';
+
+      controlPlaneJobs.set(jobId, {
+        id: jobId,
+        propertyId: propId,
+        ownerId: 'owner-qg-fail',
+        status: 'PUBLISHING',
+        attemptId: 'attempt_1',
+        workerId: 'worker-gpu-1',
+        stateVersion: 5,
+      } as any);
+
+      let statusRes = 200, jsonRes: any = null;
+      const mockRes = { status: (s: number) => { statusRes = s; return { json: (d: any) => { jsonRes = d; } }; } };
+
+      await controlPlaneHandler(
+        {
+          method: 'POST',
+          query: { action: 'update-stage' },
+          headers: { authorization: 'Bearer hettety-worker-secret-internal' },
+          body: {
+            jobId,
+            attemptId: 'attempt_1',
+            workerId: 'worker-gpu-1',
+            propertyId: propId,
+            status: 'READY',
+            qualityReport: {
+              passed: false,
+              status: 'REJECTED',
+              overallScore: 35,
+              reasons: ['Mean reprojection error exceeds 3.0px limit', 'Degenerate splat cloud'],
+            },
+            representation: {
+              gaussianSplat: { url: `properties/${propId}/tour/scene.spz`, sha256: 'a'.repeat(64) },
+              mesh: { url: `properties/${propId}/tour/mesh.glb`, sha256: 'b'.repeat(64) },
+            },
+          },
+        },
+        mockRes
+      );
+
+      expect(statusRes).toBe(422);
+      expect(jsonRes.error).toContain('QUALITY_GATE_REJECTED');
+      expect(jsonRes.error).toContain('Mean reprojection error exceeds 3.0px limit');
     });
 
     it('P1-CancellationWorkflow: transitions active job to CANCEL_REQUESTED and then to CANCELLED upon worker confirmation', async () => {

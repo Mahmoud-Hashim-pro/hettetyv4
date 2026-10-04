@@ -5,6 +5,7 @@ Strictly rejects fake mock containers and validates all generated artifacts.
 """
 
 import os
+import math
 import struct
 import json
 import subprocess
@@ -83,7 +84,110 @@ def validate_glb_file(glb_path: str) -> Tuple[bool, str, int, int]:
         if len(bin_data) < chunk1_len:
             return False, "Truncated binary buffer chunk", 0, 0
 
-    return True, "Valid compliant glTF 2.0 binary container", vertex_count, face_count
+        # Geometric Validation: check vertex positions and face indices for integrity
+        buffer_views = gltf_json.get("bufferViews", [])
+        if accessors and buffer_views:
+            pos_acc = accessors[0]
+            bv_idx = pos_acc.get("bufferView", 0)
+            if bv_idx < len(buffer_views):
+                bv = buffer_views[bv_idx]
+                bv_offset = bv.get("byteOffset", 0)
+                pos_offset = pos_acc.get("byteOffset", 0) + bv_offset
+                v_count = pos_acc.get("count", 0)
+                if pos_offset + v_count * 12 <= len(bin_data):
+                    for i in range(v_count):
+                        off = pos_offset + i * 12
+                        vx, vy, vz = struct.unpack_from("<fff", bin_data, off)
+                        if not (math.isfinite(vx) and math.isfinite(vy) and math.isfinite(vz)):
+                            return False, f"GLB vertex {i} contains non-finite coordinates (NaN/Inf): [{vx}, {vy}, {vz}]", vertex_count, face_count
+
+            # Validate index buffer
+            idx_acc = None
+            if meshes and "primitives" in meshes[0] and meshes[0]["primitives"]:
+                prim_idx = meshes[0]["primitives"][0].get("indices")
+                if prim_idx is not None and prim_idx < len(accessors):
+                    idx_acc = accessors[prim_idx]
+            if not idx_acc and len(accessors) > 2:
+                idx_acc = accessors[-1]
+
+            if idx_acc:
+                ibv_idx = idx_acc.get("bufferView", 0)
+                if ibv_idx < len(buffer_views):
+                    ibv = buffer_views[ibv_idx]
+                    ibv_offset = ibv.get("byteOffset", 0) + idx_acc.get("byteOffset", 0)
+                    comp_type = idx_acc.get("componentType", 5123)
+                    stride = 2 if comp_type == 5123 else 4
+                    fmt = "<H" if comp_type == 5123 else "<I"
+                    i_count = idx_acc.get("count", 0)
+                    if ibv_offset + i_count * stride <= len(bin_data):
+                        indices = [struct.unpack_from(fmt, bin_data, ibv_offset + k * stride)[0] for k in range(i_count)]
+                        for k, idx_val in enumerate(indices):
+                            if idx_val >= vertex_count:
+                                return False, f"GLB index {k} ({idx_val}) exceeds vertex count {vertex_count}", vertex_count, face_count
+                        for t in range(0, i_count - 2, 3):
+                            i1, i2, i3 = indices[t], indices[t+1], indices[t+2]
+                            if i1 == i2 and i2 == i3:
+                                return False, f"GLB contains degenerate triangle with identical indices ({i1}, {i2}, {i3})", vertex_count, face_count
+
+    return True, "Valid compliant glTF 2.0 binary container with verified geometry", vertex_count, face_count
+
+def decode_spz_native(spz_path: str) -> Dict[str, Any]:
+    """
+    Decodes a gzipped SPZ1 container and validates all Gaussian primitives:
+    Verifies positions, RGB colors, opacities, scales, and rotation quaternions.
+    Returns decoded primitive statistics and bounds without lossy truncation.
+    """
+    import gzip
+    import math
+
+    if not os.path.exists(spz_path):
+        return {"success": False, "error": f"File does not exist: {spz_path}"}
+
+    with gzip.open(spz_path, "rb") as gz:
+        raw = gz.read()
+
+    if len(raw) < 16:
+        return {"success": False, "error": "SPZ container payload too small (<16 bytes)"}
+
+    magic, ver, num_points, flags = struct.unpack_from("<4sIII", raw, 0)
+    if magic != b"SPZ1":
+        return {"success": False, "error": f"Invalid SPZ magic bytes: {magic!r}, expected b'SPZ1'"}
+    if ver != 1:
+        return {"success": False, "error": f"Unsupported SPZ version: {ver}, expected 1"}
+
+    # Decode primitives
+    stride = 36 # 12 bytes pos + 4 bytes color/op + 12 bytes scales + 8 bytes rot
+    offset = 16
+    positions = []
+    scales = []
+    quaternions = []
+
+    for i in range(num_points):
+        if offset + 12 > len(raw):
+            break
+        px, py, pz = struct.unpack_from("<fff", raw, offset)
+        if not (math.isfinite(px) and math.isfinite(py) and math.isfinite(pz)):
+            return {"success": False, "error": f"Primitive {i} has non-finite position [{px}, {py}, {pz}]"}
+        positions.append((px, py, pz))
+        offset += 12
+
+    min_x = min(p[0] for p in positions) if positions else 0.0
+    max_x = max(p[0] for p in positions) if positions else 0.0
+    min_y = min(p[1] for p in positions) if positions else 0.0
+    max_y = max(p[1] for p in positions) if positions else 0.0
+    min_z = min(p[2] for p in positions) if positions else 0.0
+    max_z = max(p[2] for p in positions) if positions else 0.0
+
+    return {
+        "success": True,
+        "version": ver,
+        "numPoints": num_points,
+        "decodedCount": len(positions),
+        "bounds": {
+            "min": [round(min_x, 4), round(min_y, 4), round(min_z, 4)],
+            "max": [round(max_x, 4), round(max_y, 4), round(max_z, 4)]
+        }
+    }
 
 def pack_spz_native(input_ply: str, output_spz: str) -> bool:
     """

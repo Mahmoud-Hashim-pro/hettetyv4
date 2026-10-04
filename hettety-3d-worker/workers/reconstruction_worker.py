@@ -351,7 +351,7 @@ class ReconstructionWorker:
                     except Exception as ex:
                         logger.debug(f"Could not read points3D from {p_path}: {ex}")
 
-            calib_res = calibrate_sparse_scale(sparse_pts, reference_anchors, point3d_map=sparse_map)
+            calib_res = calibrate_sparse_scale(sparse_pts, reference_anchors, point3d_map=sparse_map, sparse_dir=colmap_dir)
             scale_factor = calib_res.get("scale_factor", 1.0)
             is_calibrated = calib_res.get("is_calibrated", False)
 
@@ -387,7 +387,10 @@ class ReconstructionWorker:
                 mesh_face_count=mesh_res.get("face_count", 0),
                 is_calibrated_metric=is_calibrated,
                 attempt_id=attempt_id,
-                worker_id=worker_id
+                worker_id=worker_id,
+                mean_reprojection_error=sfm_res.get("mean_reprojection_error", 0.0),
+                calibration_confidence=calib_res.get("confidence_score", 0.0),
+                calibration_rmse=calib_res.get("rmse", None)
             )
 
             if not pub_res.get("success"):

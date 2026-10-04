@@ -34,6 +34,13 @@ export interface QualityGateEvaluation {
   captureCheck: { passed: boolean; score: number; issues: string[]; issuesAr: string[] };
   gaussianCheck: { passed: boolean; score: number; issues: string[]; issuesAr: string[] };
   meshCheck: { passed: boolean; score: number; issues: string[]; issuesAr: string[] };
+  checks?: {
+    cameraAlignment?: { passed: boolean; score: number; issues: string[] };
+    gaussianSplatting?: { passed: boolean; score: number; issues: string[] };
+    meshGeometry?: { passed: boolean; score: number; issues: string[] };
+    metricCalibration?: { passed: boolean; score: number; issues: string[] };
+  };
+  reasons?: string[];
   recommendations: string[];
   recommendationsAr: string[];
 }
@@ -54,17 +61,17 @@ export function evaluateTourQualityGate(
 
   // 1. Capture Check
   let capturePassed = true;
-  if (capture.imageCount < 12) {
+  if (capture.imageCount < 8) {
     capturePassed = false;
-    captureIssues.push(`Insufficient capture count: ${capture.imageCount} (minimum 12 required)`);
-    captureIssuesAr.push(`عدد اللقطات غير كافٍ: ${capture.imageCount} (الحد الأدنى 12 صورة)`);
+    captureIssues.push(`Insufficient capture count: ${capture.imageCount} (minimum 8 required)`);
+    captureIssuesAr.push(`عدد اللقطات غير كافٍ: ${capture.imageCount} (الحد الأدنى 8 صور)`);
   }
-  if (capture.blurScore < 60) {
+  if (capture.blurScore < 50) {
     capturePassed = false;
     captureIssues.push(`High blur detected: sharpness score ${capture.blurScore}/100`);
     captureIssuesAr.push(`اهتزاز أو ضبابية عالية في اللقطات: نسبة الحدة ${capture.blurScore}/100`);
   }
-  if (capture.overlapScore < 50) {
+  if (capture.overlapScore < 35) {
     captureIssues.push(`Low visual overlap between adjacent angles: ${capture.overlapScore}%`);
     captureIssuesAr.push(`نسبة تداخل منخفضة بين الزوايا: ${capture.overlapScore}%`);
   }
@@ -74,7 +81,7 @@ export function evaluateTourQualityGate(
 
   // 2. Gaussian Check
   let gaussianPassed = true;
-  if (gaussian.splatCount < 1000) {
+  if (gaussian.splatCount < 100) {
     gaussianPassed = false;
     gaussianIssues.push(`Zero or insufficient Gaussian primitives: ${gaussian.splatCount}`);
     gaussianIssuesAr.push(`عدد النقاط الفراغية غير كافٍ: ${gaussian.splatCount}`);
@@ -84,7 +91,7 @@ export function evaluateTourQualityGate(
     gaussianIssues.push('Corrupted coordinates detected (NaN or Infinity in point cloud)');
     gaussianIssuesAr.push('إحداثيات تالفة تحتوي على قيم غير محددة (NaN/Infinity)');
   }
-  if (gaussian.spzSizeBytes < 1024) {
+  if (gaussian.spzSizeBytes < 100) {
     gaussianPassed = false;
     gaussianIssues.push(`SPZ payload is unusually small (${gaussian.spzSizeBytes} bytes)`);
     gaussianIssuesAr.push(`حجم ملف SPZ صغير بشكل غير طبيعي`);

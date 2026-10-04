@@ -6,6 +6,7 @@ interface MeasurementToolProps {
   onClose?: () => void;
   isCalibrated?: boolean;
   isRtl?: boolean;
+  showDemoPresets?: boolean;
   selectedPoints?: [Vec3 | null, Vec3 | null];
   onPointSelect?: (point: Vec3) => void;
 }
@@ -13,11 +14,12 @@ interface MeasurementToolProps {
 export const MeasurementTool: React.FC<MeasurementToolProps> = ({
   isCalibrated = true,
   isRtl = false,
+  showDemoPresets = false,
   selectedPoints: controlledPoints,
   onPointSelect,
 }) => {
-  const [internalPointA, setInternalPointA] = useState<Vec3 | null>([-1.8, 0, -1.2]);
-  const [internalPointB, setInternalPointB] = useState<Vec3 | null>([2.4, 0, 1.5]);
+  const [internalPointA, setInternalPointA] = useState<Vec3 | null>(null);
+  const [internalPointB, setInternalPointB] = useState<Vec3 | null>(null);
 
   const pointA = controlledPoints ? controlledPoints[0] : internalPointA;
   const pointB = controlledPoints ? controlledPoints[1] : internalPointB;
@@ -129,24 +131,31 @@ export const MeasurementTool: React.FC<MeasurementToolProps> = ({
         <span className="text-xl font-black text-brand-700 dark:text-brand-300">
           {distanceMeters !== null ? formatDistance(distanceMeters, isRtl) : '--'}
         </span>
+        {distanceMeters === null && (
+          <span className="text-[10px] text-slate-400 dark:text-slate-500 block mt-1">
+            {isRtl ? 'انقر على النموذج لتحديد نقطتي البداية والنهاية' : 'Click 3D model to select start and end points'}
+          </span>
+        )}
       </div>
 
-      <div className="flex gap-2 mb-2">
-        <button
-          type="button"
-          onClick={handleSampleWallMeasure}
-          className="flex-1 py-1.5 px-2 bg-slate-100 dark:bg-slate-800 hover:bg-brand-100 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 font-semibold rounded-lg transition-colors text-center text-[10px] cursor-pointer"
-        >
-          {isRtl ? 'قياس عرض الريسبشن (4.72 م)' : 'Measure Reception (4.72 m)'}
-        </button>
-        <button
-          type="button"
-          onClick={handleSampleDoorMeasure}
-          className="flex-1 py-1.5 px-2 bg-slate-100 dark:bg-slate-800 hover:bg-brand-100 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 font-semibold rounded-lg transition-colors text-center text-[10px] cursor-pointer"
-        >
-          {isRtl ? 'قياس فتحة الباب (0.90 م)' : 'Measure Door (0.90 m)'}
-        </button>
-      </div>
+      {showDemoPresets && (
+        <div className="flex gap-2 mb-2">
+          <button
+            type="button"
+            onClick={handleSampleWallMeasure}
+            className="flex-1 py-1.5 px-2 bg-slate-100 dark:bg-slate-800 hover:bg-brand-100 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 font-semibold rounded-lg transition-colors text-center text-[10px] cursor-pointer"
+          >
+            {isRtl ? 'عرض تجريبي: الريسبشن (4.72 م)' : 'Demo: Reception (4.72 m)'}
+          </button>
+          <button
+            type="button"
+            onClick={handleSampleDoorMeasure}
+            className="flex-1 py-1.5 px-2 bg-slate-100 dark:bg-slate-800 hover:bg-brand-100 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 font-semibold rounded-lg transition-colors text-center text-[10px] cursor-pointer"
+          >
+            {isRtl ? 'عرض تجريبي: الباب (0.90 م)' : 'Demo: Door (0.90 m)'}
+          </button>
+        </div>
+      )}
 
       <div className="flex items-start gap-1.5 mt-2.5 pt-2 border-t border-slate-100 dark:border-slate-800 text-[10px] text-slate-400">
         <Info size={12} className="shrink-0 mt-0.5 text-slate-400" />

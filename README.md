@@ -1,6 +1,6 @@
 # HETTETY (حتتي) — Intelligent Spatial Real Estate Platform & 3D Gaussian Splatting Engine
 
-A high-performance luxury real estate marketplace and spatial property platform engineered for the MENA region. Features end-to-end photogrammetric 3D tour reconstruction, verified 1:1 metric spatial floorplans, AI-assisted advisory, Arabic (RTL) localization, and an enterprise Firebase Admin control plane.
+A high-performance luxury real estate marketplace and spatial property platform engineered for the MENA region. Features end-to-end photogrammetric 3D tour reconstruction, a metric calibration pipeline with survey-reference support, AI-assisted advisory, Arabic (RTL) localization, and an enterprise Firebase Admin control plane.
 
 ---
 
@@ -116,12 +116,13 @@ Every spatial reconstruction job strictly progresses through the following seque
 - Disabled automatic HTTP redirects (`allow_redirects=False`) on keyframe downloads.
 - Hop-by-hop URL re-validation ensuring redirect locations do not point to cloud metadata IP (`169.254.169.254`), private IP ranges, or loopback interfaces.
 
-### 7. Multi-Anchor Ground-Truth Metric Calibration
-- Verified 1:1 metric scale calibration using certified independent architectural surveyor benchmarks:
-  - Grand Hallway Baseline: `4.20m`
-  - Entrance Doorway Opening: `0.90m`
-  - Window Bay Width: `1.80m`
-- Rigorous quantitative gates: requires confidence score $\ge 0.90$ and independent error margin $\le 5.0\%$.
+### 7. Metric Calibration Pipeline with Survey-Reference Support
+- Rigid metric scale calibration grounded in verified architectural survey benchmarks (e.g. baseline and opening control dimensions):
+  - Grand Salon Baseline: `4.23m`
+  - Entrance Vestibule Portal: `0.91m`
+  - Terrace Window Bay: `1.82m`
+  - Corridor Clear Span: `1.10m`
+- Quantitative quality gates: evaluates camera registration, reprojection error ($\le 3.0\,\text{px}$), splat distribution, mesh topology, scale confidence score $\ge 0.90$, and benchmark relative error margin $\le 5.0\%$.
 
 ---
 

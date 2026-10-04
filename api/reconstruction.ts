@@ -1028,6 +1028,13 @@ export default async function handler(req: any, res: any) {
         return res.status(403).json({ error: 'FORBIDDEN: You do not own this reconstruction job.' });
       }
 
+      if (job.uploadSessionExpiresAt && new Date(job.uploadSessionExpiresAt).getTime() < Date.now()) {
+        return res.status(410).json({
+          error: 'UPLOAD_SESSION_EXPIRED: The upload session for this job has expired (2-hour limit). Please create a new job.',
+          code: 'UPLOAD_SESSION_EXPIRED',
+        });
+      }
+
       const allowedMimes = [
         'image/jpeg', 'image/png', 'image/webp', 'image/heic',
         'video/mp4', 'video/quicktime', 'video/webm'
@@ -1446,6 +1453,13 @@ export default async function handler(req: any, res: any) {
 
       // Server-Side READY Validation before accepting READY status
       if (targetStatus === 'READY') {
+        if (qualityReport && qualityReport.passed === false) {
+          return res.status(422).json({
+            error: `QUALITY_GATE_REJECTED: Job cannot transition to READY because it failed the authoritative quality gate: ${(qualityReport.reasons || []).join('; ')}`,
+            qualityReport,
+          });
+        }
+
         if (!representation || !representation.gaussianSplat || !representation.mesh) {
           return res.status(422).json({
             error: 'ARTIFACT_VALIDATION_FAILED: READY status requires verified gaussianSplat and mesh representations.',

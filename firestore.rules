@@ -135,7 +135,7 @@ service cloud.firestore {
     // Fields:
     //   - propertyId: string (required) - Associated property ID
     //   - ownerId: string (required) - UID of the job owner/creator
-    //   - status: string (required, enum: ['QUEUED', 'VALIDATING', 'UPLOADING', 'RECONSTRUCTING', 'TRAINING', 'OPTIMIZING', 'PUBLISHING', 'READY', 'FAILED', 'CANCELLED'])
+    //   - status: string (required, enum: ['QUEUED', 'VALIDATING', 'UPLOADING', 'RECONSTRUCTING', 'TRAINING', 'OPTIMIZING', 'PUBLISHING', 'CANCEL_REQUESTED', 'READY', 'FAILED', 'CANCELLED'])
     //   - type: string (required, enum: ['video', 'photos', 'hybrid'])
     //   - progress: number (optional) - Pipeline progress percentage (0 - 100)
     //   - stage: string (optional) - Active processing stage
@@ -653,7 +653,7 @@ service cloud.firestore {
         // Client owner can ONLY cancel a job or request retry (QUEUED), NEVER self-promote to READY, VALIDATING, TRAINING, OPTIMIZING, or PUBLISHING:
         (resource.data.ownerId == request.auth.uid &&
          request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'updatedAt']) &&
-         (request.resource.data.status == 'CANCELLED' || (request.resource.data.status == 'QUEUED' && resource.data.status in ['FAILED', 'CANCELLED'])))
+         (request.resource.data.status in ['CANCELLED', 'CANCEL_REQUESTED'] || (request.resource.data.status == 'QUEUED' && resource.data.status in ['FAILED', 'CANCELLED'])))
       );
       allow delete: if isAdmin();
     }

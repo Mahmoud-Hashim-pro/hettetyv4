@@ -30,7 +30,10 @@ def publish_tour_assets(
     mesh_face_count: int = 0,
     is_calibrated_metric: bool = False,
     attempt_id: Optional[str] = None,
-    worker_id: Optional[str] = None
+    worker_id: Optional[str] = None,
+    mean_reprojection_error: float = 0.0,
+    calibration_confidence: float = 0.0,
+    calibration_rmse: Optional[float] = None
 ) -> Dict[str, Any]:
     """
     Publishes generated representations and invokes Hettety completion webhook.
@@ -151,6 +154,36 @@ def publish_tour_assets(
     manifest_url = None
     manifest_sha256 = None
 
+    from pipeline.quality_gate import evaluate_reconstruction_quality
+
+    quality_report = evaluate_reconstruction_quality(
+        image_count=image_count,
+        registered_cameras=reg_val,
+        mean_reprojection_error=mean_reprojection_error,
+        splat_count=splat_val,
+        bounds=bounds,
+        mesh_vertex_count=mesh_vertex_count,
+        mesh_face_count=mesh_face_count,
+        glb_size_bytes=glb_size,
+        is_calibrated_metric=is_calibrated_metric,
+        calibration_confidence=calibration_confidence,
+        calibration_rmse=calibration_rmse,
+        sharpness_score=sharpness_score
+    )
+    quality_report["metrics"] = quality_metrics
+    quality_report["coverage"] = coverage_score
+    quality_report["density"] = density_score
+    quality_report["meshCompleteness"] = mesh_score
+
+    if not quality_report["passed"]:
+        logger.error(f"Authoritative Quality Gate REJECTED job {job_id}: {quality_report['reasons']}")
+        return {
+            "success": False,
+            "error_code": "QUALITY_GATE_REJECTED",
+            "message": f"Tour rejected by authoritative quality gate: {'; '.join(quality_report['reasons'])}",
+            "qualityReport": quality_report
+        }
+
     manifest_content = {
         "manifestVersion": "1.0.0",
         "jobId": job_id,
@@ -190,10 +223,7 @@ def publish_tour_assets(
             }
         },
         "bounds": bounds,
-        "qualityReport": {
-            "overallScore": overall_score,
-            "metrics": quality_metrics
-        }
+        "qualityReport": quality_report
     }
 
     remote_manifest_path = f"{version_dir}/manifest.json"
@@ -241,10 +271,7 @@ def publish_tour_assets(
             }
         },
         "bounds": bounds,
-        "qualityReport": {
-            "overallScore": overall_score,
-            "metrics": quality_metrics
-        }
+        "qualityReport": quality_report
     }
     
     headers = {

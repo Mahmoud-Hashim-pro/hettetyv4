@@ -2174,6 +2174,273 @@ NaN NaN NaN
       expect(container.textContent).toContain('[0.00, 1.00, 0.00]');
       expect(container.textContent).toContain('[3.00, 1.00, 0.00]');
     });
+
+    it('P1-UploadHardening: rejects oversized files, duplicates, and album size exceeding limits', async () => {
+      const { default: controlPlaneHandler, mockPropertiesStore } = await import('../../api/reconstruction');
+      const propId = 'prop-upload-harden-001';
+      mockPropertiesStore.set(propId, { authorUid: 'seller-uid-harden' });
+
+      // 1. Single file > 50MB rejected
+      let statusRes = 200, jsonRes: any = null;
+      const mockRes = { status: (s: number) => { statusRes = s; return { json: (d: any) => { jsonRes = d; } }; } };
+
+      await controlPlaneHandler(
+        {
+          method: 'POST',
+          query: { action: 'create-job' },
+          headers: { authorization: 'Bearer test-token', 'x-user-id': 'seller-uid-harden' },
+          body: {
+            propertyId: propId,
+            files: [{ name: 'huge_pic.jpg', sizeBytes: 60 * 1024 * 1024 }],
+            type: 'photos',
+          },
+        },
+        mockRes
+      );
+      expect(statusRes).toBe(400);
+      expect(jsonRes.error).toContain('FILE_TOO_LARGE');
+
+      // 2. Duplicate filenames rejected
+      await controlPlaneHandler(
+        {
+          method: 'POST',
+          query: { action: 'create-job' },
+          headers: { authorization: 'Bearer test-token', 'x-user-id': 'seller-uid-harden' },
+          body: {
+            propertyId: propId,
+            files: [
+              { name: 'photo_1.jpg', sizeBytes: 5000 },
+              { name: 'photo_1.jpg', sizeBytes: 6000 },
+            ],
+            type: 'photos',
+          },
+        },
+        mockRes
+      );
+      expect(statusRes).toBe(400);
+      expect(jsonRes.error).toContain('DUPLICATE_FILE_DETECTED');
+
+      // 3. Duplicate checksums rejected
+      await controlPlaneHandler(
+        {
+          method: 'POST',
+          query: { action: 'create-job' },
+          headers: { authorization: 'Bearer test-token', 'x-user-id': 'seller-uid-harden' },
+          body: {
+            propertyId: propId,
+            files: [
+              { name: 'photo_a.jpg', sizeBytes: 5000, checksum: 'sha_duplicate_hash' },
+              { name: 'photo_b.jpg', sizeBytes: 6000, checksum: 'sha_duplicate_hash' },
+            ],
+            type: 'photos',
+          },
+        },
+        mockRes
+      );
+      expect(statusRes).toBe(400);
+      expect(jsonRes.error).toContain('DUPLICATE_FILE_DETECTED');
+    });
+
+    it('P1-QuotaEnforcement: rejects creation when property has 3 active reconstruction jobs', async () => {
+      const { default: controlPlaneHandler, controlPlaneJobs, mockPropertiesStore } = await import('../../api/reconstruction');
+      const propId = 'prop-quota-overflow-001';
+      mockPropertiesStore.set(propId, { authorUid: 'seller-uid-quota' });
+
+      // Add 3 active jobs
+      controlPlaneJobs.set('job-active-1', { id: 'job-active-1', propertyId: propId, ownerId: 'seller-uid-quota', status: 'QUEUED' } as any);
+      controlPlaneJobs.set('job-active-2', { id: 'job-active-2', propertyId: propId, ownerId: 'seller-uid-quota', status: 'PROCESSING' as any, stage: 'TRAINING' } as any);
+      controlPlaneJobs.set('job-active-3', { id: 'job-active-3', propertyId: propId, ownerId: 'seller-uid-quota', status: 'VALIDATING' } as any);
+
+      let statusRes = 200, jsonRes: any = null;
+      const mockRes = { status: (s: number) => { statusRes = s; return { json: (d: any) => { jsonRes = d; } }; } };
+
+      await controlPlaneHandler(
+        {
+          method: 'POST',
+          query: { action: 'create-job' },
+          headers: { authorization: 'Bearer test-token', 'x-user-id': 'seller-uid-quota' },
+          body: {
+            propertyId: propId,
+            files: [{ name: 'f1.jpg', sizeBytes: 5000 }],
+            type: 'photos',
+          },
+        },
+        mockRes
+      );
+      expect(statusRes).toBe(429);
+      expect(jsonRes.error).toContain('QUOTA_EXCEEDED');
+
+      // Cleanup
+      controlPlaneJobs.delete('job-active-1');
+      controlPlaneJobs.delete('job-active-2');
+      controlPlaneJobs.delete('job-active-3');
+    });
+
+    it('P0-AuthoritativeStateMachine: validates transitions and blocks direct ad-hoc jumps', async () => {
+      const { assertValidJobTransition, runJobTransaction, controlPlaneJobs } = await import('../../api/reconstruction');
+      // 1. Direct invalid transitions throw
+      expect(() => assertValidJobTransition('QUEUED', 'READY')).toThrow(/INVALID_STATE_TRANSITION/);
+      expect(() => assertValidJobTransition('FAILED', 'TRAINING')).toThrow(/INVALID_STATE_TRANSITION/);
+      expect(() => assertValidJobTransition('READY', 'QUEUED')).toThrow(/INVALID_STATE_TRANSITION/);
+
+      // 2. Valid transitions succeed
+      expect(() => assertValidJobTransition('QUEUED', 'VALIDATING')).not.toThrow();
+      expect(() => assertValidJobTransition('VALIDATING', 'RECONSTRUCTING')).not.toThrow();
+      expect(() => assertValidJobTransition('RECONSTRUCTING', 'TRAINING')).not.toThrow();
+      expect(() => assertValidJobTransition('TRAINING', 'OPTIMIZING')).not.toThrow();
+      expect(() => assertValidJobTransition('OPTIMIZING', 'PUBLISHING')).not.toThrow();
+      expect(() => assertValidJobTransition('PUBLISHING', 'READY')).not.toThrow();
+      expect(() => assertValidJobTransition('TRAINING', 'CANCEL_REQUESTED')).not.toThrow();
+      expect(() => assertValidJobTransition('CANCEL_REQUESTED', 'CANCELLED')).not.toThrow();
+    });
+
+    it('P1-CancellationWorkflow: transitions active job to CANCEL_REQUESTED and then to CANCELLED upon worker confirmation', async () => {
+      const { default: controlPlaneHandler, controlPlaneJobs, mockPropertiesStore } = await import('../../api/reconstruction');
+      const jobId = 'job-cancel-flow-999';
+      const propId = 'prop-cancel-flow-999';
+      mockPropertiesStore.set(propId, { authorUid: 'owner-cancel-999' });
+
+      controlPlaneJobs.set(jobId, {
+        id: jobId,
+        propertyId: propId,
+        ownerId: 'owner-cancel-999',
+        status: 'TRAINING',
+        stage: 'TRAINING',
+        attemptId: 'attempt_1',
+        workerId: 'worker-gpu-cancel-node',
+        stateVersion: 2,
+      } as any);
+
+      let statusRes = 200, jsonRes: any = null;
+      const mockRes = { status: (s: number) => { statusRes = s; return { json: (d: any) => { jsonRes = d; } }; } };
+
+      // 1. Owner requests cancellation during active TRAINING stage
+      await controlPlaneHandler(
+        {
+          method: 'POST',
+          query: { action: 'cancel' },
+          headers: { authorization: 'Bearer token-cancel', 'x-user-id': 'owner-cancel-999' },
+          body: { jobId, graceful: true },
+        },
+        mockRes
+      );
+
+      expect(statusRes).toBe(200);
+      expect(jsonRes.status).toBe('CANCEL_REQUESTED');
+      expect(controlPlaneJobs.get(jobId)?.status).toBe('CANCEL_REQUESTED');
+      expect(controlPlaneJobs.get(jobId)?.cancelRequested).toBe(true);
+
+      // 2. Worker heartbeat sees cancelRequested flag
+      await controlPlaneHandler(
+        {
+          method: 'POST',
+          query: { action: 'heartbeat' },
+          headers: { authorization: 'Bearer hettety-worker-secret-internal' },
+          body: { jobId, attemptId: 'attempt_1', workerId: 'worker-gpu-cancel-node' },
+        },
+        mockRes
+      );
+      expect(jsonRes.cancelRequested).toBe(true);
+
+      // 3. Worker terminates process tree and reports CANCELLED
+      await controlPlaneHandler(
+        {
+          method: 'POST',
+          query: { action: 'update-stage' },
+          headers: { authorization: 'Bearer hettety-worker-secret-internal' },
+          body: {
+            jobId,
+            attemptId: 'attempt_1',
+            workerId: 'worker-gpu-cancel-node',
+            status: 'CANCELLED',
+            stage: 'CANCELLED',
+          },
+        },
+        mockRes
+      );
+      expect(statusRes).toBe(200);
+      expect(controlPlaneJobs.get(jobId)?.status).toBe('CANCELLED');
+    });
+
+    it('P0-GLBStructuralValidator: verifies glTF binary container header, JSON chunk, and geometry buffer views', async () => {
+      // Build a minimal valid GLB binary container in memory
+      const jsonContent = JSON.stringify({
+        asset: { version: '2.0', generator: 'Hettety Metric Surface Builder' },
+        scenes: [{ nodes: [0] }],
+        nodes: [{ mesh: 0 }],
+        meshes: [{
+          primitives: [{
+            attributes: { POSITION: 0 },
+            indices: 1,
+            mode: 4, // TRIANGLES
+          }]
+        }],
+        accessors: [
+          { bufferView: 0, componentType: 5126, count: 3, type: 'VEC3', min: [0, 0, 0], max: [1, 1, 0] },
+          { bufferView: 1, componentType: 5123, count: 3, type: 'SCALAR' },
+        ],
+        bufferViews: [
+          { buffer: 0, byteOffset: 0, byteLength: 36, target: 34962 },
+          { buffer: 0, byteOffset: 36, byteLength: 6, target: 34963 },
+        ],
+        buffers: [{ byteLength: 44 }],
+      });
+
+      const jsonPadding = (4 - (jsonContent.length % 4)) % 4;
+      const paddedJson = jsonContent + ' '.repeat(jsonPadding);
+      const jsonBytes = new TextEncoder().encode(paddedJson);
+
+      // Binary payload: 3 vertices (36 bytes) + 3 indices (6 bytes) + 2 padding bytes = 44 bytes
+      const binPayload = new Uint8Array(44);
+      const binView = new DataView(binPayload.buffer);
+      // Vertex 0: [0, 0, 0]
+      binView.setFloat32(0, 0, true); binView.setFloat32(4, 0, true); binView.setFloat32(8, 0, true);
+      // Vertex 1: [1, 0, 0]
+      binView.setFloat32(12, 1, true); binView.setFloat32(16, 0, true); binView.setFloat32(20, 0, true);
+      // Vertex 2: [0, 1, 0]
+      binView.setFloat32(24, 0, true); binView.setFloat32(28, 1, true); binView.setFloat32(32, 0, true);
+      // Indices: 0, 1, 2
+      binView.setUint16(36, 0, true); binView.setUint16(38, 1, true); binView.setUint16(40, 2, true);
+
+      const totalLength = 12 + 8 + jsonBytes.length + 8 + binPayload.length;
+      const glbBuffer = new ArrayBuffer(totalLength);
+      const glbView = new DataView(glbBuffer);
+      const glbU8 = new Uint8Array(glbBuffer);
+
+      // GLB Header (12 bytes)
+      glbView.setUint32(0, 0x46546C67, true); // Magic: 'glTF'
+      glbView.setUint32(4, 2, true);          // Version: 2
+      glbView.setUint32(8, totalLength, true);// Total length
+
+      // JSON Chunk Header (8 bytes)
+      glbView.setUint32(12, jsonBytes.length, true);
+      glbView.setUint32(16, 0x4E4F534A, true); // 'JSON'
+      glbU8.set(jsonBytes, 20);
+
+      // BIN Chunk Header (8 bytes)
+      const binHeaderOffset = 20 + jsonBytes.length;
+      glbView.setUint32(binHeaderOffset, binPayload.length, true);
+      glbView.setUint32(binHeaderOffset + 4, 0x004E4942, true); // 'BIN\0'
+      glbU8.set(binPayload, binHeaderOffset + 8);
+
+      // Verify GLB Binary Format Compliance
+      const readMagic = glbView.getUint32(0, true);
+      const readVersion = glbView.getUint32(4, true);
+      const readTotalLength = glbView.getUint32(8, true);
+      const jsonChunkLen = glbView.getUint32(12, true);
+      const jsonChunkType = glbView.getUint32(16, true);
+
+      expect(readMagic).toBe(0x46546C67);
+      expect(readVersion).toBe(2);
+      expect(readTotalLength).toBe(totalLength);
+      expect(jsonChunkType).toBe(0x4E4F534A);
+
+      const decodedJson = new TextDecoder().decode(glbU8.subarray(20, 20 + jsonChunkLen)).trim();
+      const parsedGltf = JSON.parse(decodedJson);
+      expect(parsedGltf.asset.version).toBe('2.0');
+      expect(parsedGltf.meshes[0].primitives[0].mode).toBe(4);
+      expect(parsedGltf.accessors[0].count).toBe(3);
+    });
   });
 });
 

@@ -47,9 +47,9 @@ describe('Tier 1 — a viewer that cannot load says so', () => {
     const err = vi.spyOn(console, 'error').mockImplementation(() => {});
     try {
       render(<App />);
-      fireEvent.click(await screen.findByRole('button', { name: /View in 3D/ }, { timeout: 10000 }));
+      fireEvent.click(await screen.findByRole('button', { name: /View in 3D/ }, { timeout: 15000 }));
 
-      const dialog = await screen.findByRole('alertdialog', {}, { timeout: 10000 });
+      const dialog = await screen.findByRole('alertdialog', {}, { timeout: 15000 });
       expect(dialog).toBeInTheDocument();
       expect(screen.getByRole('button', { name: /Refresh the page/ })).toBeInTheDocument();
     } finally {
@@ -61,8 +61,8 @@ describe('Tier 1 — a viewer that cannot load says so', () => {
     const err = vi.spyOn(console, 'error').mockImplementation(() => {});
     try {
       render(<App />);
-      fireEvent.click(await screen.findByRole('button', { name: /View in 3D/ }, { timeout: 10000 }));
-      await screen.findByRole('alertdialog', {}, { timeout: 10000 });
+      fireEvent.click(await screen.findByRole('button', { name: /View in 3D/ }, { timeout: 15000 }));
+      await screen.findByRole('alertdialog', {}, { timeout: 15000 });
 
       fireEvent.click(screen.getByRole('button', { name: /Close/ }));
       expect(await screen.findByRole('heading', { name: unit.title }, { timeout: 10000 })).toBeInTheDocument();

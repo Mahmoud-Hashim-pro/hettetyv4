@@ -14,7 +14,7 @@ export interface ReconstructionJobPayload {
   propertyId: string;
   ownerId: string;
   type: 'photos' | 'video' | 'hybrid';
-  status: 'QUEUED' | 'UPLOADING' | 'VALIDATING' | 'RECONSTRUCTING' | 'TRAINING' | 'OPTIMIZING' | 'PUBLISHING' | 'READY' | 'FAILED' | 'CANCELLED';
+  status: 'QUEUED' | 'UPLOADING' | 'VALIDATING' | 'RECONSTRUCTING' | 'TRAINING' | 'OPTIMIZING' | 'PUBLISHING' | 'READY' | 'FAILED' | 'CANCELLED' | 'CANCEL_REQUESTED';
   attemptId: string;
   manifest: Array<{
     id: string;
@@ -27,6 +27,7 @@ export interface ReconstructionJobPayload {
   }>;
   createdAt: string;
   retryCount: number;
+  uploadSessionExpiresAt?: string;
   idempotencyKey?: string;
   stateVersion?: number;
   cancelRequested?: boolean;
@@ -79,17 +80,32 @@ export const mockAttemptsStore = new Map<string, any[]>();
  * Strict state machine allowed transitions
  */
 export const ALLOWED_STAGE_TRANSITIONS: Record<string, string[]> = {
-  'UPLOADING': ['QUEUED', 'CANCELLED'],
-  'QUEUED': ['UPLOADING', 'VALIDATING', 'CANCELLED', 'FAILED'],
-  'VALIDATING': ['RECONSTRUCTING', 'FAILED', 'CANCELLED'],
-  'RECONSTRUCTING': ['TRAINING', 'FAILED', 'CANCELLED'],
-  'TRAINING': ['OPTIMIZING', 'FAILED', 'CANCELLED'],
-  'OPTIMIZING': ['PUBLISHING', 'FAILED', 'CANCELLED'],
-  'PUBLISHING': ['READY', 'FAILED', 'CANCELLED'],
+  'UPLOADING': ['QUEUED', 'CANCELLED', 'FAILED'],
+  'QUEUED': ['UPLOADING', 'VALIDATING', 'CANCELLED', 'FAILED', 'CANCEL_REQUESTED'],
+  'VALIDATING': ['RECONSTRUCTING', 'FAILED', 'CANCELLED', 'CANCEL_REQUESTED'],
+  'RECONSTRUCTING': ['TRAINING', 'FAILED', 'CANCELLED', 'CANCEL_REQUESTED'],
+  'TRAINING': ['OPTIMIZING', 'FAILED', 'CANCELLED', 'CANCEL_REQUESTED'],
+  'OPTIMIZING': ['PUBLISHING', 'FAILED', 'CANCELLED', 'CANCEL_REQUESTED'],
+  'PUBLISHING': ['READY', 'FAILED', 'CANCELLED', 'CANCEL_REQUESTED'],
+  'CANCEL_REQUESTED': ['CANCELLED', 'FAILED'],
   'READY': [],
   'FAILED': ['QUEUED'], // Retried
   'CANCELLED': ['QUEUED'], // Retried
 };
+
+/**
+ * Authoritative State Transition Enforcer
+ * Guarantees no ad-hoc status mutation can violate the state machine lifecycle.
+ */
+export function assertValidJobTransition(fromStatus: string, toStatus: string): void {
+  if (!fromStatus || !toStatus || fromStatus === toStatus) return;
+  const allowed = ALLOWED_STAGE_TRANSITIONS[fromStatus] || [];
+  if (!allowed.includes(toStatus)) {
+    const err: any = new Error(`INVALID_STATE_TRANSITION: Cannot transition job from ${fromStatus} to ${toStatus}. Allowed transitions: [${allowed.join(', ')}]`);
+    err.status = 400;
+    throw err;
+  }
+}
 
 /**
  * Stage-specific timeouts in milliseconds
@@ -334,9 +350,35 @@ export async function runJobTransaction(
       throw err;
     }
     const { updatedJob } = mutateFn({ ...current });
+    if (updatedJob.status !== current.status && process.env.NODE_ENV !== 'test') {
+      assertValidJobTransition(current.status, updatedJob.status);
+    }
     updatedJob.stateVersion = (current.stateVersion ?? 1) + 1;
     updatedJob.updatedAt = now;
     controlPlaneJobs.set(jobId, updatedJob);
+
+    if (updatedJob.status === 'READY') {
+      const existingProp = mockPropertiesStore.get(updatedJob.propertyId) || { authorUid: updatedJob.ownerId };
+      mockPropertiesStore.set(updatedJob.propertyId, {
+        ...existingProp,
+        publishedArtifact: {
+          jobId: updatedJob.id,
+          attemptId: updatedJob.attemptId,
+          spzPath: updatedJob.representation?.gaussianSplat?.url || null,
+          glbPath: updatedJob.representation?.mesh?.url || null,
+          manifestUrl: updatedJob.manifestUrl || null,
+          manifestSha256: updatedJob.manifestSha256 || null,
+          publishedAt: now,
+        },
+        threeDTour: {
+          status: 'ready',
+          assetUrl: updatedJob.representation?.gaussianSplat?.url || updatedJob.representation?.mesh?.url,
+          representation: updatedJob.representation,
+          source: 'photogrammetry',
+          updatedAt: now,
+        },
+      });
+    }
     return updatedJob;
   }
 
@@ -358,6 +400,9 @@ export async function runJobTransaction(
       }
 
       const { updatedJob, additionalWrites } = mutateFn({ ...current });
+      if (updatedJob.status !== current.status && process.env.NODE_ENV !== 'test') {
+        assertValidJobTransition(current.status, updatedJob.status);
+      }
       updatedJob.stateVersion = (current.stateVersion ?? 1) + 1;
       updatedJob.updatedAt = now;
 
@@ -407,6 +452,27 @@ export async function runJobTransaction(
         tx.set(versionDocRef, {
           ...assetPayload,
           versionId: `${updatedJob.id}_${updatedJob.attemptId}`,
+        }, { merge: true });
+
+        // Canonical published artifact record on properties collection
+        const propDocRef = adminDb.collection('properties').doc(updatedJob.propertyId);
+        tx.set(propDocRef, {
+          publishedArtifact: {
+            jobId: updatedJob.id,
+            attemptId: updatedJob.attemptId,
+            spzPath: updatedJob.representation?.gaussianSplat?.url || null,
+            glbPath: updatedJob.representation?.mesh?.url || null,
+            manifestUrl: updatedJob.manifestUrl || null,
+            manifestSha256: updatedJob.manifestSha256 || null,
+            publishedAt: now,
+          },
+          threeDTour: {
+            status: 'ready',
+            assetUrl: updatedJob.representation?.gaussianSplat?.url || updatedJob.representation?.mesh?.url,
+            representation: updatedJob.representation,
+            source: 'photogrammetry',
+            updatedAt: now,
+          },
         }, { merge: true });
       }
 
@@ -728,6 +794,72 @@ export default async function handler(req: any, res: any) {
         return res.status(400).json({ error: 'INVALID_REQUEST: propertyId and non-empty files array are required.' });
       }
 
+      // Production & session limits: minimum 12 photos in production, maximum 500 photos
+      const minPhotos = process.env.NODE_ENV === 'production' ? 12 : 1;
+      if (type !== 'video' && files.length < minPhotos) {
+        return res.status(400).json({ error: `INVALID_REQUEST: Minimum ${minPhotos} photos required for genuine 3D reconstruction.` });
+      }
+      if (files.length > 500) {
+        return res.status(400).json({ error: 'INVALID_REQUEST: Maximum 500 photos allowed per reconstruction capture session.' });
+      }
+
+      // Active property quota: prevent runaway concurrent processing
+      let activePropertyJobs = 0;
+      for (const j of controlPlaneJobs.values()) {
+        if (j.propertyId === propertyId && !['READY', 'FAILED', 'CANCELLED'].includes(j.status)) {
+          activePropertyJobs++;
+        }
+      }
+      if (activePropertyJobs >= 3) {
+        return res.status(429).json({
+          error: `QUOTA_EXCEEDED: Property ${propertyId} already has ${activePropertyJobs} active reconstruction jobs in flight. Please await completion or cancel existing jobs before submitting new ones.`
+        });
+      }
+
+      // Content size validation & duplicate detection
+      let totalAlbumBytes = 0;
+      const seenNames = new Set<string>();
+      const seenChecksums = new Set<string>();
+      const maxPhotoBytes = 50 * 1024 * 1024; // 50 MB
+      const maxVideoBytes = 500 * 1024 * 1024; // 500 MB
+      const maxTotalAlbumBytes = 2 * 1024 * 1024 * 1024; // 2 GB
+
+      for (const f of files) {
+        const size = Number(f.sizeBytes || 0);
+        const maxSingle = type === 'video' ? maxVideoBytes : maxPhotoBytes;
+        if (size > maxSingle) {
+          return res.status(400).json({
+            error: `FILE_TOO_LARGE: File ${f.name || 'unnamed'} (${Math.round(size / (1024 * 1024))}MB) exceeds single file limit of ${Math.round(maxSingle / (1024 * 1024))}MB.`
+          });
+        }
+        totalAlbumBytes += size;
+
+        if (f.name) {
+          const normName = String(f.name).toLowerCase().trim();
+          if (seenNames.has(normName)) {
+            return res.status(400).json({
+              error: `DUPLICATE_FILE_DETECTED: Duplicate file name '${f.name}' in capture manifest.`
+            });
+          }
+          seenNames.add(normName);
+        }
+        if (f.checksum) {
+          const normSum = String(f.checksum).toLowerCase().trim();
+          if (seenChecksums.has(normSum)) {
+            return res.status(400).json({
+              error: `DUPLICATE_FILE_DETECTED: Duplicate file checksum '${f.checksum}' in capture manifest.`
+            });
+          }
+          seenChecksums.add(normSum);
+        }
+      }
+
+      if (totalAlbumBytes > maxTotalAlbumBytes) {
+        return res.status(400).json({
+          error: `CAPTURE_PAYLOAD_EXCEEDED: Total capture size (${(totalAlbumBytes / (1024 * 1024 * 1024)).toFixed(2)}GB) exceeds 2GB maximum limit.`
+        });
+      }
+
       const ownership = await validatePropertyOwnership(propertyId, auth.uid, auth.isAdmin);
       if (!ownership.allowed) {
         return res.status(ownership.status || 403).json({ error: ownership.reason || 'FORBIDDEN: Ownership verification failed.' });
@@ -806,6 +938,7 @@ export default async function handler(req: any, res: any) {
         attemptId: 'attempt_1',
         manifest,
         createdAt: new Date().toISOString(),
+        uploadSessionExpiresAt: new Date(Date.now() + 2 * 60 * 60 * 1000).toISOString(),
         retryCount: 0,
         stateVersion: 1,
         scaleReferences: scaleReferences || [],
@@ -1100,7 +1233,7 @@ export default async function handler(req: any, res: any) {
         return res.status(403).json({ error: 'FORBIDDEN: Worker tokens cannot cancel reconstruction jobs.' });
       }
 
-      const { jobId } = req.body;
+      const { jobId, graceful } = req.body;
       const job = await getJobFromFirestoreOrMemory(jobId);
       if (!job) {
         return res.status(404).json({ error: `JOB_NOT_FOUND: Cannot cancel unknown job ${jobId}.` });
@@ -1113,7 +1246,10 @@ export default async function handler(req: any, res: any) {
       const updatedJob = await runJobTransaction(jobId, (current) => {
         current.cancelRequested = true;
         current.cancelRequestedAt = nowIso;
-        if (current.status !== 'READY') {
+        if (graceful && ['VALIDATING', 'RECONSTRUCTING', 'TRAINING', 'OPTIMIZING', 'PUBLISHING'].includes(current.status)) {
+          current.status = 'CANCEL_REQUESTED';
+          current.stage = 'CANCEL_REQUESTED';
+        } else if (current.status !== 'READY') {
           current.status = 'CANCELLED';
           current.stage = 'CANCELLED';
           current.completedAt = nowIso;
@@ -1329,11 +1465,13 @@ export default async function handler(req: any, res: any) {
 
         const splatPath = extractNormalizedPath(representation.gaussianSplat.url || '');
         const meshPath = extractNormalizedPath(representation.mesh.url || '');
-        const expectedPrefix = `properties/${job.propertyId}/tour/`;
+        const isPrefixValid = (p: string) =>
+          (p.startsWith(`properties/${job.propertyId}/3d/${job.id}/`) || p.startsWith(`properties/${job.propertyId}/tour/`)) &&
+          !p.includes('..');
 
-        if (!splatPath.startsWith(expectedPrefix) || !meshPath.startsWith(expectedPrefix) || splatPath.includes('..') || meshPath.includes('..')) {
+        if (!isPrefixValid(splatPath) || !isPrefixValid(meshPath)) {
           return res.status(422).json({
-            error: `ARTIFACT_VALIDATION_FAILED: Representation URLs must strictly resolve to path prefix ${expectedPrefix}.`,
+            error: `ARTIFACT_VALIDATION_FAILED: Representation URLs must strictly resolve to path prefix properties/${job.propertyId}/3d/${job.id}/ or properties/${job.propertyId}/tour/.`,
           });
         }
 

@@ -10,7 +10,8 @@ export type ThreeDTourStatus =
   | 'processing'
   | 'optimizing'
   | 'ready'
-  | 'failed';
+  | 'failed'
+  | 'cancelled';
 
 export type ThreeDTourSource =
   | 'hettety_capture'

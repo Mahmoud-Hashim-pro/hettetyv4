@@ -13,7 +13,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import { OrbitControls } from '@react-three/drei';
 import * as THREE from 'three';
-import { X, ChevronLeft, ChevronRight, Box, RotateCcw, Move3d, Layers, Loader2, Compass, MapPin, Sparkles, Ruler } from 'lucide-react';
+import { X, ChevronLeft, ChevronRight, Box, RotateCcw, Move3d, Layers, Loader2, Compass, MapPin, Sparkles, Ruler, AlertCircle } from 'lucide-react';
 import { useFocusTrap } from '../hooks/useFocusTrap';
 import { ThreeDTourAsset, TourRoomWaypoint } from '../types';
 import { FloorPlan } from './3d/FloorPlan';
@@ -742,6 +742,66 @@ const Property3DViewer: React.FC<Property3DViewerProps> = ({ images, depthMaps, 
               onClose={onClose}
               isRtl={isRtl}
             />
+          </div>
+        ) : threeDTour && (['failed', 'cancelled', 'processing', 'uploading', 'queued', 'optimizing'].includes(threeDTour.status)) ? (
+          <div className="flex-1 w-full h-full flex flex-col items-center justify-center p-6 text-center bg-slate-950 text-white z-20">
+            {threeDTour.status === 'failed' ? (
+              <div className="max-w-md p-6 bg-slate-900 border border-red-500/30 rounded-2xl shadow-xl flex flex-col items-center">
+                <AlertCircle className="w-12 h-12 text-red-400 mb-3" aria-hidden="true" />
+                <h4 className="text-lg font-bold mb-2">
+                  {isRtl ? 'تعذر استكمال المعالجة ثلاثية الأبعاد' : '3D Reconstruction Failed'}
+                </h4>
+                <p className="text-sm text-slate-300 mb-4">
+                  {isRtl
+                    ? 'لم تتمكن خوارزميات الاستشعار الفوتوغرافي من مطابقة المعالم أو تجاوز عتبة الجودة الهندسية المطلوبة.'
+                    : 'The photogrammetry pipeline could not resolve camera alignment or met minimum sharpness criteria.'}
+                </p>
+                {validImages.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => switchMode('depth')}
+                    className="px-4 py-2 bg-brand-600 hover:bg-brand-700 text-white rounded-lg text-sm font-semibold transition cursor-pointer"
+                  >
+                    {isRtl ? 'عرض الصور بتقنية التجسيم 2.5D' : 'Switch to 2.5D Photo Relief'}
+                  </button>
+                )}
+              </div>
+            ) : threeDTour.status === 'cancelled' ? (
+              <div className="max-w-md p-6 bg-slate-900 border border-amber-500/30 rounded-2xl shadow-xl flex flex-col items-center">
+                <AlertCircle className="w-12 h-12 text-amber-400 mb-3" aria-hidden="true" />
+                <h4 className="text-lg font-bold mb-2">
+                  {isRtl ? 'تم إلغاء مهمة المعالجة' : 'Reconstruction Task Cancelled'}
+                </h4>
+                <p className="text-sm text-slate-300 mb-4">
+                  {isRtl ? 'تم إلغاء المهمة وتفريغ موارد عقد المعالجة الرسومية.' : 'The task was cancelled by user request and GPU worker resources were freed.'}
+                </p>
+              </div>
+            ) : (
+              <div className="max-w-md p-6 bg-slate-900/90 border border-brand-500/30 rounded-2xl shadow-xl flex flex-col items-center">
+                <Loader2 className="w-10 h-10 text-brand-400 animate-spin mb-3" aria-hidden="true" />
+                <h4 className="text-lg font-bold mb-1">
+                  {threeDTour.status === 'uploading'
+                    ? (isRtl ? 'جاري رفع وتدقيق الصور الفوتوغرافية...' : 'Uploading & Validating Photos...')
+                    : threeDTour.status === 'queued'
+                    ? (isRtl ? 'في قائمة انتظار عقد المعالجة GPU...' : 'Queued for GPU Reconstruction...')
+                    : threeDTour.status === 'processing'
+                    ? (isRtl ? 'معالجة COLMAP والتجسيم الفراغي 3DGS...' : 'COLMAP SfM & 3DGS Training...')
+                    : (isRtl ? 'ضغط الأصول SPZ والمعايرة المترية...' : 'SPZ Compression & Metric Calibration...')}
+                </h4>
+                <p className="text-xs text-slate-400 mb-4">
+                  {isRtl ? 'جاري إنشاء نموذج ثلاثي الأبعاد حقيقي عالي الدقة بمقاييس هندسية دقيقة.' : 'Generating verified high-fidelity 3D spatial tour with true metric dimensions.'}
+                </p>
+                {validImages.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => switchMode('depth')}
+                    className="text-xs text-brand-300 hover:text-brand-200 underline cursor-pointer"
+                  >
+                    {isRtl ? 'تصفح الصور المجسمة ريثما تنتهي المعالجة' : 'Browse photo relief while processing completes'}
+                  </button>
+                )}
+              </div>
+            )}
           </div>
         ) : (
           <Canvas camera={{ position: [0, 2, 5], fov: 60 }} className="flex-1" gl={{ antialias: true }}>

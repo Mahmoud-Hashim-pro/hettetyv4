@@ -204,18 +204,19 @@ class ReconstructionWorker:
         os.makedirs(model_dir, exist_ok=True)
         os.makedirs(dist_dir, exist_ok=True)
 
-        logger.info(f"==> Starting Reconstruction Pipeline for Job {job_id} (Property: {property_id}, is_video={is_video})")
+        tag = f"[job={job_id} attempt={attempt_id or 'attempt_1'} worker={worker_id}]"
+        logger.info(f"{tag} ==> Starting Reconstruction Pipeline (Property: {property_id}, is_video={is_video})")
 
         # P0-1 / Section 59: Production guard against invalid test mode
         if os.environ.get("NODE_ENV") == "production" and os.environ.get("HETTETY_ENV") == "test":
-            logger.error("Production guard: HETTETY_ENV=test is strictly rejected when NODE_ENV=production.")
+            logger.error(f"{tag} Production guard: HETTETY_ENV=test is strictly rejected when NODE_ENV=production.")
             return fail("INVALID_ENVIRONMENT_CONFIGURATION", "HETTETY_ENV=test is strictly forbidden when NODE_ENV=production")
 
         heartbeat_stop = None
         try:
             # Check pre-flight cancellation
             if self.is_cancelled(job_id):
-                logger.info(f"Job {job_id} was cancelled before starting. Aborting.")
+                logger.info(f"{tag} Job {job_id} was cancelled before starting. Aborting.")
                 report("CANCELLED", 0, "Job cancelled by user")
                 return {"status": "cancelled", "jobId": job_id, "propertyId": property_id}
 

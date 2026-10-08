@@ -88,6 +88,7 @@ export interface GaussianSplatRepresentation {
   };
   splatCount?: number;
   sha256?: string;
+  isCalibratedMetric?: boolean;
 }
 
 export interface MeshRepresentation {
@@ -120,6 +121,7 @@ export interface ThreeDTour {
   // Direct asset links for backward compatibility
   assetUrl?: string;
   format?: 'spz' | 'ply' | 'glb';
+  isCalibratedMetric?: boolean;
   thumbnailUrl?: string;
   duration?: number;
   processingJobId?: string;

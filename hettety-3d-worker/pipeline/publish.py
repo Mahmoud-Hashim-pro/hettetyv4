@@ -33,7 +33,8 @@ def publish_tour_assets(
     worker_id: Optional[str] = None,
     mean_reprojection_error: float = 0.0,
     calibration_confidence: float = 0.0,
-    calibration_rmse: Optional[float] = None
+    calibration_rmse: Optional[float] = None,
+    floaters_pruned: Optional[int] = None
 ) -> Dict[str, Any]:
     """
     Publishes generated representations and invokes Hettety completion webhook.
@@ -168,7 +169,8 @@ def publish_tour_assets(
         is_calibrated_metric=is_calibrated_metric,
         calibration_confidence=calibration_confidence,
         calibration_rmse=calibration_rmse,
-        sharpness_score=sharpness_score
+        sharpness_score=sharpness_score,
+        floaters_pruned=floaters_pruned
     )
     quality_report["metrics"] = quality_metrics
     quality_report["coverage"] = coverage_score
@@ -209,7 +211,8 @@ def publish_tour_assets(
                 "storagePath": remote_spz_path,
                 "sha256": spz_sha256,
                 "sizeBytes": spz_size,
-                "splatCount": splat_val
+                "splatCount": splat_val,
+                "isCalibratedMetric": is_calibrated_metric
             },
             "glb": {
                 "format": "glb",
@@ -223,7 +226,11 @@ def publish_tour_assets(
             }
         },
         "bounds": bounds,
-        "qualityReport": quality_report
+        "qualityReport": quality_report,
+        "qualityGate": {
+            "version": "2.0.0",
+            "status": "PASSED" if quality_report.get("passed") else "REJECTED"
+        }
     }
 
     remote_manifest_path = f"{version_dir}/manifest.json"
@@ -258,6 +265,7 @@ def publish_tour_assets(
                 "url": spz_url,
                 "sizeBytes": spz_size,
                 "splatCount": splat_val,
+                "isCalibratedMetric": is_calibrated_metric,
                 **({"sha256": spz_sha256} if spz_sha256 else {})
             },
             "mesh": {
@@ -271,7 +279,11 @@ def publish_tour_assets(
             }
         },
         "bounds": bounds,
-        "qualityReport": quality_report
+        "qualityReport": quality_report,
+        "qualityGate": {
+            "version": "2.0.0",
+            "status": "PASSED" if quality_report.get("passed") else "REJECTED"
+        }
     }
     
     headers = {

@@ -1459,6 +1459,11 @@ export default async function handler(req: any, res: any) {
             qualityReport,
           });
         }
+        if (process.env.NODE_ENV === 'production' && !qualityReport) {
+          return res.status(422).json({
+            error: 'QUALITY_GATE_REJECTED: Job cannot transition to READY without authoritative qualityReport telemetry.',
+          });
+        }
 
         if (!representation || !representation.gaussianSplat || !representation.mesh) {
           return res.status(422).json({

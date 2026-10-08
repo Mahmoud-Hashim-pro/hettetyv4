@@ -30,11 +30,13 @@ from pipeline.calibrate import (
     calibrate_sparse_scale,
     apply_metric_scale_to_points,
     load_survey_benchmarks,
+    partition_survey_benchmarks,
     evaluate_survey_accuracy
 )
 from pipeline.compress import (
     generate_metric_mesh_glb,
     validate_glb_file,
+    scale_ply_to_metric,
     convert_ply_to_spz,
     decode_spz_native
 )
@@ -50,6 +52,7 @@ class TestPhase1RealPropertyE2E(unittest.TestCase):
 
     def setUp(self):
         self.orig_env = os.environ.get("HETTETY_ENV")
+        os.environ["HETTETY_ENV"] = "test"
         self.temp_dir = tempfile.mkdtemp(prefix="hettety_phase1_")
 
     def tearDown(self):
@@ -146,21 +149,44 @@ class TestPhase1RealPropertyE2E(unittest.TestCase):
         benchmarks = load_survey_benchmarks(survey_file)
         self.assertGreaterEqual(len(benchmarks), 3)
 
-        calib_res = calibrate_sparse_scale(point_cloud_coords, benchmarks, point3d_map=point_map, sparse_dir=sparse_dir)
+        calib_set, val_set = partition_survey_benchmarks(benchmarks)
+        calib_ids = {b["id"] for b in calib_set}
+        val_ids = {b["id"] for b in val_set}
+        self.assertTrue(bool(calib_set), "No primary calibration anchor identified")
+        self.assertTrue(bool(val_set), "No holdout validation benchmarks identified")
+        self.assertEqual(len(calib_ids & val_ids), 0, "Calibration and validation benchmark sets must be strictly disjoint")
+
+        # Derive scale factor strictly from primary calibration anchors
+        calib_res = calibrate_sparse_scale(
+            point_cloud_coords,
+            benchmarks,
+            point3d_map=point_map,
+            sparse_dir=sparse_dir,
+            calibration_only=True
+        )
         stage3_duration = round(time.time() - t2, 3)
 
         self.assertTrue(calib_res["is_calibrated"], f"Calibration failed: {calib_res}")
         self.assertGreaterEqual(calib_res["confidence_score"], 0.90)
         self.assertLessEqual(calib_res["error_margin_percent"], 5.0)
 
-        # STRICT INDEPENDENT VALIDATION: Reconstructed endpoints resolved strictly by surveyed landmark observations (Non-Circular)
-        eval_res = evaluate_survey_accuracy(point_map, benchmarks, calib_res["scale_factor"], sparse_dir=sparse_dir)
+        # STRICT NON-CIRCULAR VALIDATION: Accuracy evaluated strictly against holdout benchmarks
+        eval_res = evaluate_survey_accuracy(
+            point_map,
+            benchmarks,
+            calib_res["scale_factor"],
+            sparse_dir=sparse_dir,
+            holdout_only=True
+        )
         self.assertTrue(eval_res["passed"], f"Survey accuracy evaluation failed: {eval_res}")
+        self.assertTrue(eval_res.get("isHoldoutValidated", False))
+        self.assertEqual(eval_res["sampleSize"], len(val_set))
         self.assertLessEqual(eval_res["rmse"], 0.05, f"RMSE {eval_res['rmse']}m exceeds 5cm certified threshold")
         self.assertLessEqual(eval_res["maxError"], 0.05, f"Max error {eval_res['maxError']}m exceeds 5cm certified threshold")
 
         for b in eval_res["benchmarks"]:
             self.assertTrue(b["passedTolerance"], f"Benchmark {b['id']} failed tolerance: {b}")
+            self.assertFalse(b.get("primaryCalibrationAnchor", False), f"Benchmark {b['id']} was not holdout!")
 
         telemetry["stages"]["CALIBRATION"] = {
             "durationSec": stage3_duration,
@@ -168,7 +194,7 @@ class TestPhase1RealPropertyE2E(unittest.TestCase):
             "scaleFactor": calib_res.get("scale_factor", 1.0),
             "confidenceScore": calib_res.get("confidence_score", 0.0),
             "errorMarginPercent": calib_res.get("error_margin_percent", 0.0),
-            "anchorsVerified": len(benchmarks),
+            "anchorsVerified": len(val_set),
             "surveyValidation": {
                 "rmseMeters": eval_res["rmse"],
                 "maxErrorMeters": eval_res["maxError"],
@@ -216,7 +242,7 @@ class TestPhase1RealPropertyE2E(unittest.TestCase):
         self.assertIsNotNone(opt_res["bounds"])
 
         # -------------------------------------------------------------------------
-        # Stage 5: Compression — SPZ & Metric GLB Generation
+        # Stage 5: Compression — Canonical Metric SPZ & Metric GLB Generation
         # -------------------------------------------------------------------------
         t4 = time.time()
         dist_dir = os.path.join(self.temp_dir, "dist")
@@ -224,7 +250,13 @@ class TestPhase1RealPropertyE2E(unittest.TestCase):
         spz_file = os.path.join(dist_dir, "scene.spz")
         glb_file = os.path.join(dist_dir, "mesh.glb")
 
-        convert_res = convert_ply_to_spz(clean_ply, spz_file)
+        # Canonical metric scale transformation applied to point cloud
+        scale_factor = calib_res["scale_factor"]
+        metric_ply = os.path.join(self.temp_dir, "point_cloud_metric.ply")
+        scale_res = scale_ply_to_metric(clean_ply, metric_ply, scale_factor=scale_factor)
+        self.assertTrue(scale_res["success"], f"PLY metric scaling failed: {scale_res}")
+
+        convert_res = convert_ply_to_spz(metric_ply, spz_file)
         self.assertTrue(convert_res["success"])
         self.assertTrue(os.path.exists(spz_file))
         self.assertGreater(os.path.getsize(spz_file), 0)
@@ -235,6 +267,8 @@ class TestPhase1RealPropertyE2E(unittest.TestCase):
         self.assertEqual(decoded_spz["decodedCount"], opt_res["splat_count"])
         self.assertTrue(np.isfinite(decoded_spz["bounds"]["min"][0]))
         self.assertTrue(np.isfinite(decoded_spz["bounds"]["max"][0]))
+        self.assertAlmostEqual(decoded_spz["bounds"]["min"][0], scale_res["bounds"]["min"][0], places=3)
+        self.assertAlmostEqual(decoded_spz["bounds"]["max"][0], scale_res["bounds"]["max"][0], places=3)
 
         # GLB mesh generation using Alpha-Shape surface reconstruction on real COLMAP sparse directory
         mesh_res = generate_metric_mesh_glb(sparse_dir, glb_file, scale_factor=calib_res["scale_factor"])
@@ -296,7 +330,7 @@ class TestPhase1RealPropertyE2E(unittest.TestCase):
             property_id=telemetry["propertyId"],
             spz_path=spz_file,
             glb_path=glb_file,
-            bounds=opt_res["bounds"],
+            bounds=scale_res["bounds"],
             cdn_base_url="https://cdn.hettety.com",
             callback_url="mock://callback",
             api_key="worker-secret-alpha",
@@ -312,7 +346,8 @@ class TestPhase1RealPropertyE2E(unittest.TestCase):
             worker_id=telemetry["workerId"],
             mean_reprojection_error=sfm_res.get("mean_reprojection_error", 0.0),
             calibration_confidence=calib_res.get("confidence_score", 0.0),
-            calibration_rmse=eval_res["rmse"]
+            calibration_rmse=eval_res["rmse"],
+            floaters_pruned=opt_res.get("floaters_pruned", 0)
         )
         stage7_duration = round(time.time() - t5, 3)
         self.assertTrue(pub_res["success"], f"Publishing failed: {pub_res}")
@@ -327,9 +362,12 @@ class TestPhase1RealPropertyE2E(unittest.TestCase):
         self.assertEqual(payload["workerId"], telemetry["workerId"])
         self.assertEqual(payload["representation"]["gaussianSplat"]["sha256"], spz_hash)
         self.assertEqual(payload["representation"]["mesh"]["sha256"], glb_hash)
+        self.assertTrue(payload["representation"]["gaussianSplat"]["isCalibratedMetric"])
         self.assertTrue(payload["representation"]["mesh"]["isCalibratedMetric"])
         self.assertTrue(payload["qualityReport"]["passed"])
         self.assertEqual(payload["qualityReport"]["status"], "READY")
+        self.assertEqual(payload["qualityGate"]["status"], "PASSED")
+        self.assertEqual(payload["qualityGate"]["version"], "2.0.0")
 
         # Log comprehensive Phase 1 verification summary
         print("\n=======================================================")

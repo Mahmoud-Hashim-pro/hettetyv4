@@ -25,7 +25,7 @@ export const MeshViewer: React.FC<MeshViewerProps> = ({
   onPointPicked,
 }) => {
   const meshUrl = tour?.representation?.mesh?.url;
-  const isCalibrated = Boolean(tour?.representation?.mesh?.isCalibratedMetric);
+  const isCalibrated = Boolean(tour?.representation?.mesh?.isCalibratedMetric ?? tour?.isCalibratedMetric);
 
   const [wireframe, setWireframe] = useState(false);
   const [loadedScene, setLoadedScene] = useState<THREE.Group | null>(null);

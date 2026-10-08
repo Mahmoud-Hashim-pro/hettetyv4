@@ -24,7 +24,8 @@ def evaluate_reconstruction_quality(
     calibration_confidence: float = 0.0,
     calibration_rmse: Optional[float] = None,
     has_nan_or_inf: bool = False,
-    sharpness_score: Optional[int] = None
+    sharpness_score: Optional[int] = None,
+    floaters_pruned: Optional[int] = None
 ) -> Dict[str, Any]:
     """
     Authoritative quality gate evaluation.
@@ -76,6 +77,15 @@ def evaluate_reconstruction_quality(
         msg = f"Degenerate splat cloud: only {splat_count} splats produced"
         gs_issues.append(msg)
         reasons.append(msg)
+
+    if floaters_pruned is not None and floaters_pruned > 0:
+        total_splats = splat_count + floaters_pruned
+        prune_ratio = floaters_pruned / total_splats if total_splats > 0 else 0.0
+        if prune_ratio > 0.80:
+            gs_passed = False
+            msg = f"Excessive floater pruning ratio: {floaters_pruned}/{total_splats} ({prune_ratio*100:.1f}% > 80.0% pruned, indicating noisy or unreliable reconstruction)"
+            gs_issues.append(msg)
+            reasons.append(msg)
 
     if has_nan_or_inf:
         gs_passed = False

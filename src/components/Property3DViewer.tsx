@@ -722,7 +722,14 @@ const Property3DViewer: React.FC<Property3DViewerProps> = ({ images, depthMaps, 
       {/* Floating Measurement Tool */}
       {showMeasure && (
         <div className="absolute bottom-24 end-6 z-30 animate-fade-in">
-          <MeasurementTool isCalibrated={Boolean(threeDTour?.representation?.mesh?.isCalibratedMetric)} isRtl={isRtl} />
+          <MeasurementTool
+            isCalibrated={Boolean(
+              threeDTour?.isCalibratedMetric ??
+              threeDTour?.representation?.mesh?.isCalibratedMetric ??
+              threeDTour?.representation?.gaussianSplat?.isCalibratedMetric
+            )}
+            isRtl={isRtl}
+          />
         </div>
       )}
 

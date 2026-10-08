@@ -64,7 +64,14 @@ export function useTourEngine(tour?: ThreeDTour, fallbackImagesCount = 0): TourE
     [rooms, activeRoomId]
   );
 
-  const isCalibrated = Boolean(tour?.representation?.mesh?.isCalibratedMetric);
+  const isCalibrated = Boolean(
+    (currentMode === 'gaussian'
+      ? tour?.representation?.gaussianSplat?.isCalibratedMetric
+      : tour?.representation?.mesh?.isCalibratedMetric) ??
+    tour?.isCalibratedMetric ??
+    tour?.representation?.mesh?.isCalibratedMetric ??
+    tour?.representation?.gaussianSplat?.isCalibratedMetric
+  );
   const scaleFactor = 1.0; // 1:1 metric scale when calibrated
 
   const setMode = useCallback(

@@ -28,6 +28,7 @@ export const buildDefaultThreeDTour = (
               medium: assetUrl.replace(/\.spz$/, '_med.spz'),
               low: assetUrl.replace(/\.spz$/, '_low.spz'),
             },
+            isCalibratedMetric,
           }
         : undefined,
       mesh: !isSplat
@@ -40,14 +41,9 @@ export const buildDefaultThreeDTour = (
     },
     assetUrl,
     format,
+    isCalibratedMetric,
     rooms,
-    qualityReport: qualityReport || {
-      coverageScore: 95,
-      cameraMotionScore: 92,
-      blurScore: 94,
-      lightingScore: 90,
-      roomCompleteness: 94,
-    },
+    qualityReport: qualityReport || undefined,
     pipelineVersion: '1.0.0',
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),

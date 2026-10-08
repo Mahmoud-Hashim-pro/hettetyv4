@@ -11,6 +11,8 @@ import { validatePhotoCapture } from '../../src/features/reconstruction/CaptureV
 import { TourViewer } from '../../src/components/3d/TourViewer';
 import { ThreeDTour } from '../../src/types/three-d-tour';
 import zlib from 'zlib';
+import fs from 'fs';
+import path from 'path';
 import { parseGaussianSpz } from '../../src/lib/3d/spz-parser';
 
 describe('Tier 1 — Phase 1: Real Property Image -> Real 3D E2E Pipeline', () => {
@@ -23,6 +25,18 @@ describe('Tier 1 — Phase 1: Real Property Image -> Real 3D E2E Pipeline', () =
     mockPropertiesStore.clear();
     mockAttemptsStore.clear();
     mockPropertiesStore.set(propertyId, { authorUid: ownerId, title: 'Marassi Luxury Mediterranean Villa' });
+
+    const testStorageDirs = [
+      path.resolve(process.cwd(), 'storage', 'spatial_assets', 'properties', propertyId),
+      path.resolve(process.cwd(), 'hettety-3d-worker', 'storage', 'spatial_assets', 'properties', propertyId),
+    ];
+    for (const d of testStorageDirs) {
+      if (fs.existsSync(d)) {
+        try {
+          fs.rmSync(d, { recursive: true, force: true });
+        } catch {}
+      }
+    }
   });
 
   it('executes full end-to-end Phase 1 pipeline from real keyframes to published 3D viewer', async () => {

@@ -47,12 +47,17 @@ def resolve_landmark_pid(
     landmark: Any,
     img_map: Dict[str, List[Tuple[float, float, int]]],
     point3d_map: Optional[Dict[int, Tuple[float, float, float]]] = None,
-    max_pixel_dist: float = 2.0
+    max_pixel_dist: float = 2.0,
+    min_agreeing_observations: int = 2
 ) -> Optional[int]:
     """
     Resolves a surveyed physical landmark to its COLMAP point3d_id.
     Prioritizes matching surveyed 2D image observations to COLMAP triangulated feature tracks.
-    Falls back to static colmap_point3d_id if observations are not present or not resolved.
+    STRICT FAIL-CLOSED INTEGRITY:
+    - Requires at least min_agreeing_observations camera keyframes agreeing on the 3D point.
+    - Rejects ambiguous candidates: if multiple distinct 3D points tie for top observation count
+      or have close residuals (<0.25px), fails closed.
+    - Requires mean pixel residual <= 1.5px.
     """
     if not isinstance(landmark, dict):
         try:
@@ -63,18 +68,62 @@ def resolve_landmark_pid(
     # 1. Resolve via genuine 2D image observations if available
     observations = landmark.get("imageObservations") or landmark.get("observations") or []
     if observations and img_map:
-        candidates: Dict[int, int] = {}
+        candidates: Dict[int, List[float]] = {}
         for obs in observations:
             img_name = obs.get("image")
             px, py = obs.get("pixel", [0, 0])
             for x, y, pid in img_map.get(img_name, []):
                 d = math.hypot(x - px, y - py)
                 if d <= max_pixel_dist:
-                    candidates[pid] = candidates.get(pid, 0) + 1
+                    if pid not in candidates:
+                        candidates[pid] = []
+                    candidates[pid].append(d)
+
         if candidates:
-            valid_candidates = {pid: count for pid, count in candidates.items() if not point3d_map or pid in point3d_map}
+            valid_candidates = {
+                pid: dists for pid, dists in candidates.items()
+                if not point3d_map or pid in point3d_map
+            }
             if valid_candidates:
-                return max(valid_candidates.items(), key=lambda item: item[1])[0]
+                # Sort by: observation count DESC, mean residual ASC
+                sorted_cands = sorted(
+                    valid_candidates.items(),
+                    key=lambda item: (-len(item[1]), sum(item[1]) / len(item[1]))
+                )
+                best_pid, best_dists = sorted_cands[0]
+                best_count = len(best_dists)
+                best_mean_res = sum(best_dists) / max(1, best_count)
+
+                # Check minimum agreeing observations
+                required_obs = min(min_agreeing_observations, len(observations))
+                if best_count < required_obs:
+                    logger.warning(
+                        f"Landmark {landmark.get('id', 'unnamed')}: best candidate {best_pid} had only {best_count} "
+                        f"agreeing observations (minimum {required_obs} required). Rejecting match."
+                    )
+                    return None
+
+                # Check candidate ambiguity with runner-up
+                if len(sorted_cands) > 1:
+                    runner_pid, runner_dists = sorted_cands[1]
+                    runner_count = len(runner_dists)
+                    runner_mean_res = sum(runner_dists) / max(1, runner_count)
+                    if runner_count == best_count and abs(runner_mean_res - best_mean_res) < 0.25:
+                        logger.warning(
+                            f"Landmark {landmark.get('id', 'unnamed')}: ambiguous candidate tie between "
+                            f"{best_pid} ({best_mean_res:.2f}px) and {runner_pid} ({runner_mean_res:.2f}px). Failing closed."
+                        )
+                        return None
+
+                # Check mean residual limit
+                if best_mean_res > 1.5:
+                    logger.warning(
+                        f"Landmark {landmark.get('id', 'unnamed')}: candidate {best_pid} mean residual {best_mean_res:.2f}px "
+                        f"exceeds 1.5px tolerance limit."
+                    )
+                    return None
+
+                return best_pid
 
     # 2. Fall back to static colmap_point3d_id if specified
     explicit_pid = landmark.get("colmap_point3d_id") or landmark.get("point3d_id")
@@ -86,12 +135,44 @@ def resolve_landmark_pid(
 
     return None
 
+def partition_survey_benchmarks(
+    benchmarks: List[Dict[str, Any]]
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    """
+    Partitions architectural survey benchmarks into strictly disjoint calibration and validation sets.
+    - Calibration benchmarks: marked with primaryCalibrationAnchor == True (or primary == True)
+    - Validation benchmarks: holdout benchmarks with primaryCalibrationAnchor == False (or absent/False)
+    Enforces that calibration and validation sets are non-overlapping.
+    """
+    calibration = []
+    validation = []
+    for b in benchmarks:
+        if b.get("primaryCalibrationAnchor") is True or b.get("primary") is True:
+            calibration.append(b)
+        else:
+            validation.append(b)
+
+    # Fallback if no primary anchor marked: use first as calibration, rest as validation
+    if not calibration and len(benchmarks) > 1:
+        calibration = [benchmarks[0]]
+        validation = benchmarks[1:]
+    elif not validation and len(benchmarks) > 1:
+        validation = benchmarks[1:]
+        calibration = [benchmarks[0]]
+
+    calib_ids = {b.get("id") for b in calibration if b.get("id")}
+    val_ids = {b.get("id") for b in validation if b.get("id")}
+    assert not (calib_ids & val_ids), f"Calibration and validation benchmark sets must be strictly disjoint! Overlap: {calib_ids & val_ids}"
+
+    return calibration, validation
+
 def calibrate_sparse_scale(
     sparse_points: List[Tuple[float, float, float]],
     reference_anchors: Optional[List[Dict[str, Any]]] = None,
     point3d_map: Optional[Dict[int, Tuple[float, float, float]]] = None,
     images_txt_path: Optional[str] = None,
-    sparse_dir: Optional[str] = None
+    sparse_dir: Optional[str] = None,
+    calibration_only: bool = True
 ) -> Dict[str, Any]:
     """
     Evaluates physical scale from reference anchors (LiDAR benchmarks, surveyor markers, or measured spatial correspondences).
@@ -100,6 +181,8 @@ def calibrate_sparse_scale(
     - True metric calibration requires explicit spatial endpoints (point_a, point_b) corresponding
       to actual reconstructed geometry (or stable COLMAP POINT3D_IDs), or a verified lidar_benchmark/surveyor_marker, with
       confidence >= 0.90 and error margin <= 5.0%.
+    - HOLDOUT INDEPENDENCE: If anchors contain primaryCalibrationAnchor == True, uses only those anchors
+      for deriving the scale factor, leaving the rest untouched for holdout validation.
     """
     if not reference_anchors or len(reference_anchors) == 0:
         logger.info("No metric scale reference anchors provided. Model scale remains relative visual (uncalibrated).")
@@ -111,6 +194,14 @@ def calibrate_sparse_scale(
             "reference_summary": "None — arbitrary reconstruction units",
             "disclaimer": "Geometry is uncalibrated. Model coordinates represent relative units, not verified meters."
         }
+
+    # Filter to primary calibration anchors if present to guarantee holdout independence
+    active_anchors = reference_anchors
+    if calibration_only:
+        primary = [a for a in reference_anchors if a.get("primaryCalibrationAnchor") is True or a.get("primary") is True]
+        if primary:
+            active_anchors = primary
+            logger.info(f"Deriving metric scale exclusively from {len(active_anchors)} primary calibration anchor(s) (holdout set isolated).")
 
     if not images_txt_path and sparse_dir:
         cand = os.path.join(sparse_dir, "images.txt")
@@ -129,7 +220,7 @@ def calibrate_sparse_scale(
     # Scene bounding check if points provided
     scene_has_points = len(sparse_points) > 0
 
-    for ref in reference_anchors:
+    for ref in active_anchors:
         ref_type = ref.get("type", "custom")
         known = ref.get("known_meters") or ref.get("physicalMeters") or 0.0
 
@@ -274,15 +365,28 @@ def evaluate_survey_accuracy(
     benchmarks: List[Dict[str, Any]],
     scale_factor: float,
     images_txt_path: Optional[str] = None,
-    sparse_dir: Optional[str] = None
+    sparse_dir: Optional[str] = None,
+    holdout_only: bool = True
 ) -> Dict[str, Any]:
     """
     Evaluates independent architectural survey benchmarks against reconstructed 3D geometry.
     Computes absolute error (m), relative error (%), RMSE (m), and maximum error (m).
-    STRICTLY NON-CIRCULAR: Reconstructed endpoints are resolved exclusively by pre-surveyed landmark observations and IDs.
+    STRICTLY NON-CIRCULAR & HOLDOUT VALIDATED:
+    - If holdout_only is True and primaryCalibrationAnchor is marked, evaluates strictly against
+      the holdout validation set (primaryCalibrationAnchor == False), ensuring zero overlap with calibration.
+    - Reconstructed endpoints are resolved exclusively by pre-surveyed landmark observations and IDs.
     """
     import math
     import numpy as np
+
+    active_benchmarks = benchmarks
+    is_holdout = False
+    if holdout_only:
+        holdout = [b for b in benchmarks if b.get("primaryCalibrationAnchor") is False]
+        if holdout:
+            active_benchmarks = holdout
+            is_holdout = True
+            logger.info(f"Evaluating survey accuracy strictly on {len(active_benchmarks)} holdout validation benchmark(s).")
 
     if not images_txt_path and sparse_dir:
         cand = os.path.join(sparse_dir, "images.txt")
@@ -297,7 +401,7 @@ def evaluate_survey_accuracy(
     errors = []
     rel_errors = []
 
-    for b in benchmarks:
+    for b in active_benchmarks:
         b_id = b.get("id", "benchmark")
         desc = b.get("description", "")
         known_m = float(b.get("physicalMeters") or b.get("known_meters") or 0.0)
@@ -361,7 +465,10 @@ def evaluate_survey_accuracy(
         "rmse": round(rmse, 4),
         "maxError": round(max_err, 4),
         "meanRelativeErrorPct": round(mean_rel, 2),
+        "sampleSize": len(results),
         "benchmarksCount": len(results),
-        "benchmarks": results
+        "benchmarks": results,
+        "isHoldoutValidated": is_holdout,
+        "holdoutBenchmarkIds": [b.get("id") for b in active_benchmarks]
     }
 

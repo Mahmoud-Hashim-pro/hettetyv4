@@ -16,7 +16,7 @@ from pipeline.validate import validate_keyframes
 from pipeline.colmap import run_sfm, run_dense_stereo
 from pipeline.train import run_gaussian_training
 from pipeline.optimize import optimize_splat_cloud
-from pipeline.compress import convert_ply_to_spz, generate_metric_mesh_glb
+from pipeline.compress import convert_ply_to_spz, generate_metric_mesh_glb, scale_ply_to_metric
 from pipeline.publish import publish_tour_assets
 from pipeline.calibrate import calibrate_sparse_scale
 from storage.object_storage import ObjectStorageClient
@@ -357,8 +357,12 @@ class ReconstructionWorker:
 
             spz_path = os.path.join(dist_dir, "scene.spz")
             glb_path = os.path.join(dist_dir, "mesh.glb")
+            metric_ply = os.path.join(model_dir, "point_cloud_metric.ply")
 
-            convert_res = convert_ply_to_spz(optimized_ply, spz_path)
+            scale_ply_res = scale_ply_to_metric(optimized_ply, metric_ply, scale_factor=scale_factor)
+            metric_bounds = scale_ply_res.get("bounds", bounds) if scale_ply_res.get("success") else bounds
+
+            convert_res = convert_ply_to_spz(metric_ply if scale_ply_res.get("success") else optimized_ply, spz_path)
             mesh_res = generate_metric_mesh_glb(colmap_dir, glb_path, scale_factor=scale_factor)
 
             if not convert_res.get("success"):
@@ -374,13 +378,14 @@ class ReconstructionWorker:
                 property_id=property_id,
                 spz_path=spz_path,
                 glb_path=glb_path,
-                bounds=bounds,
+                bounds=metric_bounds,
                 cdn_base_url=self.cdn_base_url,
                 callback_url=callback_url,
                 api_key=api_key,
                 storage_client=self.storage_client,
                 image_count=val_res.get("image_count", len(capture_urls)),
                 splat_count=opt_res.get("splat_count", 0),
+                floaters_pruned=opt_res.get("floaters_pruned", 0),
                 sharpness_score=val_res.get("sharpness_score"),
                 registered_cameras=sfm_res.get("registered_images", 0),
                 mesh_vertex_count=mesh_res.get("vertex_count", 0),

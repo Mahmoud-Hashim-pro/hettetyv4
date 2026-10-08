@@ -94,12 +94,14 @@ def validate_glb_file(glb_path: str) -> Tuple[bool, str, int, int]:
                 bv_offset = bv.get("byteOffset", 0)
                 pos_offset = pos_acc.get("byteOffset", 0) + bv_offset
                 v_count = pos_acc.get("count", 0)
+                vertex_positions = []
                 if pos_offset + v_count * 12 <= len(bin_data):
                     for i in range(v_count):
                         off = pos_offset + i * 12
                         vx, vy, vz = struct.unpack_from("<fff", bin_data, off)
                         if not (math.isfinite(vx) and math.isfinite(vy) and math.isfinite(vz)):
                             return False, f"GLB vertex {i} contains non-finite coordinates (NaN/Inf): [{vx}, {vy}, {vz}]", vertex_count, face_count
+                        vertex_positions.append((vx, vy, vz))
 
             # Validate index buffer
             idx_acc = None
@@ -124,10 +126,25 @@ def validate_glb_file(glb_path: str) -> Tuple[bool, str, int, int]:
                         for k, idx_val in enumerate(indices):
                             if idx_val >= vertex_count:
                                 return False, f"GLB index {k} ({idx_val}) exceeds vertex count {vertex_count}", vertex_count, face_count
+
+                        zero_area_faces = 0
                         for t in range(0, i_count - 2, 3):
                             i1, i2, i3 = indices[t], indices[t+1], indices[t+2]
-                            if i1 == i2 and i2 == i3:
-                                return False, f"GLB contains degenerate triangle with identical indices ({i1}, {i2}, {i3})", vertex_count, face_count
+                            if i1 == i2 or i2 == i3 or i1 == i3:
+                                return False, f"GLB contains degenerate triangle with duplicate indices ({i1}, {i2}, {i3})", vertex_count, face_count
+                            if vertex_positions and i1 < len(vertex_positions) and i2 < len(vertex_positions) and i3 < len(vertex_positions):
+                                p1, p2, p3 = vertex_positions[i1], vertex_positions[i2], vertex_positions[i3]
+                                ax, ay, az = p2[0] - p1[0], p2[1] - p1[1], p2[2] - p1[2]
+                                bx, by, bz = p3[0] - p1[0], p3[1] - p1[1], p3[2] - p1[2]
+                                cx = ay * bz - az * by
+                                cy = az * bx - ax * bz
+                                cz = ax * by - ay * bx
+                                area = 0.5 * math.sqrt(cx * cx + cy * cy + cz * cz)
+                                if area < 1e-10:
+                                    zero_area_faces += 1
+
+                        if zero_area_faces > 0:
+                            return False, f"GLB contains {zero_area_faces} degenerate zero-area faces", vertex_count, face_count
 
     return True, "Valid compliant glTF 2.0 binary container with verified geometry", vertex_count, face_count
 
@@ -155,8 +172,10 @@ def decode_spz_native(spz_path: str) -> Dict[str, Any]:
     if ver != 1:
         return {"success": False, "error": f"Unsupported SPZ version: {ver}, expected 1"}
 
-    # Decode primitives
-    stride = 36 # 12 bytes pos + 4 bytes color/op + 12 bytes scales + 8 bytes rot
+    # Decode primitives: 12 bytes pos + 4 bytes color/op + 12 bytes scales + 16 bytes rot = 44 bytes
+    stride = (len(raw) - 16) // num_points if num_points > 0 and (len(raw) - 16) >= num_points * 12 else 44
+    if stride < 12:
+        stride = 12
     offset = 16
     positions = []
     scales = []
@@ -169,7 +188,7 @@ def decode_spz_native(spz_path: str) -> Dict[str, Any]:
         if not (math.isfinite(px) and math.isfinite(py) and math.isfinite(pz)):
             return {"success": False, "error": f"Primitive {i} has non-finite position [{px}, {py}, {pz}]"}
         positions.append((px, py, pz))
-        offset += 12
+        offset += stride
 
     min_x = min(p[0] for p in positions) if positions else 0.0
     max_x = max(p[0] for p in positions) if positions else 0.0
@@ -189,7 +208,185 @@ def decode_spz_native(spz_path: str) -> Dict[str, Any]:
         }
     }
 
-def pack_spz_native(input_ply: str, output_spz: str) -> bool:
+def scale_ply_to_metric(
+    input_ply: str,
+    output_metric_ply: str,
+    scale_factor: float = 1.0
+) -> Dict[str, Any]:
+    """
+    Transforms a 3D Gaussian Splatting or mesh PLY file into canonical metric coordinates.
+    Applies isotropic scale_factor to spatial positions: (x, y, z) * scale_factor.
+    For 3DGS Gaussian models, applies scale transformation to log-scales:
+        scale_0 + ln(scale_factor), scale_1 + ln(scale_factor), scale_2 + ln(scale_factor).
+    Rotations (quaternions), opacities, and colors (SH) are scale-invariant and preserved.
+    Computes and returns the exact metric bounding box.
+    """
+    import math
+    import struct
+
+    if not os.path.exists(input_ply):
+        return {"success": False, "message": f"Input PLY not found: {input_ply}"}
+
+    if scale_factor <= 0 or not math.isfinite(scale_factor):
+        return {"success": False, "message": f"Invalid scale factor: {scale_factor}"}
+
+    os.makedirs(os.path.dirname(os.path.abspath(output_metric_ply)), exist_ok=True)
+
+    with open(input_ply, "rb") as f:
+        content = f.read()
+
+    idx = content.find(b"end_header")
+    if idx == -1:
+        return {"success": False, "message": "Corrupted PLY: 'end_header' missing."}
+
+    header_text = content[:idx].decode("ascii", errors="ignore")
+    newline_pos = content.find(b"\n", idx)
+    data_start = (newline_pos + 1) if newline_pos != -1 else (idx + len(b"end_header") + 1)
+
+    is_binary = "format binary_little_endian" in header_text
+    vertex_count = 0
+    for line in header_text.splitlines():
+        if line.startswith("element vertex"):
+            try:
+                vertex_count = int(line.split()[-1])
+            except ValueError:
+                pass
+            break
+
+    if vertex_count <= 0:
+        return {"success": False, "message": f"Invalid vertex count: {vertex_count}"}
+
+    # Dynamic property schema parsing
+    properties = []
+    curr_offset = 0
+    for line in header_text.splitlines():
+        line = line.strip()
+        if line.startswith("property "):
+            parts = line.split()
+            if len(parts) >= 3:
+                p_type = parts[1].lower()
+                p_name = parts[2]
+                if p_type in ("float", "float32", "int", "uint", "int32", "uint32"):
+                    p_size = 4
+                elif p_type in ("double", "float64"):
+                    p_size = 8
+                elif p_type in ("short", "int16", "ushort", "uint16"):
+                    p_size = 2
+                else:
+                    p_size = 1
+                properties.append({"name": p_name, "type": p_type, "size": p_size, "offset": curr_offset})
+                curr_offset += p_size
+
+    stride = curr_offset
+    prop_map = {p["name"]: p for p in properties}
+
+    x_prop = prop_map.get("x")
+    y_prop = prop_map.get("y")
+    z_prop = prop_map.get("z")
+    if not (x_prop and y_prop and z_prop):
+        return {"success": False, "message": "PLY missing x, y, z properties."}
+
+    s0_prop = prop_map.get("scale_0")
+    s1_prop = prop_map.get("scale_1")
+    s2_prop = prop_map.get("scale_2")
+    has_gaussian_scales = bool(s0_prop and s1_prop and s2_prop)
+    log_scale = math.log(scale_factor) if scale_factor > 0 else 0.0
+
+    min_x, min_y, min_z = float("inf"), float("inf"), float("inf")
+    max_x, max_y, max_z = float("-inf"), float("-inf"), float("-inf")
+
+    if is_binary:
+        raw_data = bytearray(content[data_start:])
+        for i in range(vertex_count):
+            off = i * stride
+            if off + stride > len(raw_data):
+                break
+            x, y, z = struct.unpack_from("<fff", raw_data, off + x_prop["offset"])
+            x *= scale_factor
+            y *= scale_factor
+            z *= scale_factor
+            struct.pack_into("<fff", raw_data, off + x_prop["offset"], x, y, z)
+
+            if has_gaussian_scales:
+                s0 = struct.unpack_from("<f", raw_data, off + s0_prop["offset"])[0] + log_scale
+                s1 = struct.unpack_from("<f", raw_data, off + s1_prop["offset"])[0] + log_scale
+                s2 = struct.unpack_from("<f", raw_data, off + s2_prop["offset"])[0] + log_scale
+                struct.pack_into("<fff", raw_data, off + s0_prop["offset"], s0, s1, s2)
+
+            if abs(x) < 1000 and abs(y) < 1000 and abs(z) < 1000:
+                min_x, max_x = min(min_x, x), max(max_x, x)
+                min_y, max_y = min(min_y, y), max(max_y, y)
+                min_z, max_z = min(min_z, z), max(max_z, z)
+
+        with open(output_metric_ply, "wb") as out_f:
+            out_f.write(content[:data_start])
+            out_f.write(raw_data)
+    else:
+        # ASCII PLY
+        prop_names = [p["name"] for p in properties]
+        xi = prop_names.index("x")
+        yi = prop_names.index("y")
+        zi = prop_names.index("z")
+        s0i = prop_names.index("scale_0") if "scale_0" in prop_names else -1
+        s1i = prop_names.index("scale_1") if "scale_1" in prop_names else -1
+        s2i = prop_names.index("scale_2") if "scale_2" in prop_names else -1
+
+        lines = content[data_start:].decode("utf-8", errors="ignore").splitlines()
+        scaled_lines = []
+        for line in lines:
+            parts = line.strip().split()
+            if len(parts) >= 3:
+                try:
+                    x = float(parts[xi]) * scale_factor
+                    y = float(parts[yi]) * scale_factor
+                    z = float(parts[zi]) * scale_factor
+                    parts[xi] = f"{x:.6f}"
+                    parts[yi] = f"{y:.6f}"
+                    parts[zi] = f"{z:.6f}"
+
+                    if s0i >= 0 and s1i >= 0 and s2i >= 0 and len(parts) > max(s0i, s1i, s2i):
+                        s0 = float(parts[s0i]) + log_scale
+                        s1 = float(parts[s1i]) + log_scale
+                        s2 = float(parts[s2i]) + log_scale
+                        parts[s0i] = f"{s0:.6f}"
+                        parts[s1i] = f"{s1:.6f}"
+                        parts[s2i] = f"{s2:.6f}"
+
+                    if abs(x) < 1000 and abs(y) < 1000 and abs(z) < 1000:
+                        min_x, max_x = min(min_x, x), max(max_x, x)
+                        min_y, max_y = min(min_y, y), max(max_y, y)
+                        min_z, max_z = min(min_z, z), max(max_z, z)
+
+                    scaled_lines.append(" ".join(parts))
+                except ValueError:
+                    scaled_lines.append(line.strip())
+            else:
+                scaled_lines.append(line.strip())
+
+        with open(output_metric_ply, "w", encoding="utf-8") as out_f:
+            out_f.write(content[:data_start].decode("ascii", errors="ignore"))
+            out_f.write("\n".join(scaled_lines) + "\n")
+
+    if min_x == float("inf"):
+        min_x, max_x = 0.0, 0.0
+        min_y, max_y = 0.0, 0.0
+        min_z, max_z = 0.0, 0.0
+
+    bounds = {
+        "min": [round(min_x, 4), round(min_y, 4), round(min_z, 4)],
+        "max": [round(max_x, 4), round(max_y, 4), round(max_z, 4)]
+    }
+
+    return {
+        "success": True,
+        "input_ply": input_ply,
+        "output_metric_ply": output_metric_ply,
+        "scale_factor": scale_factor,
+        "vertex_count": vertex_count,
+        "bounds": bounds
+    }
+
+def pack_spz_native(input_ply: str, output_spz: str, scale_factor: float = 1.0) -> bool:
     """
     Native Python encoder for Niantic SPZ container format.
     Extracts real Gaussian primitives from PLY (ASCII or Binary) and packages them into
@@ -277,6 +474,8 @@ def pack_spz_native(input_ply: str, output_spz: str) -> bool:
 
     primitives = []
 
+    log_scale_adj = math.log(scale_factor) if scale_factor > 0 else 0.0
+
     if is_binary:
         raw_data = content[data_start:]
         if stride < 12:
@@ -285,9 +484,9 @@ def pack_spz_native(input_ply: str, output_spz: str) -> bool:
             off = i * stride
             if off + stride > len(raw_data):
                 break
-            x = struct.unpack_from("<f", raw_data, off + x_prop["offset"])[0]
-            y = struct.unpack_from("<f", raw_data, off + y_prop["offset"])[0]
-            z = struct.unpack_from("<f", raw_data, off + z_prop["offset"])[0]
+            x = struct.unpack_from("<f", raw_data, off + x_prop["offset"])[0] * scale_factor
+            y = struct.unpack_from("<f", raw_data, off + y_prop["offset"])[0] * scale_factor
+            z = struct.unpack_from("<f", raw_data, off + z_prop["offset"])[0] * scale_factor
 
             # Colors (SH DC or direct RGB)
             if fdc0 and fdc1 and fdc2:
@@ -322,11 +521,11 @@ def pack_spz_native(input_ply: str, output_spz: str) -> bool:
 
             # Scales (log-scale in PLY)
             if s0_prop and s1_prop and s2_prop:
-                s0 = struct.unpack_from("<f", raw_data, off + s0_prop["offset"])[0]
-                s1 = struct.unpack_from("<f", raw_data, off + s1_prop["offset"])[0]
-                s2 = struct.unpack_from("<f", raw_data, off + s2_prop["offset"])[0]
+                s0 = struct.unpack_from("<f", raw_data, off + s0_prop["offset"])[0] + log_scale_adj
+                s1 = struct.unpack_from("<f", raw_data, off + s1_prop["offset"])[0] + log_scale_adj
+                s2 = struct.unpack_from("<f", raw_data, off + s2_prop["offset"])[0] + log_scale_adj
             else:
-                s0, s1, s2 = math.log(0.04), math.log(0.04), math.log(0.04)
+                s0, s1, s2 = math.log(0.04) + log_scale_adj, math.log(0.04) + log_scale_adj, math.log(0.04) + log_scale_adj
 
             # Rotation quaternion
             if r0_prop and r1_prop and r2_prop and r3_prop:
@@ -365,7 +564,9 @@ def pack_spz_native(input_ply: str, output_spz: str) -> bool:
             parts = line.strip().split()
             if len(parts) >= 3:
                 try:
-                    x, y, z = float(parts[xi]), float(parts[yi]), float(parts[zi])
+                    x = float(parts[xi]) * scale_factor
+                    y = float(parts[yi]) * scale_factor
+                    z = float(parts[zi]) * scale_factor
 
                     if f0i >= 0 and f1i >= 0 and f2i >= 0 and len(parts) > max(f0i, f1i, f2i):
                         r_sh, g_sh, b_sh = float(parts[f0i]), float(parts[f1i]), float(parts[f2i])
@@ -388,9 +589,11 @@ def pack_spz_native(input_ply: str, output_spz: str) -> bool:
                         op_b = 220
 
                     if s0i >= 0 and s1i >= 0 and s2i >= 0 and len(parts) > max(s0i, s1i, s2i):
-                        s0, s1, s2 = float(parts[s0i]), float(parts[s1i]), float(parts[s2i])
+                        s0 = float(parts[s0i]) + log_scale_adj
+                        s1 = float(parts[s1i]) + log_scale_adj
+                        s2 = float(parts[s2i]) + log_scale_adj
                     else:
-                        s0, s1, s2 = math.log(0.04), math.log(0.04), math.log(0.04)
+                        s0, s1, s2 = math.log(0.04) + log_scale_adj, math.log(0.04) + log_scale_adj, math.log(0.04) + log_scale_adj
 
                     if r0i >= 0 and r1i >= 0 and r2i >= 0 and r3i >= 0 and len(parts) > max(r0i, r1i, r2i, r3i):
                         q0, q1, q2, q3 = float(parts[r0i]), float(parts[r1i]), float(parts[r2i]), float(parts[r3i])
@@ -428,13 +631,15 @@ def convert_ply_to_spz(
     input_ply: str,
     output_spz: str,
     sh_degree: int = 3,
-    quantize_positions: int = 16
+    quantize_positions: int = 16,
+    scale_factor: float = 1.0
 ) -> Dict[str, Any]:
     """
     Compresses uncompressed Gaussian PLY (150-250MB) down to Niantic SPZ (8-12MB).
     Prioritizes official Niantic SPZ CLI utility, with verified native encoder fallback.
+    If scale_factor != 1.0, applies metric scaling to Gaussian positions and log-scales.
     """
-    logger.info(f"Compressing PLY to SPZ: {input_ply} -> {output_spz}")
+    logger.info(f"Compressing PLY to SPZ: {input_ply} -> {output_spz} (scale_factor={scale_factor})")
     if not os.path.exists(input_ply):
         return {
             "success": False,
@@ -443,10 +648,20 @@ def convert_ply_to_spz(
         }
 
     os.makedirs(os.path.dirname(output_spz), exist_ok=True)
+
+    active_ply = input_ply
+    temp_scaled_ply = None
+    if abs(scale_factor - 1.0) > 1e-6:
+        temp_scaled_ply = input_ply + ".metric_tmp.ply"
+        scale_res = scale_ply_to_metric(input_ply, temp_scaled_ply, scale_factor=scale_factor)
+        if scale_res.get("success"):
+            active_ply = temp_scaled_ply
+        else:
+            temp_scaled_ply = None
     
     cmd = [
         "spz", "pack",
-        input_ply,
+        active_ply,
         output_spz,
         "--sh-degree", str(sh_degree),
         "--quantize-positions", str(quantize_positions)
@@ -470,7 +685,7 @@ def convert_ply_to_spz(
         }
     except FileNotFoundError:
         logger.info("Niantic SPZ CLI not on host PATH. Using verified native Python SPZ1 encoder...")
-        success = pack_spz_native(input_ply, output_spz)
+        success = pack_spz_native(active_ply, output_spz, scale_factor=1.0 if active_ply != input_ply else scale_factor)
         if success and os.path.exists(output_spz) and os.path.getsize(output_spz) >= 32:
             return {
                 "success": True,
@@ -485,7 +700,7 @@ def convert_ply_to_spz(
         }
     except subprocess.CalledProcessError as e:
         logger.warning(f"SPZ CLI packing failed: {e.stderr}. Attempting native encoder...")
-        success = pack_spz_native(input_ply, output_spz)
+        success = pack_spz_native(active_ply, output_spz, scale_factor=1.0 if active_ply != input_ply else scale_factor)
         if success and os.path.exists(output_spz) and os.path.getsize(output_spz) >= 32:
             return {
                 "success": True,
@@ -498,6 +713,12 @@ def convert_ply_to_spz(
             "error_code": "SPZ_COMPRESSION_FAILED",
             "message": f"SPZ packing failed: {e.stderr.decode('utf-8', errors='ignore') if isinstance(e.stderr, bytes) else str(e.stderr)}"
         }
+    finally:
+        if temp_scaled_ply and os.path.exists(temp_scaled_ply):
+            try:
+                os.remove(temp_scaled_ply)
+            except Exception:
+                pass
 
 def generate_metric_mesh_glb(
     colmap_sparse_dir: str,

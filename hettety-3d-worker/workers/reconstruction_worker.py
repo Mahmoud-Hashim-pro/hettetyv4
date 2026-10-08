@@ -359,11 +359,24 @@ class ReconstructionWorker:
             glb_path = os.path.join(dist_dir, "mesh.glb")
             metric_ply = os.path.join(model_dir, "point_cloud_metric.ply")
 
-            scale_ply_res = scale_ply_to_metric(optimized_ply, metric_ply, scale_factor=scale_factor)
-            metric_bounds = scale_ply_res.get("bounds", bounds) if scale_ply_res.get("success") else bounds
+            if is_calibrated:
+                scale_ply_res = scale_ply_to_metric(optimized_ply, metric_ply, scale_factor=scale_factor)
+                if not scale_ply_res.get("success"):
+                    logger.error(
+                        f"Job {job_id}: Metric calibration succeeded (scale={scale_factor}) but scale_ply_to_metric failed: "
+                        f"{scale_ply_res.get('message')}. Failing closed to protect metric trust boundary."
+                    )
+                    return fail(
+                        "METRIC_SCALING_FAILED",
+                        f"Metric calibration succeeded but canonical metric Gaussian scaling failed: {scale_ply_res.get('message', 'Unknown error')}"
+                    )
+                metric_bounds = scale_ply_res.get("bounds", bounds)
+                convert_res = convert_ply_to_spz(metric_ply, spz_path)
+            else:
+                metric_bounds = bounds
+                convert_res = convert_ply_to_spz(optimized_ply, spz_path)
 
-            convert_res = convert_ply_to_spz(metric_ply if scale_ply_res.get("success") else optimized_ply, spz_path)
-            mesh_res = generate_metric_mesh_glb(colmap_dir, glb_path, scale_factor=scale_factor)
+            mesh_res = generate_metric_mesh_glb(colmap_dir, glb_path, scale_factor=scale_factor if is_calibrated else 1.0)
 
             if not convert_res.get("success"):
                 return fail("COMPRESSION_FAILED", convert_res.get("message", "SPZ conversion failed"))
@@ -460,7 +473,9 @@ class ReconstructionWorker:
             "propertyId": property_id,
             "status": "failed",
             "errorCode": error_code,
-            "errorMessage": message
+            "error_code": error_code,
+            "errorMessage": message,
+            "message": message
         }
         if attempt_id:
             payload["attemptId"] = attempt_id

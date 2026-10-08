@@ -136,14 +136,20 @@ def resolve_landmark_pid(
     return None
 
 def partition_survey_benchmarks(
-    benchmarks: List[Dict[str, Any]]
+    benchmarks: List[Dict[str, Any]],
+    fail_closed: bool = True
 ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
     """
     Partitions architectural survey benchmarks into strictly disjoint calibration and validation sets.
     - Calibration benchmarks: marked with primaryCalibrationAnchor == True (or primary == True)
     - Validation benchmarks: holdout benchmarks with primaryCalibrationAnchor == False (or absent/False)
     Enforces that calibration and validation sets are non-overlapping.
+    If fail_closed is True (default) and no benchmark has primaryCalibrationAnchor == True,
+    raises ValueError to prevent uncalibrated holdout contamination.
     """
+    if not benchmarks:
+        return [], []
+
     calibration = []
     validation = []
     for b in benchmarks:
@@ -152,13 +158,19 @@ def partition_survey_benchmarks(
         else:
             validation.append(b)
 
-    # Fallback if no primary anchor marked: use first as calibration, rest as validation
-    if not calibration and len(benchmarks) > 1:
-        calibration = [benchmarks[0]]
-        validation = benchmarks[1:]
-    elif not validation and len(benchmarks) > 1:
-        validation = benchmarks[1:]
-        calibration = [benchmarks[0]]
+    # Fail closed if no primary anchor marked
+    if not calibration:
+        if fail_closed:
+            raise ValueError(
+                "Survey benchmarks lack designated primaryCalibrationAnchor. "
+                "Refusing unpartitioned calibration to guarantee holdout validation independence."
+            )
+        if len(benchmarks) > 1:
+            calibration = [benchmarks[0]]
+            validation = benchmarks[1:]
+        else:
+            calibration = [benchmarks[0]]
+            validation = []
 
     calib_ids = {b.get("id") for b in calibration if b.get("id")}
     val_ids = {b.get("id") for b in validation if b.get("id")}
@@ -172,7 +184,8 @@ def calibrate_sparse_scale(
     point3d_map: Optional[Dict[int, Tuple[float, float, float]]] = None,
     images_txt_path: Optional[str] = None,
     sparse_dir: Optional[str] = None,
-    calibration_only: bool = True
+    calibration_only: bool = True,
+    fail_closed: bool = True
 ) -> Dict[str, Any]:
     """
     Evaluates physical scale from reference anchors (LiDAR benchmarks, surveyor markers, or measured spatial correspondences).
@@ -202,6 +215,19 @@ def calibrate_sparse_scale(
         if primary:
             active_anchors = primary
             logger.info(f"Deriving metric scale exclusively from {len(active_anchors)} primary calibration anchor(s) (holdout set isolated).")
+        else:
+            is_survey = any("physicalMeters" in a or "landmark_a" in a or "primaryCalibrationAnchor" in a for a in reference_anchors)
+            if is_survey and fail_closed:
+                logger.warning("Fail-closed: Survey benchmarks lack designated primaryCalibrationAnchor. Failing closed to prevent contamination.")
+                return {
+                    "is_calibrated": False,
+                    "scale_factor": 1.0,
+                    "confidence_score": 0.0,
+                    "error_margin_percent": 100.0,
+                    "reference_summary": "Uncertified — missing explicit primaryCalibrationAnchor partition",
+                    "disclaimer": "Survey benchmarks lack designated primaryCalibrationAnchor. Failed closed to prevent calibration/validation data leakage.",
+                    "error_code": "NO_PRIMARY_CALIBRATION_ANCHOR"
+                }
 
     if not images_txt_path and sparse_dir:
         cand = os.path.join(sparse_dir, "images.txt")

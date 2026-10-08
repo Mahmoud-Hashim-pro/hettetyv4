@@ -190,10 +190,10 @@ describe('Real 3D Spatial Walkthrough & Honest Tour Decoupling', () => {
     expect(receptionBtn).toBeInTheDocument();
     fireEvent.click(receptionBtn);
 
-    // Run Quality Audit
-    const auditBtn = screen.getByRole('button', { name: /Run Quality Audit/i });
+    // View Quality Audit Status
+    const auditBtn = screen.getByRole('button', { name: /View Audit Status/i });
     fireEvent.click(auditBtn);
-    expect(screen.getByText(/Scan passed with 94% fidelity/i)).toBeInTheDocument();
+    expect(screen.getByText(/Pending Server Inspection \/ Uncertified/i)).toBeInTheDocument();
   });
 });
 

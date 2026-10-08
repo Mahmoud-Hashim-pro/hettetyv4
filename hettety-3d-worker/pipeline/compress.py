@@ -202,6 +202,7 @@ def decode_spz_native(spz_path: str) -> Dict[str, Any]:
         "version": ver,
         "numPoints": num_points,
         "decodedCount": len(positions),
+        "positions": positions,
         "bounds": {
             "min": [round(min_x, 4), round(min_y, 4), round(min_z, 4)],
             "max": [round(max_x, 4), round(max_y, 4), round(max_z, 4)]
@@ -1122,6 +1123,11 @@ def generate_metric_mesh_glb(
             "message": msg
         }
 
+    mesh_bounds = {
+        "min": [round(min(v[0] for v in mesh_vertices), 4), round(min(v[1] for v in mesh_vertices), 4), round(min(v[2] for v in mesh_vertices), 4)],
+        "max": [round(max(v[0] for v in mesh_vertices), 4), round(max(v[1] for v in mesh_vertices), 4), round(max(v[2] for v in mesh_vertices), 4)]
+    } if mesh_vertices else {"min": [0, 0, 0], "max": [0, 0, 0]}
+
     logger.info(f"Verified compliant GLB produced: {v_count} vertices, {f_count} faces, size={os.path.getsize(output_glb)} bytes")
     return {
         "success": True,
@@ -1129,5 +1135,6 @@ def generate_metric_mesh_glb(
         "path": output_glb,
         "size_bytes": os.path.getsize(output_glb),
         "vertex_count": v_count,
-        "face_count": f_count
+        "face_count": f_count,
+        "bounds": mesh_bounds
     }

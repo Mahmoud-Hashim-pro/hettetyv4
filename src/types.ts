@@ -102,6 +102,8 @@ export interface Property {
   registrationNumber?: string; // raqm el shahr el 3aqary
   courtSignatureValidity?: boolean; // s7t tawqe3
   isResale?: boolean;
+  isDemo?: boolean;
+  source?: 'fixture' | 'user' | string;
 }
 
 export interface Notification {

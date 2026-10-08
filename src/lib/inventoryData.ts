@@ -8,6 +8,8 @@ import { Property } from '../types';
 export const PREMIER_LANDMARK_PROPERTIES: Property[] = [
   {
     id: 'hyde-park-one-1',
+    isDemo: true,
+    source: 'fixture',
     title: 'One Hyde Park Luxury Park Villa',
     description: 'Exclusive standalone villa in One Hyde Park New Cairo overlooking the grand 141-feddan central park. Delivered semi-finished with private pool garden.',
     price: 18_500_000,
@@ -90,6 +92,8 @@ export const PREMIER_LANDMARK_PROPERTIES: Property[] = [
   },
   {
     id: 'mv-icity-lagoon-1',
+    isDemo: true,
+    source: 'fixture',
     title: 'Mountain View iCity Lagoon iVilla',
     description: 'Innovative iVilla with roof and crystal lagoon view in Mountain View iCity New Cairo. Smart 4D island living with direct club park access.',
     price: 9_400_000,
@@ -170,6 +174,8 @@ export const PREMIER_LANDMARK_PROPERTIES: Property[] = [
   },
   {
     id: 'mv-ras-el-hekma-1',
+    isDemo: true,
+    source: 'fixture',
     title: 'Mountain View Ras El Hekma Seafront Chalet',
     description: 'Charming Greek-island style chalet in Paros / Rhodes Island at Mountain View Ras El Hekma. Direct panoramic Mediterranean views and private beach club.',
     price: 12_800_000,
@@ -217,6 +223,8 @@ export const PREMIER_LANDMARK_PROPERTIES: Property[] = [
   },
   {
     id: 'sodic-villette-sky-1',
+    isDemo: true,
+    source: 'fixture',
     title: 'SODIC Villette Sky Condo Residence',
     description: 'Signature Sky Condo apartment in Villette New Cairo by SODIC. Steps from Club S, commercial EDNC center, and pocket parks. Prime Golden Square location.',
     price: 14_200_000,
@@ -262,6 +270,8 @@ export const PREMIER_LANDMARK_PROPERTIES: Property[] = [
   },
   {
     id: 'sodic-october-plaza-1',
+    isDemo: true,
+    source: 'fixture',
     title: 'SODIC October Plaza Garden Apartment',
     description: 'Ground floor luxury apartment with private garden in October Plaza by SODIC. Located in Northern Expansions behind Mall of Arabia and Shooting Club.',
     price: 7_600_000,

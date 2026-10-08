@@ -147,19 +147,26 @@ def evaluate_reconstruction_quality(
     calib_score = 100 if (is_calibrated_metric and calib_passed) else (70 if not is_calibrated_metric else 40)
 
     # Global Decision
+    visual_ready = cam_passed and gs_passed and mesh_passed
+    metric_certified = bool(is_calibrated_metric and calib_passed)
     overall_passed = cam_passed and gs_passed and mesh_passed and calib_passed
     overall_score = int(cam_score * 0.35 + gs_score * 0.30 + mesh_score * 0.20 + calib_score * 0.15)
     status = "READY" if overall_passed else "REJECTED"
 
     logger.info(
         f"Reconstruction Quality Gate: status={status}, score={overall_score}, "
-        f"cam={cam_passed}, gs={gs_passed}, mesh={mesh_passed}, calib={calib_passed}, reasons={reasons}"
+        f"cam={cam_passed}, gs={gs_passed}, mesh={mesh_passed}, calib={calib_passed}, "
+        f"visualReady={visual_ready}, metricCertified={metric_certified}, reasons={reasons}"
     )
 
     return {
         "passed": overall_passed,
         "status": status,
         "overallScore": overall_score,
+        "certification": {
+            "visualReady": visual_ready,
+            "metricCertified": metric_certified,
+        },
         "checks": {
             "cameraAlignment": {"passed": cam_passed, "score": cam_score, "issues": cam_issues},
             "gaussianSplatting": {"passed": gs_passed, "score": gs_score, "issues": gs_issues},

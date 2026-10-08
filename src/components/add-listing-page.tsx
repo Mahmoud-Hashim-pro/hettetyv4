@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import {
-  CheckCircle, Check, Loader2, PlusCircle, Upload, PlayCircle, Shield, ArrowRight, ArrowLeft, Wand2, FileText, Image as ImageIcon, X, Box, Globe, Sparkles, Compass, Layers, Activity
+  CheckCircle, Check, Loader2, PlusCircle, Upload, PlayCircle, Shield, ArrowRight, ArrowLeft, Wand2, FileText, Image as ImageIcon, X, Box, Globe, Sparkles, Compass, Layers, Activity, AlertCircle
 } from 'lucide-react';
 import imageCompression from 'browser-image-compression';
 import { generateContentResilient, aiErrorMessage } from '../ai';
@@ -311,13 +311,6 @@ export const AddListingPage = ({ onAdd, onAddMany, onUpdate, mode = 'create', in
         provider: 'hettety',
         format: 'spz',
         rooms: [],
-        qualityReport: {
-          coverageScore: 96,
-          cameraMotionScore: 92,
-          blurScore: 94,
-          lightingScore: 90,
-          roomCompleteness: 95,
-        }
       };
       const existing = base.rooms || [];
       const exists = existing.some(r => r.id === preset.id);
@@ -1597,13 +1590,7 @@ Return ONLY valid JSON (no markdown), omitting any key you can't find:
                             format: prev?.format || 'spz',
                             assetUrl: val,
                             rooms: prev?.rooms || [],
-                            qualityReport: prev?.qualityReport || {
-                              coverageScore: 96,
-                              cameraMotionScore: 92,
-                              blurScore: 94,
-                              lightingScore: 90,
-                              roomCompleteness: 95,
-                            }
+                            qualityReport: prev?.qualityReport,
                           }));
                         }}
                         placeholder="https://assets.hettety.com/scans/tour.spz"
@@ -1711,63 +1698,59 @@ Return ONLY valid JSON (no markdown), omitting any key you can't find:
                       <button
                         type="button"
                         onClick={() => {
-                          setShowScanQualityAudit(true);
-                          setThreeDTour(prev => {
-                            const base: ThreeDTourAsset = prev || {
-                              status: 'ready',
-                              provider: 'hettety',
-                              format: 'spz',
-                              rooms: [],
-                            };
-                            return {
-                              ...base,
-                              qualityReport: {
-                                coverageScore: 96,
-                                cameraMotionScore: 92,
-                                blurScore: 94,
-                                lightingScore: 90,
-                                roomCompleteness: 95,
-                                warnings: ['Ensure room doors remain open during capture'],
-                                warningsAr: ['تأكد من بقاء أبواب الغرف مفتوحة أثناء المسح'],
-                              }
-                            };
-                          });
+                          setShowScanQualityAudit(prev => !prev);
                         }}
                         className="text-[11px] font-bold px-3 py-1 bg-brand-100 hover:bg-brand-200 text-brand-700 dark:bg-brand-900/40 dark:hover:bg-brand-900/60 dark:text-brand-300 rounded-lg transition-colors cursor-pointer"
                       >
-                        {isRtl ? 'تشغيل فحص الجودة الفراغية' : 'Run Quality Audit'}
+                        {showScanQualityAudit ? (isRtl ? 'إخفاء تفاصيل الفحص' : 'Hide Audit Details') : (isRtl ? 'عرض حالة الفحص' : 'View Audit Status')}
                       </button>
                     </div>
 
-                    {(showScanQualityAudit || threeDTour?.qualityReport) && (
+                    {(showScanQualityAudit || !!threeDTour?.qualityReport) && (
                       <div className="space-y-3 pt-2 border-t border-slate-200 dark:border-slate-700/60">
-                        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-                          <div className="bg-white dark:bg-slate-900 p-2.5 rounded-xl border border-slate-200 dark:border-slate-700 text-center">
-                            <span className="text-[10px] text-slate-500 dark:text-slate-400 block">{isRtl ? 'تغطية المشهد' : 'Coverage'}</span>
-                            <span className="text-sm font-black text-emerald-600 dark:text-emerald-400">{threeDTour?.qualityReport?.coverageScore || 96}%</span>
-                          </div>
-                          <div className="bg-white dark:bg-slate-900 p-2.5 rounded-xl border border-slate-200 dark:border-slate-700 text-center">
-                            <span className="text-[10px] text-slate-500 dark:text-slate-400 block">{isRtl ? 'ثبات الكاميرا' : 'Camera Pace'}</span>
-                            <span className="text-sm font-black text-emerald-600 dark:text-emerald-400">{threeDTour?.qualityReport?.cameraMotionScore || 92}%</span>
-                          </div>
-                          <div className="bg-white dark:bg-slate-900 p-2.5 rounded-xl border border-slate-200 dark:border-slate-700 text-center">
-                            <span className="text-[10px] text-slate-500 dark:text-slate-400 block">{isRtl ? 'حدة التفاصيل' : 'Sharpness'}</span>
-                            <span className="text-sm font-black text-emerald-600 dark:text-emerald-400">{threeDTour?.qualityReport?.blurScore || 94}%</span>
-                          </div>
-                          <div className="bg-white dark:bg-slate-900 p-2.5 rounded-xl border border-slate-200 dark:border-slate-700 text-center">
-                            <span className="text-[10px] text-slate-500 dark:text-slate-400 block">{isRtl ? 'اتزان الإضاءة' : 'Lighting'}</span>
-                            <span className="text-sm font-black text-emerald-600 dark:text-emerald-400">{threeDTour?.qualityReport?.lightingScore || 90}%</span>
-                          </div>
-                        </div>
+                        {threeDTour?.qualityReport ? (
+                          <>
+                            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                              <div className="bg-white dark:bg-slate-900 p-2.5 rounded-xl border border-slate-200 dark:border-slate-700 text-center">
+                                <span className="text-[10px] text-slate-500 dark:text-slate-400 block">{isRtl ? 'تغطية المشهد' : 'Coverage'}</span>
+                                <span className="text-sm font-black text-emerald-600 dark:text-emerald-400">{threeDTour.qualityReport.coverageScore}%</span>
+                              </div>
+                              <div className="bg-white dark:bg-slate-900 p-2.5 rounded-xl border border-slate-200 dark:border-slate-700 text-center">
+                                <span className="text-[10px] text-slate-500 dark:text-slate-400 block">{isRtl ? 'ثبات الكاميرا' : 'Camera Pace'}</span>
+                                <span className="text-sm font-black text-emerald-600 dark:text-emerald-400">{threeDTour.qualityReport.cameraMotionScore}%</span>
+                              </div>
+                              <div className="bg-white dark:bg-slate-900 p-2.5 rounded-xl border border-slate-200 dark:border-slate-700 text-center">
+                                <span className="text-[10px] text-slate-500 dark:text-slate-400 block">{isRtl ? 'حدة التفاصيل' : 'Sharpness'}</span>
+                                <span className="text-sm font-black text-emerald-600 dark:text-emerald-400">{threeDTour.qualityReport.blurScore}%</span>
+                              </div>
+                              <div className="bg-white dark:bg-slate-900 p-2.5 rounded-xl border border-slate-200 dark:border-slate-700 text-center">
+                                <span className="text-[10px] text-slate-500 dark:text-slate-400 block">{isRtl ? 'اتزان الإضاءة' : 'Lighting'}</span>
+                                <span className="text-sm font-black text-emerald-600 dark:text-emerald-400">{threeDTour.qualityReport.lightingScore}%</span>
+                              </div>
+                            </div>
 
-                        <div className="flex items-center gap-2 p-2 rounded-xl bg-emerald-50 dark:bg-emerald-950/30 border border-emerald-200 dark:border-emerald-800 text-[11px] text-emerald-800 dark:text-emerald-300 font-medium">
-                          <CheckCircle size={14} className="shrink-0" />
-                          <span>
-                            {isRtl
-                              ? 'المسح متوافق بنسبة 94% وجاهز للإنتاج الفراغي التفاعلي فائق الدقة.'
-                              : 'Scan passed with 94% fidelity — certified ready for real-time 3D walkthrough.'}
-                          </span>
-                        </div>
+                            <div className="flex items-center gap-2 p-2 rounded-xl bg-emerald-50 dark:bg-emerald-950/30 border border-emerald-200 dark:border-emerald-800 text-[11px] text-emerald-800 dark:text-emerald-300 font-medium">
+                              <CheckCircle size={14} className="shrink-0" />
+                              <span>
+                                {isRtl
+                                  ? `تقرير جودة معتمد من المعالج الفراغي (اكتمال المسح: ${threeDTour.qualityReport.roomCompleteness}%).`
+                                  : `Validated quality report certified by reconstruction worker (${threeDTour.qualityReport.roomCompleteness}% completeness).`}
+                              </span>
+                            </div>
+                          </>
+                        ) : (
+                          <div className="p-3 rounded-xl bg-amber-50 dark:bg-amber-950/20 border border-amber-200 dark:border-amber-800/40 text-[11px] text-amber-800 dark:text-amber-300">
+                            <div className="flex items-center gap-2 font-semibold mb-1">
+                              <AlertCircle size={14} className="text-amber-600 shrink-0" />
+                              <span>{isRtl ? 'في انتظار فحص الخادم / غير معتمد بعد' : 'Pending Server Inspection / Uncertified'}</span>
+                            </div>
+                            <p className="text-slate-600 dark:text-slate-400 text-[10px] leading-relaxed">
+                              {isRtl
+                                ? 'لا يوجد تقرير جودة معتمد مرفق بهذا الرابط بعد. سيقوم خادم إعادة البناء بحساب مقاييس التغطية والحدة والإضاءة بدقة عند معالجة المسار الفراغي.'
+                                : 'No verified scan report attached to this asset URL yet. Coverage, pace, and sharpness metrics are evaluated by the backend worker during pipeline ingestion.'}
+                            </p>
+                          </div>
+                        )}
                       </div>
                     )}
                   </div>

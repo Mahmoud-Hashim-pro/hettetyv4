@@ -27,8 +27,9 @@ from PIL import Image, ImageDraw
 
 from pipeline.validate import validate_keyframes, compute_image_laplacian_variance
 from pipeline.optimize import parse_ply_header_and_bounds, optimize_splat_cloud
-from pipeline.calibrate import calibrate_sparse_scale, apply_metric_scale_to_points
-from pipeline.compress import generate_metric_mesh_glb, validate_glb_file
+from pipeline.calibrate import calibrate_sparse_scale, apply_metric_scale_to_points, partition_survey_benchmarks
+from pipeline.compress import generate_metric_mesh_glb, validate_glb_file, scale_ply_to_metric, convert_ply_to_spz, decode_spz_native
+from pipeline.quality_gate import evaluate_reconstruction_quality
 from pipeline.publish import publish_tour_assets
 from pipeline.process_manager import run_managed_process, JobCancelledException, kill_process_tree, ACTIVE_PROCESSES
 from pipeline.train import run_gaussian_training
@@ -720,6 +721,196 @@ class TestHettety3DReconstructionE2E(unittest.TestCase):
                 os.environ["HETTETY_ENV"] = old_hettety_env
             else:
                 os.environ.pop("HETTETY_ENV", None)
+
+    def test_28_spz_glb_metric_coordinate_scaling_invariance(self):
+        """
+        Verifies that applying metric scale k=2.5 produces coordinate-exact invariance
+        (2.5*x, 2.5*y, 2.5*z) across both decoded SPZ Gaussian primitives and GLB mesh bounds.
+        """
+        scale_factor = 2.5
+        pts = [
+            (1.0, 2.0, 3.0),
+            (4.0, -1.0, 2.5),
+            (-2.0, 3.5, 1.0),
+            (0.5, -2.5, 4.0),
+            (2.2, 1.1, -1.5),
+            (-1.5, -0.5, 2.0),
+            (3.0, 3.0, 3.0),
+            (-3.0, -2.0, -1.0)
+        ]
+
+        # 1. Create unscaled PLY
+        unscaled_ply = os.path.join(self.temp_dir, "unscaled.ply")
+        with open(unscaled_ply, "w") as f:
+            f.write("ply\nformat ascii 1.0\nelement vertex {}\n".format(len(pts)))
+            f.write("property float x\nproperty float y\nproperty float z\n")
+            f.write("property uchar red\nproperty uchar green\nproperty uchar blue\n")
+            f.write("property float opacity\n")
+            f.write("property float scale_0\nproperty float scale_1\nproperty float scale_2\n")
+            f.write("property float rot_0\nproperty float rot_1\nproperty float rot_2\nproperty float rot_3\n")
+            f.write("end_header\n")
+            for x, y, z in pts:
+                f.write(f"{x} {y} {z} 200 200 200 2.0 -2.0 -2.0 -2.0 1.0 0.0 0.0 0.0\n")
+
+        # 2. Scale PLY by k=2.5
+        metric_ply = os.path.join(self.temp_dir, "metric.ply")
+        scale_res = scale_ply_to_metric(unscaled_ply, metric_ply, scale_factor=scale_factor)
+        self.assertTrue(scale_res["success"])
+
+        # 3. Convert metric PLY to SPZ and decode
+        spz_path = os.path.join(self.temp_dir, "model_metric.spz")
+        conv_res = convert_ply_to_spz(metric_ply, spz_path)
+        self.assertTrue(conv_res["success"])
+
+        spz_decoded = decode_spz_native(spz_path)
+        self.assertTrue(spz_decoded["success"])
+        decoded_positions = spz_decoded["positions"]
+        self.assertEqual(len(decoded_positions), len(pts))
+
+        for orig, scaled in zip(pts, decoded_positions):
+            self.assertAlmostEqual(scaled[0], orig[0] * scale_factor, places=3)
+            self.assertAlmostEqual(scaled[1], orig[1] * scale_factor, places=3)
+            self.assertAlmostEqual(scaled[2], orig[2] * scale_factor, places=3)
+
+        # 4. Generate GLB mesh from sparse COLMAP directory with k=2.5
+        sparse_dir = os.path.join(self.temp_dir, "sparse_pts")
+        os.makedirs(sparse_dir, exist_ok=True)
+        pts3d_file = os.path.join(sparse_dir, "points3D.txt")
+        with open(pts3d_file, "w") as f:
+            for i, (x, y, z) in enumerate(pts, start=1):
+                f.write(f"{i} {x} {y} {z} 200 200 200 0.1 1 0 2 0\n")
+
+        glb_path = os.path.join(self.temp_dir, "model_metric.glb")
+        mesh_res = generate_metric_mesh_glb(sparse_dir, glb_path, scale_factor=scale_factor)
+        self.assertTrue(mesh_res["success"])
+
+        # Check GLB container validation
+        valid_glb, glb_msg, v_count, f_count = validate_glb_file(glb_path)
+        self.assertTrue(valid_glb, glb_msg)
+
+        # Check GLB bounding box reflects exactly scale_factor=2.5
+        orig_min_x = min(p[0] for p in pts)
+        orig_max_x = max(p[0] for p in pts)
+        self.assertAlmostEqual(mesh_res["bounds"]["min"][0], orig_min_x * scale_factor, places=2)
+        self.assertAlmostEqual(mesh_res["bounds"]["max"][0], orig_max_x * scale_factor, places=2)
+
+    def test_29_metric_scaling_failure_path_aborts_without_publish(self):
+        """
+        Verifies that when is_calibrated=True but scale_ply_to_metric fails,
+        the worker fails closed with METRIC_SCALING_FAILED and does NOT publish unscaled assets.
+        """
+        import unittest.mock as mock
+        os.environ["HETTETY_ENV"] = "test"
+        worker = ReconstructionWorker(work_dir=self.temp_dir)
+
+        fixture_dir = os.path.abspath(
+            os.path.join(os.path.dirname(__file__), "..", "..", "tests", "fixtures", "real_properties", "prop_villa_marassi_01")
+        )
+        def mock_download(urls, target_dir):
+            import shutil
+            for f in os.listdir(fixture_dir):
+                if f.lower().endswith((".jpg", ".png")):
+                    shutil.copy(os.path.join(fixture_dir, f), os.path.join(target_dir, f))
+        worker.storage_client.download_capture_files = mock_download
+
+        # Mock scale_ply_to_metric to simulate failure
+        with mock.patch("workers.reconstruction_worker.scale_ply_to_metric") as mock_scaler:
+            mock_scaler.return_value = {
+                "success": False,
+                "error_code": "DISK_IO_FAILURE",
+                "message": "Simulated disk failure during canonical metric PLY generation"
+            }
+
+            job = {
+                "id": "job_fail_metric_scale_001",
+                "propertyId": "prop_test_01",
+                "ownerId": "owner_test",
+                "captureUrls": ["http://mock/1.jpg"] * 15,
+                "referenceAnchors": [
+                    {
+                        "type": "lidar_benchmark",
+                        "measured_units": 2.15,
+                        "known_meters": 2.15
+                    }
+                ]
+            }
+
+            result = worker.process_job(job)
+            self.assertEqual(result["status"], "failed")
+            self.assertEqual(result["error_code"], "METRIC_SCALING_FAILED")
+            self.assertIn("canonical metric Gaussian scaling failed", result["message"])
+
+    def test_30_fail_closed_survey_partitioning(self):
+        """
+        Verifies that survey benchmarks without primaryCalibrationAnchor fail closed
+        with NO_PRIMARY_CALIBRATION_ANCHOR instead of leaking into unpartitioned calibration.
+        """
+        unpartitioned_survey = [
+            {
+                "id": "span_a",
+                "physicalMeters": 4.23,
+                "landmark_a": {"colmap_point3d_id": 1},
+                "landmark_b": {"colmap_point3d_id": 2}
+            },
+            {
+                "id": "span_b",
+                "physicalMeters": 0.91,
+                "landmark_a": {"colmap_point3d_id": 3},
+                "landmark_b": {"colmap_point3d_id": 4}
+            }
+        ]
+
+        # 1. partition_survey_benchmarks must raise ValueError when fail_closed=True
+        with self.assertRaises(ValueError) as ctx:
+            partition_survey_benchmarks(unpartitioned_survey, fail_closed=True)
+        self.assertIn("primaryCalibrationAnchor", str(ctx.exception))
+
+        # 2. calibrate_sparse_scale must fail closed with NO_PRIMARY_CALIBRATION_ANCHOR
+        calib_res = calibrate_sparse_scale(
+            sparse_points=[(0, 0, 0), (1, 1, 1)],
+            reference_anchors=unpartitioned_survey,
+            calibration_only=True,
+            fail_closed=True
+        )
+        self.assertFalse(calib_res["is_calibrated"])
+        self.assertEqual(calib_res.get("error_code"), "NO_PRIMARY_CALIBRATION_ANCHOR")
+
+    def test_31_quality_gate_certification_distinction(self):
+        """
+        Verifies explicit distinction between visualReady (walkthrough navigable)
+        and metricCertified (true architectural survey ground truth).
+        """
+        # Uncalibrated scene
+        uncalibrated_report = evaluate_reconstruction_quality(
+            image_count=20,
+            registered_cameras=18,
+            mean_reprojection_error=0.8,
+            splat_count=50000,
+            bounds={"min": [-2, 0, -2], "max": [2, 3, 2]},
+            mesh_vertex_count=500,
+            mesh_face_count=900,
+            glb_size_bytes=20000,
+            is_calibrated_metric=False
+        )
+        self.assertTrue(uncalibrated_report["certification"]["visualReady"])
+        self.assertFalse(uncalibrated_report["certification"]["metricCertified"])
+
+        # Metric certified scene
+        calibrated_report = evaluate_reconstruction_quality(
+            image_count=20,
+            registered_cameras=18,
+            mean_reprojection_error=0.8,
+            splat_count=50000,
+            bounds={"min": [-2, 0, -2], "max": [2, 3, 2]},
+            mesh_vertex_count=500,
+            mesh_face_count=900,
+            glb_size_bytes=20000,
+            is_calibrated_metric=True,
+            calibration_confidence=0.98,
+            calibration_rmse=0.012
+        )
+        self.assertTrue(calibrated_report["certification"]["visualReady"])
+        self.assertTrue(calibrated_report["certification"]["metricCertified"])
 
 if __name__ == "__main__":
     unittest.main()

@@ -65,12 +65,14 @@ export function useTourEngine(tour?: ThreeDTour, fallbackImagesCount = 0): TourE
   );
 
   const isCalibrated = Boolean(
-    (currentMode === 'gaussian'
-      ? tour?.representation?.gaussianSplat?.isCalibratedMetric
-      : tour?.representation?.mesh?.isCalibratedMetric) ??
-    tour?.isCalibratedMetric ??
-    tour?.representation?.mesh?.isCalibratedMetric ??
-    tour?.representation?.gaussianSplat?.isCalibratedMetric
+    tour?.qualityReport?.certification
+      ? tour.qualityReport.certification.metricCertified
+      : ((currentMode === 'gaussian'
+          ? tour?.representation?.gaussianSplat?.isCalibratedMetric
+          : tour?.representation?.mesh?.isCalibratedMetric) ??
+        tour?.isCalibratedMetric ??
+        tour?.representation?.mesh?.isCalibratedMetric ??
+        tour?.representation?.gaussianSplat?.isCalibratedMetric)
   );
   const scaleFactor = 1.0; // 1:1 metric scale when calibrated
 

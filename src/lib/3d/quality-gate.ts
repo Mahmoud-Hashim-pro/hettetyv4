@@ -31,6 +31,10 @@ export interface QualityGateEvaluation {
   passed: boolean;
   overallScore: number; // 0-100
   status: 'READY' | 'REJECTED' | 'WARNING';
+  certification?: {
+    visualReady: boolean;
+    metricCertified: boolean;
+  };
   captureCheck: { passed: boolean; score: number; issues: string[]; issuesAr: string[] };
   gaussianCheck: { passed: boolean; score: number; issues: string[]; issuesAr: string[] };
   meshCheck: { passed: boolean; score: number; issues: string[]; issuesAr: string[] };
@@ -125,10 +129,18 @@ export function evaluateTourQualityGate(
     recommendationsAr.push('النموذج يتطلب معايرة مقياس حقيقي قبل تفعيل القياسات التعاقدية المعتمدة.');
   }
 
+  const visualReady = passed;
+  const metricCertified = passed && Boolean(mesh.isCalibratedMetric);
+
   return {
     passed,
     overallScore,
     status,
+    certification: {
+      visualReady,
+      metricCertified,
+    },
+    reasons: [...captureIssues, ...gaussianIssues, ...meshIssues],
     captureCheck: { passed: capturePassed, score: captureScore, issues: captureIssues, issuesAr: captureIssuesAr },
     gaussianCheck: { passed: gaussianPassed, score: gaussianScore, issues: gaussianIssues, issuesAr: gaussianIssuesAr },
     meshCheck: { passed: meshPassed, score: meshScore, issues: meshIssues, issuesAr: meshIssuesAr },

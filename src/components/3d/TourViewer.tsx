@@ -129,12 +129,14 @@ export const TourViewer: React.FC<TourViewerProps> = ({
           <div className="absolute bottom-20 end-4 z-20 animate-fade-in">
             <MeasurementTool
               isCalibrated={Boolean(
-                (currentMode === 'gaussian'
-                  ? tour?.representation?.gaussianSplat?.isCalibratedMetric
-                  : tour?.representation?.mesh?.isCalibratedMetric) ??
-                tour?.isCalibratedMetric ??
-                tour?.representation?.mesh?.isCalibratedMetric ??
-                tour?.representation?.gaussianSplat?.isCalibratedMetric
+                tour?.qualityReport?.certification
+                  ? tour.qualityReport.certification.metricCertified
+                  : ((currentMode === 'gaussian'
+                      ? tour?.representation?.gaussianSplat?.isCalibratedMetric
+                      : tour?.representation?.mesh?.isCalibratedMetric) ??
+                    tour?.isCalibratedMetric ??
+                    tour?.representation?.mesh?.isCalibratedMetric ??
+                    tour?.representation?.gaussianSplat?.isCalibratedMetric)
               )}
               isRtl={isRtl}
               selectedPoints={measurementPoints}

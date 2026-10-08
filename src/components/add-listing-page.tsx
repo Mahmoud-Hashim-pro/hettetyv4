@@ -1708,37 +1708,91 @@ Return ONLY valid JSON (no markdown), omitting any key you can't find:
 
                     {(showScanQualityAudit || !!threeDTour?.qualityReport) && (
                       <div className="space-y-3 pt-2 border-t border-slate-200 dark:border-slate-700/60">
-                        {threeDTour?.qualityReport ? (
-                          <>
-                            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-                              <div className="bg-white dark:bg-slate-900 p-2.5 rounded-xl border border-slate-200 dark:border-slate-700 text-center">
-                                <span className="text-[10px] text-slate-500 dark:text-slate-400 block">{isRtl ? 'تغطية المشهد' : 'Coverage'}</span>
-                                <span className="text-sm font-black text-emerald-600 dark:text-emerald-400">{threeDTour.qualityReport.coverageScore}%</span>
-                              </div>
-                              <div className="bg-white dark:bg-slate-900 p-2.5 rounded-xl border border-slate-200 dark:border-slate-700 text-center">
-                                <span className="text-[10px] text-slate-500 dark:text-slate-400 block">{isRtl ? 'ثبات الكاميرا' : 'Camera Pace'}</span>
-                                <span className="text-sm font-black text-emerald-600 dark:text-emerald-400">{threeDTour.qualityReport.cameraMotionScore}%</span>
-                              </div>
-                              <div className="bg-white dark:bg-slate-900 p-2.5 rounded-xl border border-slate-200 dark:border-slate-700 text-center">
-                                <span className="text-[10px] text-slate-500 dark:text-slate-400 block">{isRtl ? 'حدة التفاصيل' : 'Sharpness'}</span>
-                                <span className="text-sm font-black text-emerald-600 dark:text-emerald-400">{threeDTour.qualityReport.blurScore}%</span>
-                              </div>
-                              <div className="bg-white dark:bg-slate-900 p-2.5 rounded-xl border border-slate-200 dark:border-slate-700 text-center">
-                                <span className="text-[10px] text-slate-500 dark:text-slate-400 block">{isRtl ? 'اتزان الإضاءة' : 'Lighting'}</span>
-                                <span className="text-sm font-black text-emerald-600 dark:text-emerald-400">{threeDTour.qualityReport.lightingScore}%</span>
-                              </div>
-                            </div>
+                        {threeDTour?.qualityReport ? (() => {
+                          const qReport = threeDTour.qualityReport;
+                          const isRejected = qReport.passed === false || qReport.status === 'REJECTED';
+                          const isMetricCertified = Boolean(
+                            qReport.certification?.metricCertified ?? threeDTour.isCalibratedMetric
+                          );
+                          const coverage = qReport.coverage ?? qReport.coverageScore;
+                          const cameraPace = qReport.cameraMotionScore;
+                          const sharpness = (qReport.metrics as any)?.sharpness?.value ?? qReport.blurScore;
+                          const densityOrLighting = qReport.density ?? qReport.lightingScore;
 
-                            <div className="flex items-center gap-2 p-2 rounded-xl bg-emerald-50 dark:bg-emerald-950/30 border border-emerald-200 dark:border-emerald-800 text-[11px] text-emerald-800 dark:text-emerald-300 font-medium">
-                              <CheckCircle size={14} className="shrink-0" />
-                              <span>
-                                {isRtl
-                                  ? `تقرير جودة معتمد من المعالج الفراغي (اكتمال المسح: ${threeDTour.qualityReport.roomCompleteness}%).`
-                                  : `Validated quality report certified by reconstruction worker (${threeDTour.qualityReport.roomCompleteness}% completeness).`}
-                              </span>
-                            </div>
-                          </>
-                        ) : (
+                          if (isRejected) {
+                            return (
+                              <div className="p-3.5 rounded-2xl bg-rose-50 dark:bg-rose-950/20 border border-rose-200 dark:border-rose-800/40 text-[11px] text-rose-800 dark:text-rose-300">
+                                <div className="flex items-center gap-2 font-bold mb-1.5 text-rose-700 dark:text-rose-400">
+                                  <AlertCircle size={15} className="shrink-0" />
+                                  <span>{isRtl ? 'تم رفض الجودة بواسطة خادم المعالجة الفراغية' : 'Tour Rejected by Authoritative Quality Gate'}</span>
+                                </div>
+                                <p className="text-slate-600 dark:text-slate-400 text-[10px] leading-relaxed mb-2">
+                                  {isRtl
+                                    ? 'فشل النموذج الفراغي في اجتياز معايير الأمان الهندسي والبصري الصارمة. يرجى مراجعة أسباب الرفض أدناه:'
+                                    : 'This 3D reconstruction failed the strict geometric and visual quality gates. Please review the reasons below:'}
+                                </p>
+                                {qReport.reasons && qReport.reasons.length > 0 && (
+                                  <ul className="list-disc list-inside space-y-1 text-[10px] text-rose-700 dark:text-rose-400 font-mono">
+                                    {qReport.reasons.map((reason, idx) => (
+                                      <li key={idx}>{reason}</li>
+                                    ))}
+                                  </ul>
+                                )}
+                              </div>
+                            );
+                          }
+
+                          return (
+                            <>
+                              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                                <div className="bg-white dark:bg-slate-900 p-2.5 rounded-xl border border-slate-200 dark:border-slate-700 text-center">
+                                  <span className="text-[10px] text-slate-500 dark:text-slate-400 block">{isRtl ? 'تغطية المشهد' : 'Coverage'}</span>
+                                  <span className="text-sm font-black text-emerald-600 dark:text-emerald-400">
+                                    {coverage !== undefined ? `${coverage}%` : '--'}
+                                  </span>
+                                </div>
+                                <div className="bg-white dark:bg-slate-900 p-2.5 rounded-xl border border-slate-200 dark:border-slate-700 text-center">
+                                  <span className="text-[10px] text-slate-500 dark:text-slate-400 block">{isRtl ? 'ثبات الكاميرا' : 'Camera Pace'}</span>
+                                  <span className="text-sm font-black text-emerald-600 dark:text-emerald-400">
+                                    {cameraPace !== undefined ? `${cameraPace}%` : '--'}
+                                  </span>
+                                </div>
+                                <div className="bg-white dark:bg-slate-900 p-2.5 rounded-xl border border-slate-200 dark:border-slate-700 text-center">
+                                  <span className="text-[10px] text-slate-500 dark:text-slate-400 block">{isRtl ? 'حدة التفاصيل' : 'Sharpness'}</span>
+                                  <span className="text-sm font-black text-emerald-600 dark:text-emerald-400">
+                                    {sharpness !== undefined ? `${sharpness}%` : '--'}
+                                  </span>
+                                </div>
+                                <div className="bg-white dark:bg-slate-900 p-2.5 rounded-xl border border-slate-200 dark:border-slate-700 text-center">
+                                  <span className="text-[10px] text-slate-500 dark:text-slate-400 block">{isRtl ? 'اكتمال المشهد / الإضاءة' : 'Density / Lighting'}</span>
+                                  <span className="text-sm font-black text-emerald-600 dark:text-emerald-400">
+                                    {densityOrLighting !== undefined ? `${densityOrLighting}%` : '--'}
+                                  </span>
+                                </div>
+                              </div>
+
+                              {isMetricCertified ? (
+                                <div className="flex items-center gap-2 p-2 rounded-xl bg-emerald-50 dark:bg-emerald-950/30 border border-emerald-200 dark:border-emerald-800 text-[11px] text-emerald-800 dark:text-emerald-300 font-medium">
+                                  <CheckCircle size={14} className="shrink-0" />
+                                  <span>
+                                    {isRtl
+                                      ? `تقرير جودة معتمد هندسياً بمقياس متري حقيقي (1:1) (اكتمال المسح: ${qReport.roomCompleteness ?? coverage ?? 100}%).`
+                                      : `Metric Survey Certified (1:1 Grounded Scale for Architectural Measurements - ${qReport.roomCompleteness ?? coverage ?? 100}% completeness).`}
+                                  </span>
+                                </div>
+                              ) : (
+                                <div className="flex items-center gap-2 p-2 rounded-xl bg-sky-50 dark:bg-sky-950/30 border border-sky-200 dark:border-sky-800 text-[11px] text-sky-800 dark:text-sky-300 font-medium">
+                                  <Compass size={14} className="shrink-0 text-sky-600" />
+                                  <span>
+                                    {isRtl
+                                      ? `جولة بصرية معتمدة للملاحة والتصفح (المقياس المتري غير معاير - القياسات تقريبية).`
+                                      : `Visual Walkthrough Navigable (Scale Uncalibrated - Measurements are Approximate).`}
+                                  </span>
+                                </div>
+                              )}
+                            </>
+                          );
+                        })() : (
                           <div className="p-3 rounded-xl bg-amber-50 dark:bg-amber-950/20 border border-amber-200 dark:border-amber-800/40 text-[11px] text-amber-800 dark:text-amber-300">
                             <div className="flex items-center gap-2 font-semibold mb-1">
                               <AlertCircle size={14} className="text-amber-600 shrink-0" />

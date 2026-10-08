@@ -12,7 +12,7 @@ interface MeasurementToolProps {
 }
 
 export const MeasurementTool: React.FC<MeasurementToolProps> = ({
-  isCalibrated = true,
+  isCalibrated = false,
   isRtl = false,
   showDemoPresets = false,
   selectedPoints: controlledPoints,

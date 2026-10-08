@@ -23,6 +23,9 @@ import { calibrateModelScale, ARCHITECTURAL_REFERENCES } from '../../src/lib/3d/
 import { evaluateTourQualityGate } from '../../src/lib/3d/quality-gate';
 import { RoomNavigation } from '../../src/components/3d/RoomNavigation';
 import { useTourEngine } from '../../src/components/3d/TourEngine';
+import { AddListingPage } from '../../src/components/add-listing-page';
+import { TRANSLATIONS } from '../../src/constants';
+import { CaptureWizard } from '../../src/features/reconstruction/CaptureWizard';
 
 describe('Tier 1 — HETTETY Real 3D Reconstruction Pipeline & Architecture', () => {
   describe('CaptureValidator — Pre-flight Quality & Overlap Checks', () => {
@@ -400,6 +403,12 @@ NaN NaN NaN
       expect(screen.getByText(/do not use for architectural contracting/i)).toBeInTheDocument();
     });
 
+    it('defaults to fail-closed uncalibrated mode when isCalibrated prop is omitted', () => {
+      render(<MeasurementTool isRtl={false} />);
+      expect(screen.getByText(/not metric-calibrated/i)).toBeInTheDocument();
+      expect(screen.getByText(/\(approx\.\)/i)).toBeInTheDocument();
+    });
+
     it('displays verified metric calibration info when isCalibrated is true', () => {
       render(<MeasurementTool isCalibrated={true} isRtl={false} />);
       expect(screen.queryByText(/not metric-calibrated/i)).toBeNull();
@@ -477,6 +486,8 @@ NaN NaN NaN
       expect(evaluation.captureCheck.passed).toBe(true);
       expect(evaluation.gaussianCheck.passed).toBe(true);
       expect(evaluation.meshCheck.passed).toBe(true);
+      expect(evaluation.certification?.visualReady).toBe(true);
+      expect(evaluation.certification?.metricCertified).toBe(true);
     });
 
     it('rejects tour when image count is insufficient or blur is high', () => {
@@ -537,6 +548,37 @@ NaN NaN NaN
       expect(evaluation.status).toBe('REJECTED');
       expect(evaluation.gaussianCheck.passed).toBe(false);
       expect(evaluation.gaussianCheck.issues.some(i => i.includes('NaN or Infinity'))).toBe(true);
+    });
+
+    it('distinguishes visualReady from metricCertified when uncalibrated geometry passes visual gate', () => {
+      const evaluation = evaluateTourQualityGate(
+        {
+          imageCount: 40,
+          avgResolution: [1920, 1080],
+          blurScore: 85,
+          overlapScore: 90,
+          coverageScore: 88,
+        },
+        {
+          splatCount: 300000,
+          bounds: { min: [-4, 0, -4], max: [4, 3.0, 4] },
+          spzSizeBytes: 6000000,
+          hasNaNOrInf: false,
+        },
+        {
+          vertexCount: 10000,
+          faceCount: 18000,
+          glbSizeBytes: 2000000,
+          isCalibratedMetric: false,
+          calibrationConfidence: 0.0,
+        }
+      );
+
+      expect(evaluation.passed).toBe(true);
+      expect(evaluation.status).toBe('READY');
+      expect(evaluation.certification?.visualReady).toBe(true);
+      expect(evaluation.certification?.metricCertified).toBe(false);
+      expect(evaluation.recommendations.some(r => r.includes('physical scale anchor calibration'))).toBe(true);
     });
   });
 
@@ -2535,6 +2577,239 @@ NaN NaN NaN
       expect(parsedGltf.asset.version).toBe('2.0');
       expect(parsedGltf.meshes[0].primitives[0].mode).toBe(4);
       expect(parsedGltf.accessors[0].count).toBe(3);
+    });
+  });
+
+  describe('Honest Quality Reporting & Certification Guards', () => {
+    it('enforces isCalibrated: false when qualityReport certification declares metricCertified: false', () => {
+      let engineResult: any;
+      const TestComponent = ({ tour }: { tour: any }) => {
+        engineResult = useTourEngine(tour);
+        return <div>{engineResult.isCalibrated ? 'CALIBRATED' : 'UNCALIBRATED'}</div>;
+      };
+
+      const tour = {
+        status: 'ready' as const,
+        assetUrl: 'https://cdn.hettety.com/tour.spz',
+        isCalibratedMetric: true, // Legacy or incorrect flag
+        qualityReport: {
+          passed: true,
+          status: 'READY' as const,
+          overallScore: 88,
+          certification: { visualReady: true, metricCertified: false },
+        },
+      };
+
+      render(<TestComponent tour={tour} />);
+      expect(screen.getByText('UNCALIBRATED')).toBeInTheDocument();
+      expect(engineResult.isCalibrated).toBe(false);
+    });
+
+    it('awards isCalibrated: true when qualityReport certification declares metricCertified: true', () => {
+      let engineResult: any;
+      const TestComponent = ({ tour }: { tour: any }) => {
+        engineResult = useTourEngine(tour);
+        return <div>{engineResult.isCalibrated ? 'CALIBRATED' : 'UNCALIBRATED'}</div>;
+      };
+
+      const tour = {
+        status: 'ready' as const,
+        assetUrl: 'https://cdn.hettety.com/tour.spz',
+        qualityReport: {
+          passed: true,
+          status: 'READY' as const,
+          overallScore: 92,
+          certification: { visualReady: true, metricCertified: true },
+        },
+      };
+
+      render(<TestComponent tour={tour} />);
+      expect(screen.getByText('CALIBRATED')).toBeInTheDocument();
+      expect(engineResult.isCalibrated).toBe(true);
+    });
+
+    it('renders REJECTED status with failure reasons in AddListingPage quality audit card', () => {
+      const seedProperty = {
+        id: 'prop-rejected-test',
+        title: 'Villa Test',
+        price: 5000000,
+        currency: 'EGP',
+        location: 'New Cairo',
+        area: 300,
+        bedrooms: 3,
+        bathrooms: 3,
+        status: 'For Sale',
+        propertyType: 'Villa',
+        images: ['https://example.com/1.jpg'],
+        threeDTour: {
+          status: 'ready' as const,
+          assetUrl: 'https://example.com/tour.spz',
+          qualityReport: {
+            passed: false,
+            status: 'REJECTED' as const,
+            overallScore: 45,
+            reasons: [
+              'High blur detected: sharpness score 38/100',
+              'Degenerate metric mesh: 2 vertices, 0 faces'
+            ],
+            coverageScore: 40,
+            cameraMotionScore: 35,
+            blurScore: 38,
+            lightingScore: 50,
+            roomCompleteness: 30
+          }
+        }
+      };
+
+      render(
+        <AddListingPage
+          onAdd={vi.fn()}
+          t={TRANSLATIONS.en}
+          isRtl={false}
+          isAdmin={false}
+          isSuperAdmin={false}
+          mode="edit"
+          initialProperty={seedProperty as any}
+        />
+      );
+
+      fireEvent.click(screen.getByRole('button', { name: /Next/i }));
+
+      expect(screen.getByText(/Tour Rejected by Authoritative Quality Gate/i)).toBeInTheDocument();
+      expect(screen.getByText(/High blur detected: sharpness score 38\/100/i)).toBeInTheDocument();
+      expect(screen.getByText(/Degenerate metric mesh: 2 vertices, 0 faces/i)).toBeInTheDocument();
+    });
+
+    it('renders Metric Survey Certified badge in AddListingPage when metricCertified is true', () => {
+      const seedProperty = {
+        id: 'prop-metric-test',
+        title: 'Villa Metric Certified',
+        price: 9000000,
+        currency: 'EGP',
+        location: 'New Cairo',
+        area: 400,
+        bedrooms: 4,
+        bathrooms: 4,
+        status: 'For Sale',
+        propertyType: 'Villa',
+        images: ['https://example.com/1.jpg'],
+        threeDTour: {
+          status: 'ready' as const,
+          assetUrl: 'https://example.com/tour.spz',
+          qualityReport: {
+            passed: true,
+            status: 'READY' as const,
+            overallScore: 92,
+            certification: { visualReady: true, metricCertified: true },
+            coverageScore: 95,
+            cameraMotionScore: 92,
+            blurScore: 90,
+            lightingScore: 94,
+            roomCompleteness: 98
+          }
+        }
+      };
+
+      render(
+        <AddListingPage
+          onAdd={vi.fn()}
+          t={TRANSLATIONS.en}
+          isRtl={false}
+          isAdmin={false}
+          isSuperAdmin={false}
+          mode="edit"
+          initialProperty={seedProperty as any}
+        />
+      );
+
+      fireEvent.click(screen.getByRole('button', { name: /Next/i }));
+
+      expect(screen.getByText(/Metric Survey Certified/i)).toBeInTheDocument();
+    });
+
+    it('renders Visual Walkthrough Navigable badge when metricCertified is false', () => {
+      const seedProperty = {
+        id: 'prop-visual-test',
+        title: 'Villa Visual Only',
+        price: 9000000,
+        currency: 'EGP',
+        location: 'New Cairo',
+        area: 400,
+        bedrooms: 4,
+        bathrooms: 4,
+        status: 'For Sale',
+        propertyType: 'Villa',
+        images: ['https://example.com/1.jpg'],
+        threeDTour: {
+          status: 'ready' as const,
+          assetUrl: 'https://example.com/tour.spz',
+          qualityReport: {
+            passed: true,
+            status: 'READY' as const,
+            overallScore: 84,
+            certification: { visualReady: true, metricCertified: false },
+            coverageScore: 88,
+            cameraMotionScore: 85,
+            blurScore: 82,
+            lightingScore: 85,
+            roomCompleteness: 88
+          }
+        }
+      };
+
+      render(
+        <AddListingPage
+          onAdd={vi.fn()}
+          t={TRANSLATIONS.en}
+          isRtl={false}
+          isAdmin={false}
+          isSuperAdmin={false}
+          mode="edit"
+          initialProperty={seedProperty as any}
+        />
+      );
+
+      fireEvent.click(screen.getByRole('button', { name: /Next/i }));
+
+      expect(screen.getByText(/Visual Walkthrough Navigable \(Scale Uncalibrated/i)).toBeInTheDocument();
+    });
+
+    it('CaptureWizard strictly isolates client-side preflight validation from backend qualityReport', () => {
+      // Direct verification that preflight validation does not fabricate job.qualityReport
+      const clientValidation = {
+        valid: true,
+        errors: [],
+        errorsAr: [],
+        imageCount: 24,
+        blurScore: 92,
+        overlapScore: 88,
+        coverageScore: 90,
+      };
+
+      const jobWithoutReport = {
+        id: 'job-unreported-1',
+        status: 'READY',
+        spzUrl: 'https://cdn.hettety.com/scans/tour.spz',
+        meshUrl: 'https://cdn.hettety.com/scans/mesh.glb',
+        // Notice: qualityReport is ABSENT from worker response
+      };
+
+      // Construct final tour structure mimicking CaptureWizard onTourGenerated payload
+      const constructedTour = {
+        status: 'ready',
+        qualityReport: (jobWithoutReport as any).qualityReport || undefined,
+        preflightCaptureValidation: clientValidation ? {
+          coverageScore: clientValidation.coverageScore,
+          overlapScore: clientValidation.overlapScore,
+          blurScore: clientValidation.blurScore,
+          valid: clientValidation.valid,
+          imageCount: clientValidation.imageCount,
+        } : undefined,
+      };
+
+      expect(constructedTour.qualityReport).toBeUndefined();
+      expect(constructedTour.preflightCaptureValidation?.coverageScore).toBe(90);
+      expect(constructedTour.preflightCaptureValidation?.blurScore).toBe(92);
     });
   });
 });

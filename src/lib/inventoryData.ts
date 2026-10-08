@@ -76,6 +76,13 @@ export const PREMIER_LANDMARK_PROPERTIES: Property[] = [
         { id: 'garden_pool', name: 'Private Garden & Pool Deck', nameAr: 'حديقة الفيلا وحمام السباحة', position: [0.5, 0.2, -6.5] }
       ],
       qualityReport: {
+        passed: true,
+        status: 'READY',
+        overallScore: 95,
+        certification: {
+          visualReady: true,
+          metricCertified: true,
+        },
         coverageScore: 96,
         cameraMotionScore: 92,
         blurScore: 94,
@@ -158,6 +165,13 @@ export const PREMIER_LANDMARK_PROPERTIES: Property[] = [
         { id: 'master_bedroom', name: 'Master Bedroom', nameAr: 'غرفة النوم الرئيسية', position: [3.2, 4.5, 1.2] }
       ],
       qualityReport: {
+        passed: true,
+        status: 'READY',
+        overallScore: 93,
+        certification: {
+          visualReady: true,
+          metricCertified: true,
+        },
         coverageScore: 94,
         cameraMotionScore: 90,
         blurScore: 92,

@@ -67,12 +67,28 @@ export interface Waypoint {
 
 export type TourRoomWaypoint = Room;
 
+export interface QualityReportCertification {
+  visualReady?: boolean;
+  metricCertified?: boolean;
+}
+
 export interface ThreeDTourQualityReport {
-  coverageScore: number;     // 0-100%
-  cameraMotionScore: number; // 0-100%
-  blurScore: number;         // 0-100%
-  lightingScore: number;     // 0-100%
-  roomCompleteness: number;  // 0-100%
+  passed?: boolean;
+  status?: 'READY' | 'REJECTED' | 'WARNING';
+  overallScore?: number; // 0-100%
+  certification?: QualityReportCertification;
+  reasons?: string[];
+  reasonsAr?: string[];
+  coverage?: number;
+  density?: number;
+  meshCompleteness?: number;
+  metrics?: Record<string, any>;
+  checks?: Record<string, any>;
+  coverageScore?: number;     // 0-100%
+  cameraMotionScore?: number; // 0-100%
+  blurScore?: number;         // 0-100%
+  lightingScore?: number;     // 0-100%
+  roomCompleteness?: number;  // 0-100%
   warnings?: string[];
   warningsAr?: string[];
 }
@@ -128,6 +144,13 @@ export interface ThreeDTour {
   rooms?: Room[];
   waypoints?: Waypoint[];
   qualityReport?: ThreeDTourQualityReport;
+  preflightCaptureValidation?: {
+    coverageScore?: number;
+    overlapScore?: number;
+    blurScore?: number;
+    valid?: boolean;
+    imageCount?: number;
+  };
   bounds?: {
     min: [number, number, number];
     max: [number, number, number];

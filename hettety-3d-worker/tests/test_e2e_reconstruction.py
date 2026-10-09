@@ -28,7 +28,7 @@ from PIL import Image, ImageDraw
 from pipeline.validate import validate_keyframes, compute_image_laplacian_variance
 from pipeline.optimize import parse_ply_header_and_bounds, optimize_splat_cloud
 from pipeline.calibrate import calibrate_sparse_scale, apply_metric_scale_to_points, partition_survey_benchmarks
-from pipeline.compress import generate_metric_mesh_glb, validate_glb_file, scale_ply_to_metric, convert_ply_to_spz, decode_spz_native
+from pipeline.compress import generate_metric_mesh_glb, validate_glb_file, create_minimal_valid_glb, scale_ply_to_metric, convert_ply_to_spz, decode_spz_native
 from pipeline.quality_gate import evaluate_reconstruction_quality
 from pipeline.publish import publish_tour_assets
 from pipeline.process_manager import run_managed_process, JobCancelledException, kill_process_tree, ACTIVE_PROCESSES
@@ -355,9 +355,8 @@ class TestHettety3DReconstructionE2E(unittest.TestCase):
         dummy_spz = os.path.join(self.temp_dir, "test_metrics.spz")
         dummy_glb = os.path.join(self.temp_dir, "test_metrics.glb")
         with open(dummy_spz, "wb") as f:
-            f.write(b"SPZ_TEST_VALID_DATA")
-        with open(dummy_glb, "wb") as f:
-            f.write(b"glTF\x02\x00\x00\x00\x20\x00\x00\x00")
+            f.write(b"SPZ_TEST_VALID_DATA" * 10)
+        create_minimal_valid_glb(dummy_glb)
 
         pub_res = publish_tour_assets(
             job_id="test_job_metrics",
@@ -531,9 +530,8 @@ class TestHettety3DReconstructionE2E(unittest.TestCase):
         dummy_spz = os.path.join(self.temp_dir, "test.spz")
         dummy_glb = os.path.join(self.temp_dir, "test.glb")
         with open(dummy_spz, "wb") as f:
-            f.write(b"SPZ_TEST_BYTES")
-        with open(dummy_glb, "wb") as f:
-            f.write(b"GLB_TEST_BYTES")
+            f.write(b"SPZ_TEST_BYTES" * 10)
+        create_minimal_valid_glb(dummy_glb)
 
         pub_res = publish_tour_assets(
             job_id="job_audit_99",
@@ -1059,6 +1057,73 @@ class TestHettety3DReconstructionE2E(unittest.TestCase):
             res = evaluate_reconstruction_quality(**args)
             self.assertFalse(res["passed"], f"Expected failure for mesh ({bad_v}, {bad_f})")
             self.assertEqual(res["status"], "REJECTED")
+
+    def test_34_publish_rejects_structurally_invalid_glb(self):
+        """Verifies that publish_tour_assets structurally validates GLB files and rejects corrupted containers."""
+        corrupt_glb = os.path.join(self.temp_dir, "corrupt.glb")
+        dummy_spz = os.path.join(self.temp_dir, "valid.spz")
+        with open(dummy_spz, "wb") as f:
+            f.write(b"SPZ_TEST_VALID_DATA" * 10)
+        # 16 bytes of garbage with fake header but missing JSON/BIN chunks
+        with open(corrupt_glb, "wb") as f:
+            f.write(b"glTF\x02\x00\x00\x00\x10\x00\x00\x00")
+
+        storage = ObjectStorageClient(provider="local")
+        res = publish_tour_assets(
+            job_id="job_corrupt_glb_01",
+            property_id="prop_corrupt_glb_01",
+            spz_path=dummy_spz,
+            glb_path=corrupt_glb,
+            bounds={"min": [-1, 0, -1], "max": [1, 2, 1]},
+            cdn_base_url="https://cdn.hettety.com",
+            callback_url="mock://callback",
+            api_key="mock",
+            storage_client=storage,
+        )
+
+        self.assertFalse(res["success"])
+        self.assertEqual(res["error_code"], "INVALID_GLB_STRUCTURE")
+        self.assertIn("structural glb validation failed", res["message"].lower())
+
+        # Verify nothing was promoted to the public tour pointer
+        public_tour_glb = os.path.join(storage.local_root, "properties", "prop_corrupt_glb_01", "tour", "corrupt.glb")
+        self.assertFalse(os.path.exists(public_tour_glb), "Corrupted GLB must never be promoted to public tour pointer!")
+
+    def test_35_publish_promotes_only_after_quality_gate_passes(self):
+        """Verifies that a failing quality gate aborts publication before uploading to the public tour pointer."""
+        valid_glb = os.path.join(self.temp_dir, "valid_test.glb")
+        create_minimal_valid_glb(valid_glb)
+        valid_spz = os.path.join(self.temp_dir, "valid_test.spz")
+        with open(valid_spz, "wb") as f:
+            f.write(b"SPZ_TEST_DATA" * 20)
+
+        storage = ObjectStorageClient(provider="local")
+
+        # Claim metric calibration but provide sub-threshold confidence (0.50 < 0.85) -> Quality Gate REJECTS
+        res = publish_tour_assets(
+            job_id="job_qg_abort_01",
+            property_id="prop_qg_abort_01",
+            spz_path=valid_spz,
+            glb_path=valid_glb,
+            bounds={"min": [-1, 0, -1], "max": [1, 2, 1]},
+            cdn_base_url="https://cdn.hettety.com",
+            callback_url="mock://callback",
+            api_key="mock",
+            storage_client=storage,
+            image_count=30,
+            registered_cameras=30,
+            splat_count=50000,
+            is_calibrated_metric=True,
+            calibration_confidence=0.50, # Must trigger rejection
+            calibration_rmse=0.08,
+        )
+
+        self.assertFalse(res["success"])
+        self.assertEqual(res["error_code"], "QUALITY_GATE_REJECTED")
+
+        # Public tour pointer must NOT exist
+        public_tour_spz = os.path.join(storage.local_root, "properties", "prop_qg_abort_01", "tour", "valid_test.spz")
+        self.assertFalse(os.path.exists(public_tour_spz), "Rejected tour must never upload artifacts to public tour pointer!")
 
 if __name__ == "__main__":
     unittest.main()

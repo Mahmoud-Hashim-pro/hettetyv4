@@ -148,6 +148,88 @@ def validate_glb_file(glb_path: str) -> Tuple[bool, str, int, int]:
 
     return True, "Valid compliant glTF 2.0 binary container with verified geometry", vertex_count, face_count
 
+def create_minimal_valid_glb(output_path: str, vertex_count: int = 4, face_count: int = 2) -> str:
+    """
+    Creates a minimal, structurally compliant binary glTF 2.0 container (.glb).
+    Useful for testing, mocks, and generating lightweight test models.
+    """
+    vertices = [
+        (0.0, 0.0, 0.0),
+        (1.0, 0.0, 0.0),
+        (0.0, 1.0, 0.0),
+        (1.0, 1.0, 0.0),
+    ]
+    indices = [
+        0, 1, 2,  # Triangle 1
+        1, 3, 2,  # Triangle 2
+    ]
+    pos_bytes = bytearray()
+    for vx, vy, vz in vertices:
+        pos_bytes.extend(struct.pack("<fff", vx, vy, vz))
+    idx_bytes = bytearray()
+    for idx in indices:
+        idx_bytes.extend(struct.pack("<H", idx))
+    
+    bin_buffer = pos_bytes + idx_bytes
+    while len(bin_buffer) % 4 != 0:
+        bin_buffer.append(0)
+
+    gltf_dict = {
+        "asset": {"version": "2.0", "generator": "Hettety-GLB-TestGenerator"},
+        "scenes": [{"nodes": [0]}],
+        "nodes": [{"mesh": 0}],
+        "meshes": [{
+            "primitives": [{
+                "attributes": {"POSITION": 0},
+                "indices": 1,
+                "mode": 4
+            }]
+        }],
+        "accessors": [
+            {
+                "bufferView": 0,
+                "byteOffset": 0,
+                "componentType": 5126,
+                "count": 4,
+                "type": "VEC3",
+                "max": [1.0, 1.0, 0.0],
+                "min": [0.0, 0.0, 0.0]
+            },
+            {
+                "bufferView": 1,
+                "byteOffset": 0,
+                "componentType": 5123,
+                "count": 6,
+                "type": "SCALAR",
+                "max": [3],
+                "min": [0]
+            }
+        ],
+        "bufferViews": [
+            {"buffer": 0, "byteOffset": 0, "byteLength": len(pos_bytes), "target": 34962},
+            {"buffer": 0, "byteOffset": len(pos_bytes), "byteLength": len(idx_bytes), "target": 34963}
+        ],
+        "buffers": [{"byteLength": len(bin_buffer)}]
+    }
+
+    json_str = json.dumps(gltf_dict, separators=(',', ':'))
+    json_bytes = bytearray(json_str.encode("utf-8"))
+    while len(json_bytes) % 4 != 0:
+        json_bytes.append(0x20)
+
+    total_glb_length = 12 + 8 + len(json_bytes) + 8 + len(bin_buffer)
+    glb_container = bytearray()
+    glb_container.extend(struct.pack("<4sII", b"glTF", 2, total_glb_length))
+    glb_container.extend(struct.pack("<II", len(json_bytes), 0x4E4F534A))
+    glb_container.extend(json_bytes)
+    glb_container.extend(struct.pack("<II", len(bin_buffer), 0x004E4942))
+    glb_container.extend(bin_buffer)
+
+    os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
+    with open(output_path, "wb") as f:
+        f.write(glb_container)
+    return output_path
+
 def decode_spz_native(spz_path: str) -> Dict[str, Any]:
     """
     Decodes a gzipped SPZ1 container and validates all Gaussian primitives:

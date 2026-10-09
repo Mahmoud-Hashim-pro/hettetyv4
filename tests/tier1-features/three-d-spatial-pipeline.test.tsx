@@ -843,7 +843,7 @@ NaN NaN NaN
         {
           method: 'POST',
           query: { action: 'complete-uploads' },
-          headers: { authorization: 'Bearer test-token' },
+          headers: { authorization: 'Bearer test-token', 'x-user-id': 'seller-uid-101' },
           body: {
             jobId,
             uploadedAssetIds: [`cap-${jobId}-0`, `cap-${jobId}-1`],

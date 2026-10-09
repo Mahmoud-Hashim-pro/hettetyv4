@@ -56,22 +56,6 @@ def publish_tour_assets(
     spz_url = f"{cdn_base_url}/{remote_spz_path}"
     glb_url = f"{cdn_base_url}/{remote_glb_path}"
 
-    if storage_client:
-        try:
-            if os.path.exists(spz_path):
-                storage_client.upload_file(spz_path, remote_spz_path)
-                storage_client.upload_file(spz_path, tour_spz_path)
-            if os.path.exists(glb_path):
-                storage_client.upload_file(glb_path, remote_glb_path)
-                storage_client.upload_file(glb_path, tour_glb_path)
-        except Exception as upload_err:
-            logger.error(f"Cloud Storage upload failed: {upload_err}")
-            return {
-                "success": False,
-                "error_code": "STORAGE_UPLOAD_FAILED",
-                "message": str(upload_err)
-            }
-
     import hashlib
 
     def compute_sha256(path: str) -> str:
@@ -83,10 +67,38 @@ def publish_tour_assets(
                 h.update(chunk)
         return h.hexdigest()
 
-    spz_size = os.path.getsize(spz_path) if os.path.exists(spz_path) else 0
-    glb_size = os.path.getsize(glb_path) if os.path.exists(glb_path) else 0
+    # 1. Structural Local Validation Before Upload
+    if not os.path.exists(spz_path):
+        return {
+            "success": False,
+            "error_code": "MISSING_SPZ_ARTIFACT",
+            "message": f"Required SPZ artifact not found at {spz_path}"
+        }
+    if not os.path.exists(glb_path):
+        return {
+            "success": False,
+            "error_code": "MISSING_GLB_ARTIFACT",
+            "message": f"Required GLB artifact not found at {glb_path}"
+        }
+
+    spz_size = os.path.getsize(spz_path)
+    glb_size = os.path.getsize(glb_path)
     spz_sha256 = compute_sha256(spz_path)
     glb_sha256 = compute_sha256(glb_path)
+
+    from pipeline.compress import validate_glb_file
+    is_valid_glb, glb_err, v_cnt, f_cnt = validate_glb_file(glb_path)
+    if not is_valid_glb:
+        logger.error(f"Cannot publish tour: GLB structural validation failed: {glb_err}")
+        return {
+            "success": False,
+            "error_code": "INVALID_GLB_STRUCTURE",
+            "message": f"Structural GLB validation failed: {glb_err}"
+        }
+    if v_cnt > 0:
+        mesh_vertex_count = v_cnt
+    if f_cnt > 0:
+        mesh_face_count = f_cnt
 
     # Strictly grounded quality telemetry: REAL, UNKNOWN, FAIL (no fabricated estimates)
     reg_val = registered_cameras if registered_cameras is not None else 0
@@ -157,6 +169,7 @@ def publish_tour_assets(
 
     from pipeline.quality_gate import evaluate_reconstruction_quality
 
+    # 2. Authoritative Quality Gate Evaluation BEFORE Any Remote Storage Uploads
     quality_report = evaluate_reconstruction_quality(
         image_count=image_count,
         registered_cameras=reg_val,
@@ -185,6 +198,19 @@ def publish_tour_assets(
             "message": f"Tour rejected by authoritative quality gate: {'; '.join(quality_report['reasons'])}",
             "qualityReport": quality_report
         }
+
+    # 3. Upload to Immutable Isolated Attempt Path First
+    if storage_client:
+        try:
+            storage_client.upload_file(spz_path, remote_spz_path)
+            storage_client.upload_file(glb_path, remote_glb_path)
+        except Exception as upload_err:
+            logger.error(f"Cloud Storage attempt artifact upload failed: {upload_err}")
+            return {
+                "success": False,
+                "error_code": "STORAGE_UPLOAD_FAILED",
+                "message": str(upload_err)
+            }
 
     manifest_content = {
         "manifestVersion": "1.0.0",
@@ -244,6 +270,9 @@ def publish_tour_assets(
         manifest_sha256 = compute_sha256(local_manifest_tmp)
         if storage_client:
             storage_client.upload_file(local_manifest_tmp, remote_manifest_path)
+            # 4. Promote all verified attempt artifacts to the active public tour pointer
+            storage_client.upload_file(spz_path, tour_spz_path)
+            storage_client.upload_file(glb_path, tour_glb_path)
             storage_client.upload_file(local_manifest_tmp, tour_manifest_path)
     finally:
         try:

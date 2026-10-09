@@ -138,23 +138,77 @@ describe('Tier 2 — AI Rate Limiter & Concurrency Protection', () => {
       }
     });
 
-    it('fails closed in strict production mode when RATE_LIMIT_FAIL_CLOSED is configured', async () => {
+    it('fails closed in strict production mode when Redis connection fails', async () => {
       const prevEnv = process.env.NODE_ENV;
       const prevFailClosed = process.env.RATE_LIMIT_FAIL_CLOSED;
       try {
         process.env.NODE_ENV = 'production';
         process.env.RATE_LIMIT_FAIL_CLOSED = 'true';
 
-        // Intentionally invalid mock redis client that errors
+        // Simulate Redis connection refusal
+        const { setRedisClientForTesting, resetRedisClientForTesting } = await import('../../api/_lib/rateLimiter');
+        setRedisClientForTesting(null, new Error('ECONNREFUSED: Redis server unreachable'));
+
         const badOptions = { ip: '1.2.3.4', ipLimit: 10 };
-        // Even when redis is unconfigured or throwing, checkDistributedRateLimit handles safely
         const res = await checkDistributedRateLimit(badOptions);
-        expect(res).toBeDefined();
+
+        expect(res.allowed).toBe(false);
+        expect(res.remaining).toBe(0);
+        expect(res.reason).toContain('Rate limit service unavailable in strict production mode');
+
+        // Test recovery when Redis reconnects
+        resetRedisClientForTesting();
+        process.env.RATE_LIMIT_FAIL_CLOSED = 'false';
+        process.env.NODE_ENV = 'test';
+        const recoveredRes = await checkDistributedRateLimit({ ip: '1.2.3.4', ipLimit: 10 });
+        expect(recoveredRes.allowed).toBe(true);
       } finally {
         process.env.NODE_ENV = prevEnv;
         if (prevFailClosed) process.env.RATE_LIMIT_FAIL_CLOSED = prevFailClosed;
         else delete process.env.RATE_LIMIT_FAIL_CLOSED;
+        const { resetRedisClientForTesting } = await import('../../api/_lib/rateLimiter');
+        resetRedisClientForTesting();
       }
+    });
+
+    it('enforces atomic multi-tier decision: user limit breach does not consume IP quota', async () => {
+      const sharedIp = '198.51.100.88';
+      const userSpammer = 'spammer-user-999';
+      const innocentUser = 'innocent-user-111';
+
+      // Exhaust spammer user quota (limit: 2)
+      await checkDistributedRateLimit({ ip: sharedIp, userId: userSpammer, ipLimit: 10, userLimit: 2 });
+      await checkDistributedRateLimit({ ip: sharedIp, userId: userSpammer, ipLimit: 10, userLimit: 2 });
+
+      // 3rd attempt for spammer fails on user limit
+      const blockedRes = await checkDistributedRateLimit({ ip: sharedIp, userId: userSpammer, ipLimit: 10, userLimit: 2 });
+      expect(blockedRes.allowed).toBe(false);
+      expect(blockedRes.reason?.toLowerCase()).toContain('user');
+
+      // Innocent user from the SAME IP must NOT be blocked by spammer's failed attempts
+      const innocentRes = await checkDistributedRateLimit({ ip: sharedIp, userId: innocentUser, ipLimit: 10, userLimit: 5 });
+      expect(innocentRes.allowed).toBe(true);
+    });
+
+    it('enforces specialized per-task rate limits alongside IP limits', async () => {
+      const taskClientIp = '198.51.100.99';
+      const expensiveTask = '3d-mesh-extract';
+
+      // Task limit: 2
+      const res1 = await checkDistributedRateLimit({ ip: taskClientIp, task: expensiveTask, ipLimit: 20, taskLimit: 2 });
+      expect(res1.allowed).toBe(true);
+
+      const res2 = await checkDistributedRateLimit({ ip: taskClientIp, task: expensiveTask, ipLimit: 20, taskLimit: 2 });
+      expect(res2.allowed).toBe(true);
+
+      // 3rd attempt exceeds task limit
+      const res3 = await checkDistributedRateLimit({ ip: taskClientIp, task: expensiveTask, ipLimit: 20, taskLimit: 2 });
+      expect(res3.allowed).toBe(false);
+      expect(res3.reason).toContain(expensiveTask);
+
+      // Other tasks or general IP requests from this client still succeed
+      const regularRes = await checkDistributedRateLimit({ ip: taskClientIp, task: 'lightweight-search', ipLimit: 20, taskLimit: 10 });
+      expect(regularRes.allowed).toBe(true);
     });
   });
 });

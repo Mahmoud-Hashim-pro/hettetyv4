@@ -812,11 +812,34 @@ const Property3DViewer: React.FC<Property3DViewerProps> = ({ images, depthMaps, 
               </div>
             )}
           </div>
-        ) : (
+        ) : rooms && rooms.length > 0 ? (
           <Canvas camera={{ position: [0, 2, 5], fov: 60 }} className="flex-1" gl={{ antialias: true }}>
             <color attach="background" args={['#05080f']} />
             <SpatialTourScene rooms={rooms} activeRoomId={activeRoomId} onSelectRoom={setActiveRoomId} />
           </Canvas>
+        ) : (
+          <div className="flex-1 w-full h-full flex flex-col items-center justify-center p-6 text-center bg-slate-950 text-white z-20">
+            <div className="max-w-md p-6 bg-slate-900 border border-slate-800 rounded-2xl shadow-xl flex flex-col items-center">
+              <Box className="w-12 h-12 text-slate-400 mb-3" aria-hidden="true" />
+              <h4 className="text-lg font-bold mb-2">
+                {isRtl ? 'الجولة ثلاثية الأبعاد غير متوفرة' : '3D Tour Unavailable'}
+              </h4>
+              <p className="text-sm text-slate-300 mb-4">
+                {isRtl
+                  ? 'لا توجد أصول مجسمة منشورة لهذا العقار حالياً. يمكنك تصفح الصور العادية أو التجسيم الفوتوغرافي.'
+                  : 'No verified 3D assets have been published for this property yet. You can browse standard photos or photo relief.'}
+              </p>
+              {validImages.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() => switchMode('depth')}
+                  className="px-4 py-2 bg-brand-600 hover:bg-brand-700 text-white rounded-lg text-sm font-semibold transition cursor-pointer"
+                >
+                  {isRtl ? 'عرض التجسيم الفوتوغرافي 2.5D' : 'Switch to 2.5D Photo Relief'}
+                </button>
+              )}
+            </div>
+          </div>
         )
       ) : mode === 'pano' ? (
         <Canvas camera={{ position: [0, 0, 0.1], fov: 75 }} className="flex-1" gl={{ antialias: true }}>

@@ -913,7 +913,8 @@ export default async function handler(req: any, res: any) {
       const bucket = process.env.GCS_BUCKET_NAME || 'hettety-spatial-assets';
 
       const manifest: ReconstructionJobPayload['manifest'] = files.map((f: any, idx: number) => {
-        const safeName = (f.name || `frame_${idx}.jpg`).replace(/[^a-zA-Z0-9._-]/g, '_');
+        const baseName = path.basename(f.name || `frame_${idx}.jpg`);
+        const safeName = baseName.replace(/[^a-zA-Z0-9._-]/g, '_').replace(/\.{2,}/g, '_');
         const storagePath = `properties/${propertyId}/3d/raw/${jobId}/${safeName}`;
         const contentType = f.mimeType || 'image/jpeg';
         const signed = generateV4SignedUploadUrl(bucket, storagePath, contentType);
@@ -1024,7 +1025,7 @@ export default async function handler(req: any, res: any) {
         return res.status(404).json({ error: `JOB_NOT_FOUND: Reconstruction job ${jobId} does not exist.` });
       }
 
-      if (job.ownerId !== auth.uid && !auth.isAdmin && process.env.NODE_ENV !== 'test') {
+      if (job.ownerId !== auth.uid && !auth.isAdmin) {
         return res.status(403).json({ error: 'FORBIDDEN: You do not own this reconstruction job.' });
       }
 

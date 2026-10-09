@@ -84,12 +84,38 @@ export function checkRateLimit(clientId: string, limit: number = maxRequestsPerW
   };
 }
 
+let testRedisClient: any = null;
+let testRedisError: Error | null = null;
+
+export function setRedisClientForTesting(client: any, error: Error | null = null): void {
+  testRedisClient = client;
+  testRedisError = error;
+  redisClientPromise = null;
+}
+
+export function resetRedisClientForTesting(): void {
+  testRedisClient = null;
+  testRedisError = null;
+  redisClientPromise = null;
+}
+
 let redisClientPromise: Promise<any> | null = null;
 async function getRedisClient(): Promise<any> {
+  if (testRedisError) {
+    throw testRedisError;
+  }
+  if (testRedisClient) {
+    return testRedisClient;
+  }
+
   const url = process.env.REDIS_URL;
-  if (!url || url.startsWith('mock://') || process.env.NODE_ENV === 'test') {
+  if (!url || url.startsWith('mock://')) {
     return null;
   }
+  if (process.env.NODE_ENV === 'test' && !testRedisClient) {
+    return null;
+  }
+
   if (!redisClientPromise) {
     redisClientPromise = (async () => {
       try {
@@ -99,7 +125,11 @@ async function getRedisClient(): Promise<any> {
         await client.connect();
         return client;
       } catch (err) {
-        console.warn('[RateLimiter] Redis connection failed, using in-memory limiter:', err);
+        redisClientPromise = null;
+        console.warn('[RateLimiter] Redis connection failed:', err);
+        if (process.env.RATE_LIMIT_FAIL_CLOSED === 'true' || process.env.NODE_ENV === 'production') {
+          throw err;
+        }
         return null;
       }
     })();
@@ -113,110 +143,173 @@ export interface DistributedRateLimitOptions {
   task?: string;
   ipLimit?: number;
   userLimit?: number;
+  taskLimit?: number;
 }
 
-const RATE_LIMIT_LUA = `
-local key = KEYS[1]
+/**
+ * Atomic Multi-Tier Redis Lua Script:
+ * Evaluates all provided tiers (IP, User ID, Task) in an indivisible transaction.
+ * If ANY tier exceeds its limit, NO tokens are consumed from any tier!
+ * Tokens are recorded on all keys ONLY when all tiers have sufficient quota.
+ */
+const MULTI_TIER_RATE_LIMIT_LUA = `
 local now = tonumber(ARGV[1])
 local window = tonumber(ARGV[2])
-local limit = tonumber(ARGV[3])
-local token = ARGV[4]
+local token = ARGV[3]
 local cutoff = now - window
 
-redis.call('ZREMRANGEBYSCORE', key, 0, cutoff)
-local current = redis.call('ZCARD', key)
-
-if current >= limit then
-  local oldest = redis.call('ZRANGE', key, 0, 0, 'WITHSCORES')
-  local retryAfterMs = window
-  if oldest and #oldest >= 2 then
-    retryAfterMs = math.max(1000, (tonumber(oldest[2]) + window) - now)
+-- 1. Check phase: verify all keys have capacity
+for i, key in ipairs(KEYS) do
+  local limit = tonumber(ARGV[3 + i])
+  redis.call('ZREMRANGEBYSCORE', key, 0, cutoff)
+  local current = redis.call('ZCARD', key)
+  if current >= limit then
+    local oldest = redis.call('ZRANGE', key, 0, 0, 'WITHSCORES')
+    local retryAfterMs = window
+    if oldest and #oldest >= 2 then
+      retryAfterMs = math.max(1000, (tonumber(oldest[2]) + window) - now)
+    end
+    -- Returns 0, index of rejecting tier (1=IP, 2=User, 3=Task), retryAfterSeconds
+    return { 0, i, math.ceil(retryAfterMs / 1000) }
   end
-  return { 0, current, math.ceil(retryAfterMs / 1000) }
 end
 
-redis.call('ZADD', key, now, token)
-redis.call('EXPIRE', key, math.ceil(window / 1000) + 5)
-return { 1, limit - current - 1, 0 }
+-- 2. Commit phase: capacity confirmed on all keys, record token on all keys
+local minRemaining = 999999
+for i, key in ipairs(KEYS) do
+  local limit = tonumber(ARGV[3 + i])
+  redis.call('ZADD', key, now, token)
+  redis.call('EXPIRE', key, math.ceil(window / 1000) + 5)
+  local current = redis.call('ZCARD', key)
+  local rem = limit - current
+  if rem < minRemaining then
+    minRemaining = rem
+  end
+end
+
+return { 1, minRemaining, 0 }
 `;
 
-async function executeRateLimitLua(client: any, key: string, now: number, windowMs: number, limit: number): Promise<[number, number, number]> {
+async function executeMultiTierRateLimitLua(
+  client: any,
+  keys: string[],
+  limits: number[],
+  now: number,
+  windowMs: number
+): Promise<[number, number, number]> {
   const token = `${now}:${Math.random().toString(36).slice(2, 8)}`;
+  const args = [String(now), String(windowMs), token, ...limits.map(String)];
   try {
-    const res = await client.eval(RATE_LIMIT_LUA, {
-      keys: [key],
-      arguments: [String(now), String(windowMs), String(limit), token],
+    const res = await client.eval(MULTI_TIER_RATE_LIMIT_LUA, {
+      keys,
+      arguments: args,
     });
     return [Number(res[0]), Number(res[1]), Number(res[2])];
   } catch {
-    const res = await client.eval(RATE_LIMIT_LUA, 1, key, String(now), String(windowMs), String(limit), token);
+    const res = await client.eval(MULTI_TIER_RATE_LIMIT_LUA, keys.length, ...keys, ...args);
     return [Number(res[0]), Number(res[1]), Number(res[2])];
   }
 }
 
+/** In-memory simulate check (does not record) */
+function simulateRateLimit(clientId: string, limit: number): { allowed: boolean; remaining: number; retryAfterSeconds: number } {
+  cleanupStale();
+  const id = sanitizeClientIdentifier(clientId);
+  const now = Date.now();
+  const cutoff = now - windowMs;
+  const record = clients.get(id);
+  const validTimestamps = record ? record.timestamps.filter(t => t > cutoff) : [];
+  if (validTimestamps.length >= limit) {
+    const oldest = validTimestamps[0];
+    const retryAfterMs = Math.max(1000, oldest + windowMs - now);
+    return { allowed: false, remaining: 0, retryAfterSeconds: Math.ceil(retryAfterMs / 1000) };
+  }
+  return { allowed: true, remaining: limit - validTimestamps.length - 1, retryAfterSeconds: 0 };
+}
+
+/** In-memory commit record */
+function commitRateLimit(clientId: string): void {
+  const id = sanitizeClientIdentifier(clientId);
+  const now = Date.now();
+  let record = clients.get(id);
+  if (!record) {
+    record = { timestamps: [] };
+    clients.set(id, record);
+  }
+  record.timestamps.push(now);
+}
+
 /**
- * Distributed rate limiter with multi-tier defense:
+ * Distributed rate limiter with atomic multi-tier defense:
  * 1. Per IP limit (default 20 req/min)
  * 2. Per User ID limit (default 60 req/min)
- * 3. Indivisible atomic Redis Lua sliding window with safe in-memory fallback
+ * 3. Per Task limit (default 10 req/min)
+ * 4. Truly indivisible atomic Redis Lua multi-key check: No partial quota consumption on rejection!
+ * 5. Strict fail-closed production policy when Redis fails or is unavailable.
  */
 export async function checkDistributedRateLimit(options: DistributedRateLimitOptions): Promise<RateLimitResult> {
   const cleanIp = sanitizeClientIdentifier(options.ip);
   const ipLimit = options.ipLimit ?? maxRequestsPerWindow;
   const userLimit = options.userLimit ?? 60;
+  const taskLimit = options.taskLimit ?? 10;
+  const isStrictFailClosed = process.env.RATE_LIMIT_FAIL_CLOSED === 'true' || process.env.NODE_ENV === 'production';
 
   // Try Redis distributed limiter
   try {
     const redis = await getRedisClient();
     if (redis) {
       const now = Date.now();
+      const keys: string[] = [`ratelimit:ip:${cleanIp}`];
+      const limits: number[] = [ipLimit];
 
-      // Check IP atomically
-      const [ipAllowed, ipRemaining, ipRetry] = await executeRateLimitLua(
+      if (options.userId) {
+        keys.push(`ratelimit:user:${options.userId}`);
+        limits.push(userLimit);
+      }
+      if (options.task) {
+        keys.push(`ratelimit:task:${options.task}:${cleanIp}`);
+        limits.push(taskLimit);
+      }
+
+      const [allowed, info, retrySeconds] = await executeMultiTierRateLimitLua(
         redis,
-        `ratelimit:ip:${cleanIp}`,
+        keys,
+        limits,
         now,
-        windowMs,
-        ipLimit
+        windowMs
       );
 
-      if (ipAllowed === 0) {
+      if (allowed === 0) {
+        let reason = 'Distributed IP rate limit exceeded';
+        if (info === 2 && options.userId) {
+          reason = 'Distributed user account rate limit exceeded';
+        } else if ((info === 3 && options.task) || (info === 2 && !options.userId && options.task)) {
+          reason = `Distributed task rate limit exceeded: ${options.task}`;
+        }
         return {
           allowed: false,
           remaining: 0,
-          retryAfterSeconds: ipRetry || 60,
-          reason: 'Distributed IP rate limit exceeded',
+          retryAfterSeconds: retrySeconds || 60,
+          reason,
         };
-      }
-
-      // Check User ID atomically if present
-      if (options.userId) {
-        const [userAllowed, userRemaining, userRetry] = await executeRateLimitLua(
-          redis,
-          `ratelimit:user:${options.userId}`,
-          now,
-          windowMs,
-          userLimit
-        );
-        if (userAllowed === 0) {
-          return {
-            allowed: false,
-            remaining: 0,
-            retryAfterSeconds: userRetry || 60,
-            reason: 'Distributed user account rate limit exceeded',
-          };
-        }
       }
 
       return {
         allowed: true,
-        remaining: ipRemaining,
+        remaining: info,
         retryAfterSeconds: 0,
+      };
+    } else if (isStrictFailClosed && (process.env.REDIS_URL || process.env.RATE_LIMIT_FAIL_CLOSED === 'true')) {
+      return {
+        allowed: false,
+        remaining: 0,
+        retryAfterSeconds: 30,
+        reason: 'Rate limit service unavailable in strict production mode',
       };
     }
   } catch (redisErr) {
     console.warn('[RateLimiter] Distributed check failed, evaluating degraded policy:', redisErr);
-    if (process.env.NODE_ENV === 'production' && process.env.RATE_LIMIT_FAIL_CLOSED === 'true') {
+    if (isStrictFailClosed) {
       return {
         allowed: false,
         remaining: 0,
@@ -226,21 +319,44 @@ export async function checkDistributedRateLimit(options: DistributedRateLimitOpt
     }
   }
 
-  // Fallback to local multi-tier memory check
-  const ipRes = checkRateLimit(`ip:${cleanIp}`, ipLimit);
-  if (!ipRes.allowed) return ipRes;
+  // Fallback to in-memory atomic multi-tier check (check all, then commit all)
+  const ipSim = simulateRateLimit(`ip:${cleanIp}`, ipLimit);
+  if (!ipSim.allowed) {
+    return { ...ipSim, reason: 'IP rate limit exceeded' };
+  }
 
+  let userSim: any = null;
   if (options.userId) {
-    const userRes = checkRateLimit(`user:${options.userId}`, userLimit);
-    if (!userRes.allowed) {
-      return {
-        ...userRes,
-        reason: 'User account rate limit exceeded',
-      };
+    userSim = simulateRateLimit(`user:${options.userId}`, userLimit);
+    if (!userSim.allowed) {
+      return { ...userSim, reason: 'User account rate limit exceeded' };
     }
   }
 
-  return ipRes;
+  let taskSim: any = null;
+  if (options.task) {
+    taskSim = simulateRateLimit(`task:${options.task}:${cleanIp}`, taskLimit);
+    if (!taskSim.allowed) {
+      return { ...taskSim, reason: `Task '${options.task}' rate limit exceeded` };
+    }
+  }
+
+  // All tiers have capacity: commit to all
+  commitRateLimit(`ip:${cleanIp}`);
+  if (options.userId) commitRateLimit(`user:${options.userId}`);
+  if (options.task) commitRateLimit(`task:${options.task}:${cleanIp}`);
+
+  const minRem = Math.min(
+    ipSim.remaining,
+    userSim ? userSim.remaining : Infinity,
+    taskSim ? taskSim.remaining : Infinity
+  );
+
+  return {
+    allowed: true,
+    remaining: minRem,
+    retryAfterSeconds: 0,
+  };
 }
 
 /** Concurrency guard: limits parallel requests per client IP to prevent stampedes */

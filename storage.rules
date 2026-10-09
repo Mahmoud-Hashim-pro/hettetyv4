@@ -58,6 +58,34 @@ service firebase.storage {
       allow delete: if isOwner(ownerUid) || isSuperAdmin();
     }
 
+    // 3D Spatial Captures (Raw input images & videos):
+    // Private by default. Read restricted to super-admins / backend worker.
+    // Client write is strictly size-capped and type-validated without overwrite.
+    match /properties/{propertyId}/3d/raw/{jobId}/{fileName} {
+      allow read: if isSuperAdmin();
+      allow create: if isAuthenticated() && (
+                     (request.resource.contentType.matches('image/.*') && request.resource.size < 50 * 1024 * 1024) ||
+                     (request.resource.contentType.matches('video/.*') && request.resource.size < 500 * 1024 * 1024)
+                    );
+      allow update: if false;
+      allow delete: if isSuperAdmin();
+    }
+
+    // Published 3D Spatial Assets (scene.spz, mesh.glb, manifest.json):
+    // Publicly readable for 3D property tour viewer.
+    // Writes strictly forbidden to clients (backend worker / Admin SDK only).
+    match /properties/{propertyId}/tour/{fileName} {
+      allow read: if true;
+      allow write: if isSuperAdmin();
+    }
+
+    // Immutable versioned attempt artifacts:
+    // Publicly readable for property preview, writes strictly forbidden to clients.
+    match /properties/{propertyId}/3d/{jobId}/{attemptId}/{fileName} {
+      allow read: if true;
+      allow write: if isSuperAdmin();
+    }
+
     // Legacy flat objects: still readable, never writable or deletable from a
     // client. Media uploaded before the uid segment existed has to be swept with
     // the Admin SDK — the app tells the owner so instead of pretending it's gone.

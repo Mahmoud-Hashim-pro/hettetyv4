@@ -146,16 +146,6 @@ export async function getAdminServices(): Promise<{ adminDb: any; adminAuth: any
   }
 
   try {
-    const adminPkg = 'firebase-admin';
-    const adminModule = await import(/* @vite-ignore */ adminPkg);
-    const admin = (adminModule as any).default || adminModule;
-    const appPkg = 'firebase-admin/app';
-    const { getApps, initializeApp, cert } = await import(/* @vite-ignore */ appPkg);
-    const firestorePkg = 'firebase-admin/firestore';
-    const { getFirestore } = await import(/* @vite-ignore */ firestorePkg);
-    const authPkg = 'firebase-admin/auth';
-    const { getAuth } = await import(/* @vite-ignore */ authPkg);
-
     // Upfront credential & project validation (fail-fast without hanging or network timeouts)
     let serviceAccountData: any = null;
     if (process.env.FIREBASE_SERVICE_ACCOUNT_KEY) {
@@ -165,6 +155,16 @@ export async function getAdminServices(): Promise<{ adminDb: any; adminAuth: any
         throw new Error(`FIREBASE_ADMIN_CONFIG_INVALID: Failed to parse FIREBASE_SERVICE_ACCOUNT_KEY JSON: ${parseErr.message}`);
       }
     }
+
+    const adminPkg = 'firebase-admin';
+    const adminModule = await import(/* @vite-ignore */ adminPkg);
+    const admin = (adminModule as any).default || adminModule;
+    const appPkg = 'firebase-admin/app';
+    const { getApps, initializeApp, cert } = await import(/* @vite-ignore */ appPkg);
+    const firestorePkg = 'firebase-admin/firestore';
+    const { getFirestore } = await import(/* @vite-ignore */ firestorePkg);
+    const authPkg = 'firebase-admin/auth';
+    const { getAuth } = await import(/* @vite-ignore */ authPkg);
 
     const projectId = (serviceAccountData && serviceAccountData.project_id) ||
       process.env.FIREBASE_PROJECT_ID ||

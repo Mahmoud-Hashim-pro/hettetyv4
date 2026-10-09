@@ -84,4 +84,69 @@ describe('Tier 2 — Fetching a staged file for the AI', () => {
     globalThis.fetch = vi.fn() as any;
     await expect(resolveFileUrls(msg(good, ''))).rejects.toThrow(/mimeType/i);
   });
+
+  it('refuses unsupported MIME types outside the allowlist', async () => {
+    globalThis.fetch = okFetch() as any;
+    await expect(resolveFileUrls(msg(good, 'application/javascript'))).rejects.toThrow(/unsupported file mimeType/i);
+    await expect(resolveFileUrls(msg(good, 'text/html'))).rejects.toThrow(/unsupported file mimeType/i);
+    expect(globalThis.fetch).not.toHaveBeenCalled();
+  });
+
+  it('rejects file when file magic bytes do not match declared PDF signature', async () => {
+    // Malicious or mismatched payload pretending to be PDF
+    const fakePdfBytes = Buffer.from('<html><body>Not a PDF</body></html>');
+    globalThis.fetch = okFetch(fakePdfBytes) as any;
+    await expect(resolveFileUrls(msg(good, 'application/pdf'))).rejects.toThrow(/does not match PDF signature/i);
+  });
+
+  it('accepts valid JPEG, PNG, and WebP files with valid magic signatures', async () => {
+    // JPEG magic bytes: FF D8 FF
+    const jpegBytes = Buffer.from([0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10]);
+    globalThis.fetch = okFetch(jpegBytes) as any;
+    const resJpeg = await resolveFileUrls(msg(good, 'image/jpeg'));
+    expect(resJpeg[0].parts[1]).toHaveProperty('inlineData');
+
+    // PNG magic bytes: 89 50 4E 47
+    const pngBytes = Buffer.from([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]);
+    globalThis.fetch = okFetch(pngBytes) as any;
+    const resPng = await resolveFileUrls(msg(good, 'image/png'));
+    expect(resPng[0].parts[1]).toHaveProperty('inlineData');
+  });
+
+  it('refuses unexpected HTTP redirects on storage download URLs', async () => {
+    globalThis.fetch = vi.fn().mockRejectedValue(new TypeError('Failed to fetch (redirect)')) as any;
+    await expect(resolveFileUrls(msg(good, 'application/pdf'))).rejects.toThrow(/redirect/i);
+  });
+
+  it('aborts streaming and rejects when stream chunk accumulation exceeds 16MB', async () => {
+    let cancelCalled = false;
+    let readCount = 0;
+    const mockStreamReader = {
+      read: async () => {
+        readCount++;
+        if (readCount === 1) {
+          return { done: false, value: new Uint8Array(10 * 1024 * 1024) }; // 10MB
+        } else if (readCount === 2) {
+          return { done: false, value: new Uint8Array(7 * 1024 * 1024) }; // +7MB = 17MB (> 16MB)
+        }
+        return { done: true, value: undefined };
+      },
+      cancel: async () => {
+        cancelCalled = true;
+      },
+    };
+
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: { get: () => '0' }, // Chunked transfer without content-length
+      body: {
+        getReader: () => mockStreamReader,
+      },
+    }) as any;
+
+    await expect(resolveFileUrls(msg(good, 'application/pdf'))).rejects.toThrow(/too large/i);
+    expect(cancelCalled).toBe(true);
+  });
 });
+

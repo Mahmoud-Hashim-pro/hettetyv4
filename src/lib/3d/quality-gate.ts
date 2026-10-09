@@ -25,6 +25,7 @@ export interface MeshTelemetry {
   glbSizeBytes: number;
   isCalibratedMetric: boolean;
   calibrationConfidence: number;
+  calibrationRmse?: number;
 }
 
 export interface QualityGateEvaluation {
@@ -32,6 +33,7 @@ export interface QualityGateEvaluation {
   overallScore: number; // 0-100
   status: 'READY' | 'REJECTED' | 'WARNING';
   certification?: {
+    status?: 'METRIC_CERTIFIED' | 'VISUAL_READY' | 'REJECTED';
     visualReady: boolean;
     metricCertified: boolean;
   };
@@ -120,27 +122,49 @@ export function evaluateTourQualityGate(
     Math.min(100, (mesh.faceCount > 20 ? 50 : 30) + (mesh.isCalibratedMetric ? 50 : 20))
   );
 
-  const passed = capturePassed && gaussianPassed && meshPassed;
+  let calibPassed = true;
+  const calibIssues: string[] = [];
+  if (mesh.isCalibratedMetric) {
+    if (
+      mesh.calibrationConfidence === undefined ||
+      mesh.calibrationConfidence === null ||
+      isNaN(mesh.calibrationConfidence) ||
+      mesh.calibrationConfidence < 0.85
+    ) {
+      calibPassed = false;
+      calibIssues.push(`Metric calibration confidence ${mesh.calibrationConfidence ?? 'missing'} below 0.85 threshold`);
+    }
+    if (
+      mesh.calibrationRmse !== undefined &&
+      (isNaN(mesh.calibrationRmse) || mesh.calibrationRmse > 0.05)
+    ) {
+      calibPassed = false;
+      calibIssues.push(`Metric calibration RMSE ${mesh.calibrationRmse}m exceeds 5cm threshold`);
+    }
+  }
+
+  const visualReady = capturePassed && gaussianPassed && meshPassed && (!mesh.isCalibratedMetric || calibPassed);
+  const metricCertified = visualReady && Boolean(mesh.isCalibratedMetric && calibPassed);
+  const passed = visualReady && calibPassed;
   const overallScore = Math.round(captureScore * 0.35 + gaussianScore * 0.40 + meshScore * 0.25);
   const status = passed ? (overallScore >= 80 ? 'READY' : 'WARNING') : 'REJECTED';
+  const certificationStatus = metricCertified ? 'METRIC_CERTIFIED' : (passed && !mesh.isCalibratedMetric ? 'VISUAL_READY' : 'REJECTED');
 
   if (!mesh.isCalibratedMetric) {
     recommendations.push('Model requires physical scale anchor calibration before enabling certified contract measurements.');
     recommendationsAr.push('النموذج يتطلب معايرة مقياس حقيقي قبل تفعيل القياسات التعاقدية المعتمدة.');
   }
 
-  const visualReady = passed;
-  const metricCertified = passed && Boolean(mesh.isCalibratedMetric);
-
   return {
     passed,
     overallScore,
     status,
     certification: {
+      status: certificationStatus,
       visualReady,
       metricCertified,
     },
-    reasons: [...captureIssues, ...gaussianIssues, ...meshIssues],
+    reasons: [...captureIssues, ...gaussianIssues, ...meshIssues, ...calibIssues],
     captureCheck: { passed: capturePassed, score: captureScore, issues: captureIssues, issuesAr: captureIssuesAr },
     gaussianCheck: { passed: gaussianPassed, score: gaussianScore, issues: gaussianIssues, issuesAr: gaussianIssuesAr },
     meshCheck: { passed: meshPassed, score: meshScore, issues: meshIssues, issuesAr: meshIssuesAr },

@@ -578,7 +578,72 @@ NaN NaN NaN
       expect(evaluation.status).toBe('READY');
       expect(evaluation.certification?.visualReady).toBe(true);
       expect(evaluation.certification?.metricCertified).toBe(false);
+      expect(evaluation.certification?.status).toBe('VISUAL_READY');
       expect(evaluation.recommendations.some(r => r.includes('physical scale anchor calibration'))).toBe(true);
+    });
+
+    it('rejects tour claiming metric calibration when confidence is below 0.85 threshold', () => {
+      const evaluation = evaluateTourQualityGate(
+        {
+          imageCount: 45,
+          avgResolution: [1920, 1080],
+          blurScore: 88,
+          overlapScore: 92,
+          coverageScore: 90,
+        },
+        {
+          splatCount: 420000,
+          bounds: { min: [-5, 0, -5], max: [5, 3.2, 5] },
+          spzSizeBytes: 8500000,
+          hasNaNOrInf: false,
+        },
+        {
+          vertexCount: 15400,
+          faceCount: 28000,
+          glbSizeBytes: 3200000,
+          isCalibratedMetric: true,
+          calibrationConfidence: 0.72, // Below 0.85 threshold
+          calibrationRmse: 0.02,
+        }
+      );
+
+      expect(evaluation.passed).toBe(false);
+      expect(evaluation.status).toBe('REJECTED');
+      expect(evaluation.certification?.metricCertified).toBe(false);
+      expect(evaluation.certification?.status).toBe('REJECTED');
+      expect(evaluation.reasons?.some(r => r.includes('0.85 threshold'))).toBe(true);
+    });
+
+    it('rejects tour claiming metric calibration when RMSE exceeds 5cm (0.05m) tolerance', () => {
+      const evaluation = evaluateTourQualityGate(
+        {
+          imageCount: 45,
+          avgResolution: [1920, 1080],
+          blurScore: 88,
+          overlapScore: 92,
+          coverageScore: 90,
+        },
+        {
+          splatCount: 420000,
+          bounds: { min: [-5, 0, -5], max: [5, 3.2, 5] },
+          spzSizeBytes: 8500000,
+          hasNaNOrInf: false,
+        },
+        {
+          vertexCount: 15400,
+          faceCount: 28000,
+          glbSizeBytes: 3200000,
+          isCalibratedMetric: true,
+          calibrationConfidence: 0.95,
+          calibrationRmse: 0.078, // 7.8cm > 5cm limit
+        }
+      );
+
+      expect(evaluation.passed).toBe(false);
+      expect(evaluation.status).toBe('REJECTED');
+      expect(evaluation.certification?.metricCertified).toBe(false);
+      expect(evaluation.certification?.status).toBe('REJECTED');
+      expect(evaluation.reasons?.some(r => r.includes('exceeds 5cm threshold'))).toBe(true);
     });
   });
 

@@ -368,6 +368,8 @@ class TestHettety3DReconstructionE2E(unittest.TestCase):
             mesh_vertex_count=120,
             mesh_face_count=80,
             is_calibrated_metric=True,
+            calibration_confidence=0.95,
+            calibration_rmse=0.02,
         )
         self.assertTrue(pub_res["success"])
         metrics = pub_res["payload"]["qualityReport"]["metrics"]
@@ -542,6 +544,8 @@ class TestHettety3DReconstructionE2E(unittest.TestCase):
             mesh_vertex_count=500,
             mesh_face_count=800,
             is_calibrated_metric=True,
+            calibration_confidence=0.95,
+            calibration_rmse=0.02,
             attempt_id="attempt_run_7",
             worker_id="worker_gpu_node_3"
         )
@@ -923,6 +927,77 @@ class TestHettety3DReconstructionE2E(unittest.TestCase):
         )
         self.assertTrue(calibrated_report["certification"]["visualReady"])
         self.assertTrue(calibrated_report["certification"]["metricCertified"])
+
+    def test_32_metric_calibration_quality_gate_validation(self):
+        """
+        Verifies strict fail-closed rejection when metric calibration claims
+        fail confidence (< 0.85, non-finite, zero/neg, missing) or RMSE (> 0.05m, non-finite, missing).
+        """
+        base_args = dict(
+            image_count=20,
+            registered_cameras=18,
+            mean_reprojection_error=0.8,
+            splat_count=50000,
+            bounds={"min": [-2, 0, -2], "max": [2, 3, 2]},
+            mesh_vertex_count=500,
+            mesh_face_count=900,
+            glb_size_bytes=20000,
+            is_calibrated_metric=True,
+        )
+
+        # 1. Missing confidence (None)
+        res_none_conf = evaluate_reconstruction_quality(**base_args, calibration_confidence=None, calibration_rmse=0.02)
+        self.assertFalse(res_none_conf["passed"])
+        self.assertEqual(res_none_conf["status"], "REJECTED")
+        self.assertFalse(res_none_conf["checks"]["metricCalibration"]["passed"])
+        self.assertFalse(res_none_conf["certification"]["metricCertified"])
+        self.assertEqual(res_none_conf["certification"]["status"], "REJECTED")
+
+        # 2. Zero / negative confidence
+        res_zero_conf = evaluate_reconstruction_quality(**base_args, calibration_confidence=0.0, calibration_rmse=0.02)
+        self.assertFalse(res_zero_conf["passed"])
+        self.assertEqual(res_zero_conf["status"], "REJECTED")
+
+        res_neg_conf = evaluate_reconstruction_quality(**base_args, calibration_confidence=-0.5, calibration_rmse=0.02)
+        self.assertFalse(res_neg_conf["passed"])
+        self.assertEqual(res_neg_conf["status"], "REJECTED")
+
+        # 3. NaN / Inf confidence
+        res_nan_conf = evaluate_reconstruction_quality(**base_args, calibration_confidence=float("nan"), calibration_rmse=0.02)
+        self.assertFalse(res_nan_conf["passed"])
+        self.assertEqual(res_nan_conf["status"], "REJECTED")
+
+        res_inf_conf = evaluate_reconstruction_quality(**base_args, calibration_confidence=float("inf"), calibration_rmse=0.02)
+        self.assertFalse(res_inf_conf["passed"])
+        self.assertEqual(res_inf_conf["status"], "REJECTED")
+
+        # 4. Sub-threshold confidence (< 0.85)
+        res_sub_conf = evaluate_reconstruction_quality(**base_args, calibration_confidence=0.84, calibration_rmse=0.02)
+        self.assertFalse(res_sub_conf["passed"])
+        self.assertEqual(res_sub_conf["status"], "REJECTED")
+
+        # 5. Missing RMSE (None)
+        res_none_rmse = evaluate_reconstruction_quality(**base_args, calibration_confidence=0.95, calibration_rmse=None)
+        self.assertFalse(res_none_rmse["passed"])
+        self.assertEqual(res_none_rmse["status"], "REJECTED")
+
+        # 6. NaN / Inf RMSE
+        res_nan_rmse = evaluate_reconstruction_quality(**base_args, calibration_confidence=0.95, calibration_rmse=float("nan"))
+        self.assertFalse(res_nan_rmse["passed"])
+        self.assertEqual(res_nan_rmse["status"], "REJECTED")
+
+        # 7. Excessive RMSE (> 0.05m / 5cm)
+        res_bad_rmse = evaluate_reconstruction_quality(**base_args, calibration_confidence=0.95, calibration_rmse=0.055)
+        self.assertFalse(res_bad_rmse["passed"])
+        self.assertEqual(res_bad_rmse["status"], "REJECTED")
+
+        # 8. Certified calibration passes
+        res_ok = evaluate_reconstruction_quality(**base_args, calibration_confidence=0.95, calibration_rmse=0.015)
+        self.assertTrue(res_ok["passed"])
+        self.assertEqual(res_ok["status"], "READY")
+        self.assertEqual(res_ok["certification"]["status"], "METRIC_CERTIFIED")
+        self.assertTrue(res_ok["certification"]["visualReady"])
+        self.assertTrue(res_ok["certification"]["metricCertified"])
 
 if __name__ == "__main__":
     unittest.main()

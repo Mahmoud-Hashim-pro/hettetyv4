@@ -134,29 +134,60 @@ def evaluate_reconstruction_quality(
     calib_issues: List[str] = []
     calib_passed = True
     if is_calibrated_metric:
-        if calibration_confidence is not None and calibration_confidence > 0.0 and calibration_confidence < 0.85:
+        # Strict validation of calibration confidence
+        if calibration_confidence is None:
+            calib_passed = False
+            msg = "Missing calibration confidence score for claimed metric calibration"
+            calib_issues.append(msg)
+            reasons.append(msg)
+        elif not isinstance(calibration_confidence, (int, float)) or math.isnan(calibration_confidence) or math.isinf(calibration_confidence):
+            calib_passed = False
+            msg = f"Non-finite or invalid calibration confidence ({calibration_confidence})"
+            calib_issues.append(msg)
+            reasons.append(msg)
+        elif calibration_confidence <= 0.0:
+            calib_passed = False
+            msg = f"Zero or negative calibration confidence ({calibration_confidence})"
+            calib_issues.append(msg)
+            reasons.append(msg)
+        elif calibration_confidence < 0.85:
             calib_passed = False
             msg = f"Metric calibration confidence {calibration_confidence:.2f} below certified threshold (0.85)"
             calib_issues.append(msg)
             reasons.append(msg)
-        if calibration_rmse is not None and calibration_rmse > 0.05:
+
+        # Strict validation of calibration RMSE
+        if calibration_rmse is None:
+            calib_passed = False
+            msg = "Missing calibration RMSE metric for claimed metric calibration"
+            calib_issues.append(msg)
+            reasons.append(msg)
+        elif not isinstance(calibration_rmse, (int, float)) or math.isnan(calibration_rmse) or math.isinf(calibration_rmse):
+            calib_passed = False
+            msg = f"Non-finite or invalid calibration RMSE ({calibration_rmse})"
+            calib_issues.append(msg)
+            reasons.append(msg)
+        elif calibration_rmse > 0.05:
             calib_passed = False
             msg = f"Metric calibration RMSE {calibration_rmse:.4f}m exceeds 5cm certified threshold"
             calib_issues.append(msg)
             reasons.append(msg)
-    calib_score = 100 if (is_calibrated_metric and calib_passed) else (70 if not is_calibrated_metric else 40)
+
+    calib_score = 100 if (is_calibrated_metric and calib_passed) else (70 if not is_calibrated_metric else 20)
 
     # Global Decision
-    visual_ready = cam_passed and gs_passed and mesh_passed
-    metric_certified = bool(is_calibrated_metric and calib_passed)
+    visual_ready = cam_passed and gs_passed and mesh_passed and (not is_calibrated_metric or calib_passed)
+    metric_certified = bool(is_calibrated_metric and calib_passed and visual_ready)
     overall_passed = cam_passed and gs_passed and mesh_passed and calib_passed
     overall_score = int(cam_score * 0.35 + gs_score * 0.30 + mesh_score * 0.20 + calib_score * 0.15)
     status = "READY" if overall_passed else "REJECTED"
+    certification_status = "METRIC_CERTIFIED" if metric_certified else ("VISUAL_READY" if (overall_passed and not is_calibrated_metric) else "REJECTED")
 
     logger.info(
         f"Reconstruction Quality Gate: status={status}, score={overall_score}, "
         f"cam={cam_passed}, gs={gs_passed}, mesh={mesh_passed}, calib={calib_passed}, "
-        f"visualReady={visual_ready}, metricCertified={metric_certified}, reasons={reasons}"
+        f"visualReady={visual_ready}, metricCertified={metric_certified}, "
+        f"certificationStatus={certification_status}, reasons={reasons}"
     )
 
     return {
@@ -164,6 +195,7 @@ def evaluate_reconstruction_quality(
         "status": status,
         "overallScore": overall_score,
         "certification": {
+            "status": certification_status,
             "visualReady": visual_ready,
             "metricCertified": metric_certified,
         },
@@ -171,7 +203,12 @@ def evaluate_reconstruction_quality(
             "cameraAlignment": {"passed": cam_passed, "score": cam_score, "issues": cam_issues},
             "gaussianSplatting": {"passed": gs_passed, "score": gs_score, "issues": gs_issues},
             "meshGeometry": {"passed": mesh_passed, "score": mesh_score, "issues": mesh_issues},
-            "metricCalibration": {"passed": calib_passed, "score": calib_score, "issues": calib_issues}
+            "metricCalibration": {
+                "passed": calib_passed,
+                "score": calib_score,
+                "issues": calib_issues,
+                **({} if is_calibrated_metric else {"notice": "Uncalibrated walkthrough — measurements approximate"})
+            }
         },
         "reasons": reasons
     }

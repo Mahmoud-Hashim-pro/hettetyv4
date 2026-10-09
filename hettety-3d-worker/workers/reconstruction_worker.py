@@ -6,6 +6,7 @@ Includes durable consumer daemon loop with lease timeout, cancellation checks, a
 """
 
 import os
+import re
 import shutil
 import logging
 import argparse
@@ -28,6 +29,106 @@ logging.basicConfig(
 )
 logger = logging.getLogger("hettety-3d-worker.master")
 
+# A job id becomes a directory name, so it may only be the characters that
+# cannot mean anything else to a filesystem.
+JOB_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
+
+# Kept identical to the control plane's development fallback so the two still
+# agree outside production; see getWorkerSharedSecret in api/reconstruction.ts.
+DEV_WORKER_SECRET = "hettety-worker-secret-internal"
+
+
+def is_production() -> bool:
+    return os.environ.get("NODE_ENV") == "production" or os.environ.get("HETTETY_ENV") == "production"
+
+
+def resolve_worker_secret(job: Optional[Dict[str, Any]] = None) -> str:
+    """The worker's own credential, never the job's.
+
+    The job arrives over the queue. Letting it supply the secret the worker
+    then authenticates with means writing a job is enough to mint a credential,
+    so the payload is ignored here entirely — the parameter exists only to make
+    that refusal explicit and testable.
+    """
+    secret = os.environ.get("WORKER_SHARED_SECRET")
+    if secret:
+        return secret
+    if is_production():
+        raise RuntimeError(
+            "CONFIGURATION_ERROR: WORKER_SHARED_SECRET is mandatory in production."
+        )
+    return DEV_WORKER_SECRET
+
+
+def resolve_control_plane_url(job: Optional[Dict[str, Any]] = None) -> str:
+    """Where this worker reports to — our address, never the job's.
+
+    The worker sends Authorization: Bearer <shared secret> to this URL from
+    progress reports, the heartbeat, failure reports and the publish step. A
+    job that could name the address could therefore collect the credential and
+    then authenticate to the control plane as the worker. Nothing legitimate
+    sets callbackUrl: api/reconstruction.ts builds the queued payload and never
+    includes it. So the job is ignored here, as it is for the secret.
+
+    Defaulting to a mock callback is separately what let a correctly started
+    production worker run with no reporting at all.
+    """
+    configured = os.environ.get("HETTETY_CONTROL_PLANE_URL")
+    if configured:
+        return configured
+    if is_production():
+        raise RuntimeError(
+            "CONFIGURATION_ERROR: HETTETY_CONTROL_PLANE_URL is mandatory in production."
+        )
+    return "mock://callback"
+
+
+def dense_failure_is_tolerated(callback_url: str = "") -> bool:
+    """Whether this run may publish without dense geometry.
+
+    Only an explicit test environment may, and never in production. The callback
+    URL is deliberately not consulted: keying on it is what turned a missing
+    environment variable into a silently degraded pipeline.
+    """
+    if is_production():
+        return False
+    return os.environ.get("HETTETY_ENV") == "test"
+
+
+def validate_runtime_configuration() -> None:
+    """Fail at startup, not per job.
+
+    Raising inside process_job happens before the fail() closure exists, so no
+    FAILED callback can be sent, and the exception escapes into the consumer,
+    which nacks and dead-letters after three attempts. A worker missing its
+    configuration would therefore destroy every job it was handed instead of
+    saying so. Checking here means a misconfigured worker never starts.
+    """
+    if not is_production():
+        return
+    missing = [name for name in ("WORKER_SHARED_SECRET", "HETTETY_CONTROL_PLANE_URL")
+               if not os.environ.get(name)]
+    if missing:
+        raise RuntimeError(
+            "CONFIGURATION_ERROR: %s %s mandatory in production." %
+            (", ".join(missing), "is" if len(missing) == 1 else "are")
+        )
+
+
+def safe_job_workspace(work_dir: str, job_id: str) -> str:
+    """The directory for a job, or a refusal.
+
+    Resolved and checked for containment rather than merely pattern-matched,
+    because this path is later removed recursively.
+    """
+    if not isinstance(job_id, str) or not JOB_ID_PATTERN.match(job_id):
+        raise ValueError("INVALID_JOB_ID: %r is not a permitted job identifier" % (job_id,))
+    root = os.path.realpath(work_dir)
+    candidate = os.path.realpath(os.path.join(root, job_id))
+    if candidate != root and not candidate.startswith(root + os.sep):
+        raise ValueError("INVALID_JOB_ID: %r resolves outside the workspace" % (job_id,))
+    return candidate
+
 class ReconstructionWorker:
     def __init__(
         self,
@@ -45,6 +146,13 @@ class ReconstructionWorker:
         # P0-1 / Section 59: Production guard against invalid test mode
         if os.environ.get("NODE_ENV") == "production" and os.environ.get("HETTETY_ENV") == "test":
             raise RuntimeError("INVALID_ENVIRONMENT_CONFIGURATION: HETTETY_ENV=test is strictly forbidden when NODE_ENV=production")
+        validate_runtime_configuration()
+        # Resolved once, here, so process_job can never raise over configuration.
+        # A raise inside process_job happens before the fail() closure exists,
+        # so it reaches the consumer as an unhandled error and dead-letters the
+        # job instead of reporting it.
+        self.control_plane_url = resolve_control_plane_url()
+        self.worker_secret = resolve_worker_secret()
         self.cleanup_orphan_workspaces(max_age_hours=2.0)
 
     def cleanup_orphan_workspaces(self, max_age_hours: float = 2.0):
@@ -183,8 +291,8 @@ class ReconstructionWorker:
             capture_urls = job.get("captureUrls", [])
 
         reference_anchors = job.get("referenceAnchors") or job.get("scaleReferences") or []
-        callback_url = job.get("callbackUrl") or os.getenv("HETTETY_CONTROL_PLANE_URL", "mock://callback")
-        api_key = job.get("apiKey") or os.getenv("WORKER_SHARED_SECRET", "hettety-worker-secret-internal")
+        callback_url = self.control_plane_url
+        api_key = self.worker_secret
 
         # Bound reporting closures with attempt isolation & worker identification
         def report(status: str, progress: int, stage_desc: str):
@@ -193,7 +301,7 @@ class ReconstructionWorker:
         def fail(err_code: str, err_msg: str) -> Dict[str, Any]:
             return self._fail_job(job_id, property_id, err_code, err_msg, callback_url, api_key, attempt_id=attempt_id, worker_id=worker_id)
 
-        job_dir = os.path.join(self.work_dir, job_id)
+        job_dir = safe_job_workspace(self.work_dir, job_id)
         raw_images_dir = os.path.join(job_dir, "images")
         colmap_dir = os.path.join(job_dir, "sfm")
         model_dir = os.path.join(job_dir, "output")
@@ -268,14 +376,14 @@ class ReconstructionWorker:
                 fused_ply = os.path.join(dense_dir, "fused.ply")
                 if not os.path.exists(fused_ply) or os.path.getsize(fused_ply) < 100:
                     # In real reconstruction, dense failure must strictly fail rather than falling back to sparse SfM
-                    if os.environ.get("HETTETY_ENV") != "test" and not callback_url.startswith("mock://"):
+                    if not dense_failure_is_tolerated(callback_url):
                         return fail(
                             "DENSE_RECONSTRUCTION_FAILED",
                             "Dense multi-view stereo fusion failed to produce fused point cloud. Fallback to sparse SfM prohibited."
                         )
             except Exception as dense_err:
                 logger.error(f"Dense stereo reconstruction failed for {job_id}: {dense_err}")
-                if os.environ.get("HETTETY_ENV") != "test" and not callback_url.startswith("mock://"):
+                if not dense_failure_is_tolerated(callback_url):
                     return fail(
                         "DENSE_RECONSTRUCTION_FAILED",
                         f"Dense multi-view stereo reconstruction failed: {dense_err}. Fallback to sparse SfM prohibited."

@@ -171,6 +171,10 @@ CDN_BASE_URL=https://storage.googleapis.com/hettety-spatial-assets
 # Worker Node
 HETTETY_WORKER_ID=hettety-gpu-worker-node-1
 WORK_DIR=/tmp/hettety_3d
+# Where the worker reports progress, failures and published assets. It sends
+# WORKER_SHARED_SECRET as a bearer token here, so this must be the real control
+# plane and nothing else. A production worker refuses to start without it.
+HETTETY_CONTROL_PLANE_URL=https://your-deployment/api/reconstruction
 ```
 
 ### Running Tests

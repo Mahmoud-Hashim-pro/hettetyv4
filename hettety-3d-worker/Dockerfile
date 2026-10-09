@@ -3,6 +3,9 @@ FROM nvidia/cuda:12.1.1-devel-ubuntu22.04
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PYTHONUNBUFFERED=1
 ENV TZ=UTC
+# The guards key on this. Without it the shipped image took the
+# development branch and fell back to a published default secret.
+ENV NODE_ENV=production
 
 RUN apt-get update && apt-get install -y \
     python3.10 \

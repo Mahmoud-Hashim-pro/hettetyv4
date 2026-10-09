@@ -394,7 +394,19 @@ class TestHettety3DReconstructionE2E(unittest.TestCase):
         try:
             rw_mod.validate_keyframes = lambda *a, **k: {"valid": True, "image_count": 15, "sharpness_score": 75}
             rw_mod.run_sfm = lambda *a, **k: {"success": True, "registered_images": 15}
-            rw_mod.run_dense_stereo = lambda *a, **k: {"success": True}
+            # Write a real fused.ply: this test is about bounds validation, so
+            # dense has to genuinely pass rather than be waved through.
+            def _dense_ok(*a, **k):
+                dense_dir = k.get("dense_dir") or (a[2] if len(a) > 2 else None)
+                if dense_dir:
+                    os.makedirs(dense_dir, exist_ok=True)
+                    header = "ply\nformat binary_little_endian 1.0\nelement vertex 0\nend_header\n"
+                    with open(os.path.join(dense_dir, "fused.ply"), "wb") as fh:
+                        fh.write(header.encode("ascii"))
+                        fh.write(bytes(256))
+                return {"success": True}
+
+            rw_mod.run_dense_stereo = _dense_ok
             rw_mod.run_gaussian_training = lambda *a, **k: {"success": True, "target_ply": "mock.ply"}
             # Return no bounds
             rw_mod.optimize_splat_cloud = lambda *a, **k: {"success": True, "splat_count": 5000, "bounds": None}

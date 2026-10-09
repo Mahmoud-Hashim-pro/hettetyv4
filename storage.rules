@@ -60,30 +60,27 @@ service firebase.storage {
 
     // 3D Spatial Captures (Raw input images & videos):
     // Private by default. Read restricted to super-admins / backend worker.
-    // Client write is strictly size-capped and type-validated without overwrite.
+    // Client SDK direct writes are strictly DENIED — all uploads must use signed V4 URLs
+    // authorized by the control plane (/api/reconstruction?action=create-job) with property ownership checks.
     match /properties/{propertyId}/3d/raw/{jobId}/{fileName} {
       allow read: if isSuperAdmin();
-      allow create: if isAuthenticated() && (
-                     (request.resource.contentType.matches('image/.*') && request.resource.size < 50 * 1024 * 1024) ||
-                     (request.resource.contentType.matches('video/.*') && request.resource.size < 500 * 1024 * 1024)
-                    );
-      allow update: if false;
-      allow delete: if isSuperAdmin();
+      allow write: if false;
     }
 
     // Published 3D Spatial Assets (scene.spz, mesh.glb, manifest.json):
     // Publicly readable for 3D property tour viewer.
-    // Writes strictly forbidden to clients (backend worker / Admin SDK only).
+    // Client writes strictly DENIED — mutations performed exclusively by trusted backend Admin SDK.
     match /properties/{propertyId}/tour/{fileName} {
       allow read: if true;
-      allow write: if isSuperAdmin();
+      allow write: if false;
     }
 
-    // Immutable versioned attempt artifacts:
-    // Publicly readable for property preview, writes strictly forbidden to clients.
+    // Immutable versioned attempt artifacts (Historical reconstruction archive):
+    // Archival read restricted to super-admins / backend audit logs.
+    // Client writes strictly DENIED — guarantees absolute immutability against client-side SDK mutations.
     match /properties/{propertyId}/3d/{jobId}/{attemptId}/{fileName} {
-      allow read: if true;
-      allow write: if isSuperAdmin();
+      allow read: if isSuperAdmin();
+      allow write: if false;
     }
 
     // Legacy flat objects: still readable, never writable or deletable from a

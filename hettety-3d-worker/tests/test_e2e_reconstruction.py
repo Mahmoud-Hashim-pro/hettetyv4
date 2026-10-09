@@ -352,11 +352,18 @@ class TestHettety3DReconstructionE2E(unittest.TestCase):
 
     def test_17_grounded_quality_metrics_real_unknown_fail(self):
         """Verifies that publish_tour_assets produces strictly REAL/UNKNOWN/FAIL telemetry without fake defaults."""
+        dummy_spz = os.path.join(self.temp_dir, "test_metrics.spz")
+        dummy_glb = os.path.join(self.temp_dir, "test_metrics.glb")
+        with open(dummy_spz, "wb") as f:
+            f.write(b"SPZ_TEST_VALID_DATA")
+        with open(dummy_glb, "wb") as f:
+            f.write(b"glTF\x02\x00\x00\x00\x20\x00\x00\x00")
+
         pub_res = publish_tour_assets(
             job_id="test_job_metrics",
             property_id="test_prop",
-            spz_path=os.path.join(self.temp_dir, "nonexistent.spz"),
-            glb_path=os.path.join(self.temp_dir, "nonexistent.glb"),
+            spz_path=dummy_spz,
+            glb_path=dummy_glb,
             bounds={"min": [-2, -1, -2], "max": [2, 1, 2]},
             cdn_base_url="https://cdn.hettety.com",
             callback_url="mock://callback",
@@ -998,6 +1005,60 @@ class TestHettety3DReconstructionE2E(unittest.TestCase):
         self.assertEqual(res_ok["certification"]["status"], "METRIC_CERTIFIED")
         self.assertTrue(res_ok["certification"]["visualReady"])
         self.assertTrue(res_ok["certification"]["metricCertified"])
+
+    def test_33_quality_gate_numeric_and_artifact_defenses(self):
+        """
+        Verifies that non-finite (NaN, Inf), empty, or out-of-bounds numeric inputs
+        for reprojection error, bounding boxes, GLB container size, and meshes fail closed.
+        """
+        valid_args = dict(
+            image_count=20,
+            registered_cameras=18,
+            mean_reprojection_error=0.8,
+            splat_count=50000,
+            bounds={"min": [-2.0, 0.0, -2.0], "max": [2.0, 3.0, 2.0]},
+            mesh_vertex_count=500,
+            mesh_face_count=900,
+            glb_size_bytes=20000,
+            is_calibrated_metric=False,
+        )
+
+        # 1. NaN, Inf, and Negative reprojection errors fail closed
+        for bad_reproj in [float("nan"), float("inf"), -0.1, 3.1]:
+            args = dict(valid_args, mean_reprojection_error=bad_reproj)
+            res = evaluate_reconstruction_quality(**args)
+            self.assertFalse(res["passed"], f"Expected failure for reprojection error {bad_reproj}")
+            self.assertEqual(res["status"], "REJECTED")
+
+        # 2. Corrupt or NaN bounding box coordinates fail closed
+        bad_bounds_list = [
+            {"min": [float("nan"), 0.0, 0.0], "max": [1.0, 1.0, 1.0]},
+            {"min": [0.0, 0.0, 0.0], "max": [float("inf"), 1.0, 1.0]},
+            {"min": [0.0, 0.0, 0.0], "max": [0.005, 1.0, 1.0]}, # degenerate dx < 0.01
+            {"min": [1.0, 1.0, 1.0], "max": [0.0, 1.0, 1.0]},   # negative dx
+            None,
+            "not-a-dict",
+            {"min": [0.0, 0.0]}, # missing z
+        ]
+        for bad_bounds in bad_bounds_list:
+            args = dict(valid_args, bounds=bad_bounds)
+            res = evaluate_reconstruction_quality(**args)
+            self.assertFalse(res["passed"], f"Expected failure for bounds {bad_bounds}")
+            self.assertEqual(res["status"], "REJECTED")
+
+        # 3. Empty (0 byte), negative, or truncated (< 12 byte) GLB container fail closed
+        for bad_glb in [0, -1, 5, 11, None]:
+            args = dict(valid_args, glb_size_bytes=bad_glb)
+            res = evaluate_reconstruction_quality(**args)
+            self.assertFalse(res["passed"], f"Expected failure for GLB size {bad_glb}")
+            self.assertEqual(res["status"], "REJECTED")
+
+        # 4. Degenerate mesh geometry fail closed
+        for bad_v, bad_f in [(3, 10), (10, 1), (0, 0), (None, 50)]:
+            args = dict(valid_args, mesh_vertex_count=bad_v, mesh_face_count=bad_f)
+            res = evaluate_reconstruction_quality(**args)
+            self.assertFalse(res["passed"], f"Expected failure for mesh ({bad_v}, {bad_f})")
+            self.assertEqual(res["status"], "REJECTED")
 
 if __name__ == "__main__":
     unittest.main()

@@ -78,6 +78,7 @@ export function evaluateTourQualityGate(
     captureIssuesAr.push(`اهتزاز أو ضبابية عالية في اللقطات: نسبة الحدة ${capture.blurScore}/100`);
   }
   if (capture.overlapScore < 35) {
+    capturePassed = false;
     captureIssues.push(`Low visual overlap between adjacent angles: ${capture.overlapScore}%`);
     captureIssuesAr.push(`نسبة تداخل منخفضة بين الزوايا: ${capture.overlapScore}%`);
   }
@@ -97,6 +98,28 @@ export function evaluateTourQualityGate(
     gaussianIssues.push('Corrupted coordinates detected (NaN or Infinity in point cloud)');
     gaussianIssuesAr.push('إحداثيات تالفة تحتوي على قيم غير محددة (NaN/Infinity)');
   }
+  if (
+    !gaussian.bounds ||
+    !Array.isArray(gaussian.bounds.min) ||
+    !Array.isArray(gaussian.bounds.max) ||
+    gaussian.bounds.min.length !== 3 ||
+    gaussian.bounds.max.length !== 3 ||
+    !gaussian.bounds.min.every(Number.isFinite) ||
+    !gaussian.bounds.max.every(Number.isFinite)
+  ) {
+    gaussianPassed = false;
+    gaussianIssues.push('Missing or invalid bounding box coordinates (must be 3 finite numbers for min/max)');
+    gaussianIssuesAr.push('صندوق الإحاطة غير صالح أو يحتوي على قيم غير معرفة');
+  } else {
+    const dx = gaussian.bounds.max[0] - gaussian.bounds.min[0];
+    const dy = gaussian.bounds.max[1] - gaussian.bounds.min[1];
+    const dz = gaussian.bounds.max[2] - gaussian.bounds.min[2];
+    if (dx <= 0.01 || dy <= 0.01 || dz <= 0.01) {
+      gaussianPassed = false;
+      gaussianIssues.push(`Degenerate bounding box volume: [${dx.toFixed(2)}, ${dy.toFixed(2)}, ${dz.toFixed(2)}]`);
+      gaussianIssuesAr.push('حجم صندوق الإحاطة ضئيل جداً أو غير حقيقي');
+    }
+  }
   if (gaussian.spzSizeBytes < 100) {
     gaussianPassed = false;
     gaussianIssues.push(`SPZ payload is unusually small (${gaussian.spzSizeBytes} bytes)`);
@@ -108,14 +131,14 @@ export function evaluateTourQualityGate(
 
   // 3. Mesh Check
   let meshPassed = true;
-  if (mesh.vertexCount < 4 || mesh.faceCount < 2) {
+  if (!mesh.vertexCount || !mesh.faceCount || mesh.vertexCount < 4 || mesh.faceCount < 2) {
     meshPassed = false;
     meshIssues.push(`Degenerate metric mesh: ${mesh.vertexCount} vertices, ${mesh.faceCount} faces`);
     meshIssuesAr.push(`مجسم متري غير مكتمل الأضلاع`);
   }
-  if (mesh.glbSizeBytes < 100) {
+  if (!mesh.glbSizeBytes || mesh.glbSizeBytes < 12) {
     meshPassed = false;
-    meshIssues.push('Invalid GLB file size (< 100 bytes)');
+    meshIssues.push('Corrupted or empty GLB file (< 12 byte glTF binary header)');
     meshIssuesAr.push('ملف GLB غير صالح أو فارغ');
   }
   const meshScore = Math.round(

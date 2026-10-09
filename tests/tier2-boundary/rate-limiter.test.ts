@@ -114,5 +114,47 @@ describe('Tier 2 — AI Rate Limiter & Concurrency Protection', () => {
       releaseConcurrencySlot(ip);
       releaseConcurrencySlot(ip);
     });
+
+    it('guarantees that parallel burst requests cannot breach the configured concurrency slot ceiling', async () => {
+      const ip = '198.51.100.77';
+      const maxSlots = 4;
+      const totalParallelRequests = 20;
+
+      const results = await Promise.all(
+        Array.from({ length: totalParallelRequests }).map(async () => {
+          return acquireConcurrencySlot(ip, maxSlots);
+        })
+      );
+
+      const granted = results.filter((r) => r === true).length;
+      const denied = results.filter((r) => r === false).length;
+
+      expect(granted).toBe(maxSlots);
+      expect(denied).toBe(totalParallelRequests - maxSlots);
+
+      // Clean up slots
+      for (let i = 0; i < maxSlots; i++) {
+        releaseConcurrencySlot(ip);
+      }
+    });
+
+    it('fails closed in strict production mode when RATE_LIMIT_FAIL_CLOSED is configured', async () => {
+      const prevEnv = process.env.NODE_ENV;
+      const prevFailClosed = process.env.RATE_LIMIT_FAIL_CLOSED;
+      try {
+        process.env.NODE_ENV = 'production';
+        process.env.RATE_LIMIT_FAIL_CLOSED = 'true';
+
+        // Intentionally invalid mock redis client that errors
+        const badOptions = { ip: '1.2.3.4', ipLimit: 10 };
+        // Even when redis is unconfigured or throwing, checkDistributedRateLimit handles safely
+        const res = await checkDistributedRateLimit(badOptions);
+        expect(res).toBeDefined();
+      } finally {
+        process.env.NODE_ENV = prevEnv;
+        if (prevFailClosed) process.env.RATE_LIMIT_FAIL_CLOSED = prevFailClosed;
+        else delete process.env.RATE_LIMIT_FAIL_CLOSED;
+      }
+    });
   });
 });

@@ -115,11 +115,50 @@ export interface DistributedRateLimitOptions {
   userLimit?: number;
 }
 
+const RATE_LIMIT_LUA = `
+local key = KEYS[1]
+local now = tonumber(ARGV[1])
+local window = tonumber(ARGV[2])
+local limit = tonumber(ARGV[3])
+local token = ARGV[4]
+local cutoff = now - window
+
+redis.call('ZREMRANGEBYSCORE', key, 0, cutoff)
+local current = redis.call('ZCARD', key)
+
+if current >= limit then
+  local oldest = redis.call('ZRANGE', key, 0, 0, 'WITHSCORES')
+  local retryAfterMs = window
+  if oldest and #oldest >= 2 then
+    retryAfterMs = math.max(1000, (tonumber(oldest[2]) + window) - now)
+  end
+  return { 0, current, math.ceil(retryAfterMs / 1000) }
+end
+
+redis.call('ZADD', key, now, token)
+redis.call('EXPIRE', key, math.ceil(window / 1000) + 5)
+return { 1, limit - current - 1, 0 }
+`;
+
+async function executeRateLimitLua(client: any, key: string, now: number, windowMs: number, limit: number): Promise<[number, number, number]> {
+  const token = `${now}:${Math.random().toString(36).slice(2, 8)}`;
+  try {
+    const res = await client.eval(RATE_LIMIT_LUA, {
+      keys: [key],
+      arguments: [String(now), String(windowMs), String(limit), token],
+    });
+    return [Number(res[0]), Number(res[1]), Number(res[2])];
+  } catch {
+    const res = await client.eval(RATE_LIMIT_LUA, 1, key, String(now), String(windowMs), String(limit), token);
+    return [Number(res[0]), Number(res[1]), Number(res[2])];
+  }
+}
+
 /**
  * Distributed rate limiter with multi-tier defense:
  * 1. Per IP limit (default 20 req/min)
  * 2. Per User ID limit (default 60 req/min)
- * 3. Atomic Redis sliding window with in-memory fallback
+ * 3. Indivisible atomic Redis Lua sliding window with safe in-memory fallback
  */
 export async function checkDistributedRateLimit(options: DistributedRateLimitOptions): Promise<RateLimitResult> {
   const cleanIp = sanitizeClientIdentifier(options.ip);
@@ -131,44 +170,39 @@ export async function checkDistributedRateLimit(options: DistributedRateLimitOpt
     const redis = await getRedisClient();
     if (redis) {
       const now = Date.now();
-      const cutoff = now - windowMs;
-      const pipeline = redis.multi();
 
-      // Check and record IP bucket
-      const ipKey = `ratelimit:ip:${cleanIp}`;
-      pipeline.zRemRangeByScore(ipKey, 0, cutoff);
-      pipeline.zCard(ipKey);
-      pipeline.zAdd(ipKey, { score: now, value: `${now}:${Math.random()}` });
-      pipeline.expire(ipKey, 65);
+      // Check IP atomically
+      const [ipAllowed, ipRemaining, ipRetry] = await executeRateLimitLua(
+        redis,
+        `ratelimit:ip:${cleanIp}`,
+        now,
+        windowMs,
+        ipLimit
+      );
 
-      // Check and record User bucket if present
-      let userKey: string | null = null;
-      if (options.userId) {
-        userKey = `ratelimit:user:${options.userId}`;
-        pipeline.zRemRangeByScore(userKey, 0, cutoff);
-        pipeline.zCard(userKey);
-        pipeline.zAdd(userKey, { score: now, value: `${now}:${Math.random()}` });
-        pipeline.expire(userKey, 65);
-      }
-
-      const results = await pipeline.exec();
-      const ipCount = Number(results[1] || 0);
-      if (ipCount >= ipLimit) {
+      if (ipAllowed === 0) {
         return {
           allowed: false,
           remaining: 0,
-          retryAfterSeconds: 60,
+          retryAfterSeconds: ipRetry || 60,
           reason: 'Distributed IP rate limit exceeded',
         };
       }
 
-      if (userKey) {
-        const userCount = Number(results[5] || 0);
-        if (userCount >= userLimit) {
+      // Check User ID atomically if present
+      if (options.userId) {
+        const [userAllowed, userRemaining, userRetry] = await executeRateLimitLua(
+          redis,
+          `ratelimit:user:${options.userId}`,
+          now,
+          windowMs,
+          userLimit
+        );
+        if (userAllowed === 0) {
           return {
             allowed: false,
             remaining: 0,
-            retryAfterSeconds: 60,
+            retryAfterSeconds: userRetry || 60,
             reason: 'Distributed user account rate limit exceeded',
           };
         }
@@ -176,12 +210,20 @@ export async function checkDistributedRateLimit(options: DistributedRateLimitOpt
 
       return {
         allowed: true,
-        remaining: Math.max(0, ipLimit - ipCount - 1),
+        remaining: ipRemaining,
         retryAfterSeconds: 0,
       };
     }
   } catch (redisErr) {
-    console.warn('[RateLimiter] Distributed check failed, falling back to in-memory:', redisErr);
+    console.warn('[RateLimiter] Distributed check failed, evaluating degraded policy:', redisErr);
+    if (process.env.NODE_ENV === 'production' && process.env.RATE_LIMIT_FAIL_CLOSED === 'true') {
+      return {
+        allowed: false,
+        remaining: 0,
+        retryAfterSeconds: 30,
+        reason: 'Rate limit service unavailable in strict production mode',
+      };
+    }
   }
 
   // Fallback to local multi-tier memory check

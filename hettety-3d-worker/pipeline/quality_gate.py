@@ -48,38 +48,53 @@ def evaluate_reconstruction_quality(
     # 1. Camera Alignment Check
     cam_issues: List[str] = []
     cam_passed = True
-    if registered_cameras < 8:
+    if registered_cameras is None or not isinstance(registered_cameras, int) or registered_cameras < 8:
         cam_passed = False
         msg = f"Insufficient registered cameras: {registered_cameras} (minimum 8 required)"
         cam_issues.append(msg)
         reasons.append(msg)
 
-    reg_ratio = (registered_cameras / max(1, image_count)) if image_count > 0 else 0.0
+    if image_count is None or not isinstance(image_count, int) or image_count <= 0:
+        cam_passed = False
+        msg = f"Invalid or missing image count: {image_count}"
+        cam_issues.append(msg)
+        reasons.append(msg)
+        reg_ratio = 0.0
+    else:
+        reg_ratio = (registered_cameras / image_count) if isinstance(registered_cameras, (int, float)) else 0.0
+
     if reg_ratio < 0.35:
         cam_passed = False
         msg = f"Camera alignment ratio too low: {reg_ratio * 100:.1f}% (minimum 35% overlap required)"
         cam_issues.append(msg)
         reasons.append(msg)
 
-    if mean_reprojection_error > 3.0:
+    if (
+        mean_reprojection_error is None
+        or not isinstance(mean_reprojection_error, (int, float))
+        or not math.isfinite(mean_reprojection_error)
+        or mean_reprojection_error < 0.0
+        or mean_reprojection_error > 3.0
+    ):
         cam_passed = False
-        msg = f"Mean reprojection error exceeds 3.0px limit: {mean_reprojection_error:.2f}px"
+        msg = f"Invalid or excessive mean reprojection error ({mean_reprojection_error}, must be finite in [0.0, 3.0]px)"
         cam_issues.append(msg)
         reasons.append(msg)
 
-    cam_score = int(min(100, max(0, reg_ratio * 60.0 + max(0, (3.0 - mean_reprojection_error) / 3.0) * 40.0)))
+    valid_reproj = mean_reprojection_error if (isinstance(mean_reprojection_error, (int, float)) and math.isfinite(mean_reprojection_error)) else 3.0
+    cam_score = int(min(100, max(0, reg_ratio * 60.0 + max(0, (3.0 - valid_reproj) / 3.0) * 40.0)))
 
     # 2. Gaussian Splatting Check
     gs_issues: List[str] = []
     gs_passed = True
-    if splat_count < 100:
+    if splat_count is None or not isinstance(splat_count, int) or splat_count < 100:
         gs_passed = False
-        msg = f"Degenerate splat cloud: only {splat_count} splats produced"
+        msg = f"Degenerate splat cloud: {splat_count} splats produced (minimum 100 required)"
         gs_issues.append(msg)
         reasons.append(msg)
 
     if floaters_pruned is not None and floaters_pruned > 0:
-        total_splats = splat_count + floaters_pruned
+        total_splats = (splat_count or 0) + floaters_pruned
         prune_ratio = floaters_pruned / total_splats if total_splats > 0 else 0.0
         if prune_ratio > 0.80:
             gs_passed = False
@@ -93,42 +108,64 @@ def evaluate_reconstruction_quality(
         gs_issues.append(msg)
         reasons.append(msg)
 
-    if not bounds or "min" not in bounds or "max" not in bounds:
+    if not isinstance(bounds, dict) or "min" not in bounds or "max" not in bounds:
         gs_passed = False
         msg = "Missing or invalid bounding box boundaries for reconstructed scene"
         gs_issues.append(msg)
         reasons.append(msg)
     else:
-        # Check that bounding box has positive volume
-        b_min = bounds.get("min", [0, 0, 0])
-        b_max = bounds.get("max", [0, 0, 0])
-        dx = b_max[0] - b_min[0]
-        dy = b_max[1] - b_min[1]
-        dz = b_max[2] - b_min[2]
-        if dx <= 0.01 or dy <= 0.01 or dz <= 0.01:
+        b_min = bounds.get("min")
+        b_max = bounds.get("max")
+        if not isinstance(b_min, (list, tuple)) or not isinstance(b_max, (list, tuple)) or len(b_min) != 3 or len(b_max) != 3:
             gs_passed = False
-            msg = f"Degenerate bounding box volume: [{dx:.2f}, {dy:.2f}, {dz:.2f}]"
+            msg = "Bounding box min/max must each contain exactly 3 3D coordinates"
             gs_issues.append(msg)
             reasons.append(msg)
+        elif not all(isinstance(c, (int, float)) and math.isfinite(c) for c in list(b_min) + list(b_max)):
+            gs_passed = False
+            msg = "Non-finite (NaN or Inf) coordinates detected in bounding box bounds"
+            gs_issues.append(msg)
+            reasons.append(msg)
+        else:
+            dx = b_max[0] - b_min[0]
+            dy = b_max[1] - b_min[1]
+            dz = b_max[2] - b_min[2]
+            if dx <= 0.01 or dy <= 0.01 or dz <= 0.01:
+                gs_passed = False
+                msg = f"Degenerate bounding box volume: [{dx:.2f}, {dy:.2f}, {dz:.2f}]"
+                gs_issues.append(msg)
+                reasons.append(msg)
+            elif dx > 1000.0 or dy > 1000.0 or dz > 1000.0:
+                gs_passed = False
+                msg = f"Excessive scene dimension span: [{dx:.2f}, {dy:.2f}, {dz:.2f}] > 1000m limit"
+                gs_issues.append(msg)
+                reasons.append(msg)
 
-    gs_score = int(min(100, max(20, min(splat_count / 10000.0, 1.0) * 60.0 + (40.0 if gs_passed else 0.0))))
+    gs_score = int(min(100, max(20, min((splat_count or 0) / 10000.0, 1.0) * 60.0 + (40.0 if gs_passed else 0.0))))
 
     # 3. Metric Mesh Geometry Check
     mesh_issues: List[str] = []
     mesh_passed = True
-    if mesh_vertex_count < 4 or mesh_face_count < 2:
+    if (
+        mesh_vertex_count is None
+        or not isinstance(mesh_vertex_count, int)
+        or mesh_face_count is None
+        or not isinstance(mesh_face_count, int)
+        or mesh_vertex_count < 4
+        or mesh_face_count < 2
+    ):
         mesh_passed = False
         msg = f"Degenerate metric mesh: {mesh_vertex_count} vertices, {mesh_face_count} faces"
         mesh_issues.append(msg)
         reasons.append(msg)
 
-    if glb_size_bytes > 0 and glb_size_bytes < 12:
+    if glb_size_bytes is None or not isinstance(glb_size_bytes, int) or glb_size_bytes < 12:
         mesh_passed = False
-        msg = f"Corrupted GLB container size ({glb_size_bytes} bytes < 12 byte glTF binary header)"
+        msg = f"Corrupted or empty GLB container size ({glb_size_bytes} bytes < 12 byte glTF binary header)"
         mesh_issues.append(msg)
         reasons.append(msg)
 
-    mesh_score = int(min(100, max(20, (50.0 if mesh_face_count >= 20 else 30.0) + (50.0 if mesh_passed else 0.0))))
+    mesh_score = int(min(100, max(20, (50.0 if (mesh_face_count or 0) >= 20 else 30.0) + (50.0 if mesh_passed else 0.0))))
 
     # 4. Metric Calibration Check
     calib_issues: List[str] = []

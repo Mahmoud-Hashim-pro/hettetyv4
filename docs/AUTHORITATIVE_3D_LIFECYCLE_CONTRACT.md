@@ -130,15 +130,15 @@ A 3D Reconstruction Job on Hettety reaches `READY` status **if and only if** all
 
 1. **Private Raw Captures**:
    - Path: `properties/{propertyId}/3d/raw/{jobId}/{filename}`
-   - Access: Private. Readable only by backend worker and super-admins.
+   - Access: Private. Client SDK direct writes are strictly DENIED (`allow write: if false`). All uploads MUST use signed V4 URLs authorized by the control plane with verified property ownership. Read restricted to super-admins / backend worker.
    - Retention: Retained for 14 days after job completion, then pruned to save storage costs.
 2. **Immutable Versioned Artifacts**:
    - Path: `properties/{propertyId}/3d/{jobId}/{attemptId}/{scene.spz, mesh.glb, manifest.json}`
-   - Access: Immutable. Every run is archived with its SHA-256 manifest hash.
+   - Access: Immutable. Client writes strictly DENIED (`allow write: if false`). Archived with SHA-256 manifest hash and accessible only by backend audit.
    - Retention: Kept indefinitely as historical reconstruction audit log.
 3. **Published Public Tour Pointers**:
    - Path: `properties/{propertyId}/tour/{scene.spz, mesh.glb, manifest.json}`
-   - Access: Public read. Updated **only** via atomic copy from verified versioned artifacts upon passing the quality gate.
+   - Access: Public read (`allow read: if true`). Client writes strictly DENIED (`allow write: if false`). Updated **only** via atomic backend copy from verified versioned artifacts upon passing the authoritative quality gate.
 
 ---
 

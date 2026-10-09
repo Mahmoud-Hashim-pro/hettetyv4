@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import handler, {
   controlPlaneJobs,
   mockPropertiesStore,
+  enqueueToRedis,
 } from '../../api/reconstruction';
 
 describe('Tier 2 — Signed Upload & Property Ownership Authorization Integration Tests', () => {
@@ -303,4 +304,96 @@ describe('Tier 2 — Signed Upload & Property Ownership Authorization Integratio
     expect(resJson.error).toContain('UPLOAD_VERIFICATION_FAILED');
     expect(resJson.error).toContain('storagePath does not match expected prefix');
   });
+
+  it('enqueueToRedis strictly throws CONFIGURATION_ERROR in production when REDIS_URL is unconfigured or mock', async () => {
+    const prevEnv = process.env.NODE_ENV;
+    const prevRedis = process.env.REDIS_URL;
+    try {
+      process.env.NODE_ENV = 'production';
+      delete process.env.REDIS_URL;
+
+      const dummyJob: any = { id: 'job_test', attemptId: 'attempt_1' };
+      await expect(enqueueToRedis(dummyJob)).rejects.toThrow(
+        'CONFIGURATION_ERROR: REDIS_URL is required in production'
+      );
+
+      await expect(enqueueToRedis(dummyJob, 'mock://redis')).rejects.toThrow(
+        'CONFIGURATION_ERROR: REDIS_URL is required in production'
+      );
+    } finally {
+      process.env.NODE_ENV = prevEnv;
+      if (prevRedis) process.env.REDIS_URL = prevRedis;
+      else delete process.env.REDIS_URL;
+    }
+  });
+
+  it('fails closed with HTTP 503 and marks job FAILED when Redis enqueue fails during complete-uploads', async () => {
+    const prevRedis = process.env.REDIS_URL;
+    try {
+      // Point to an unreachable Redis port to trigger enqueue failure
+      process.env.REDIS_URL = 'redis://127.0.0.1:1';
+
+      const jobId = 'job_redis_fail_1';
+      const propertyId = 'prop_redis_1';
+      mockPropertiesStore.set(propertyId, { authorUid: 'user_queue_owner' });
+
+      controlPlaneJobs.set(jobId, {
+        id: jobId,
+        propertyId,
+        ownerId: 'user_queue_owner',
+        status: 'UPLOADING',
+        attemptId: 'attempt_1',
+        manifest: [
+          {
+            id: 'asset_queue_1',
+            storagePath: `properties/${propertyId}/3d/raw/${jobId}/photo_0.jpg`,
+            uploadUrl: 'https://storage/photo_0.jpg',
+            sizeBytes: 1024,
+            mimeType: 'image/jpeg',
+            validationStatus: 'PENDING',
+          },
+        ],
+        createdAt: new Date().toISOString(),
+        uploadSessionExpiresAt: new Date(Date.now() + 3600000).toISOString(),
+        retryCount: 0,
+        stateVersion: 1,
+      });
+
+      let resStatus = 0;
+      let resJson: any = null;
+      const mockRes = {
+        status: (s: number) => {
+          resStatus = s;
+          return { json: (d: any) => { resJson = d; return d; } };
+        },
+      };
+
+      await handler(
+        {
+          method: 'POST',
+          query: { action: 'complete-uploads' },
+          headers: {
+            authorization: 'Bearer user_token',
+            'x-user-id': 'user_queue_owner',
+          },
+          body: {
+            jobId,
+            uploadedAssetIds: ['asset_queue_1'],
+          },
+        },
+        mockRes
+      );
+
+      expect(resStatus).toBe(503);
+      expect(resJson.error).toContain('QUEUE_UNAVAILABLE');
+
+      const failedJob = controlPlaneJobs.get(jobId);
+      expect(failedJob?.status).toBe('FAILED');
+      expect(failedJob?.errorCode).toBe('REDIS_ENQUEUE_FAILED');
+    } finally {
+      if (prevRedis) process.env.REDIS_URL = prevRedis;
+      else delete process.env.REDIS_URL;
+    }
+  });
 });
+

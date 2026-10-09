@@ -210,5 +210,47 @@ describe('Tier 2 — AI Rate Limiter & Concurrency Protection', () => {
       const regularRes = await checkDistributedRateLimit({ ip: taskClientIp, task: 'lightweight-search', ipLimit: 20, taskLimit: 10 });
       expect(regularRes.allowed).toBe(true);
     });
+
+    it('strictly fails closed in production when REDIS_URL is unconfigured or mock', async () => {
+      const prevEnv = process.env.NODE_ENV;
+      const prevRedisUrl = process.env.REDIS_URL;
+      try {
+        process.env.NODE_ENV = 'production';
+        delete process.env.REDIS_URL;
+
+        const res = await checkDistributedRateLimit({ ip: '203.0.113.10', ipLimit: 10 });
+        expect(res.allowed).toBe(false);
+        expect(res.remaining).toBe(0);
+        expect(res.reason).toContain('Rate limit service is not configured in production');
+
+        // Even with mock:// URL in production, fail closed
+        process.env.REDIS_URL = 'mock://redis';
+        const mockRes = await checkDistributedRateLimit({ ip: '203.0.113.10', ipLimit: 10 });
+        expect(mockRes.allowed).toBe(false);
+        expect(mockRes.reason).toContain('Rate limit service is not configured in production');
+      } finally {
+        process.env.NODE_ENV = prevEnv;
+        if (prevRedisUrl) process.env.REDIS_URL = prevRedisUrl;
+        else delete process.env.REDIS_URL;
+      }
+    });
+
+    it('isolates user in-memory keys without port-stripping collision', async () => {
+      const clientIp = '198.51.100.123';
+      const userA = 'user_alpha';
+      const userB = 'user_beta';
+
+      // Both users have limit 1
+      const resA1 = await checkDistributedRateLimit({ ip: clientIp, userId: userA, ipLimit: 50, userLimit: 1 });
+      expect(resA1.allowed).toBe(true);
+
+      // User A second request should be blocked
+      const resA2 = await checkDistributedRateLimit({ ip: clientIp, userId: userA, ipLimit: 50, userLimit: 1 });
+      expect(resA2.allowed).toBe(false);
+
+      // User B must NOT be blocked by user A's consumed quota even though both have prefix 'user'
+      const resB1 = await checkDistributedRateLimit({ ip: clientIp, userId: userB, ipLimit: 50, userLimit: 1 });
+      expect(resB1.allowed).toBe(true);
+    });
   });
 });

@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { ThreeDTour, Room } from '../../types';
 import { Vec3 } from '../../lib/3d/coordinates';
 import { GaussianViewer } from './GaussianViewer';
@@ -40,7 +40,6 @@ export const TourViewer: React.FC<TourViewerProps> = ({
   if (hasMesh) availableModes.push('mesh');
   if (hasPanorama) availableModes.push('panorama');
   if (isExternal) availableModes.push('external');
-  if (availableModes.length === 0) availableModes.push('gaussian'); // fallback demo
 
   const [currentMode, setCurrentMode] = useState<TourRenderMode>(availableModes[0] || 'gaussian');
   const [activeRoomId, setActiveRoomId] = useState<string | undefined>(tour?.rooms?.[0]?.id);
@@ -48,6 +47,15 @@ export const TourViewer: React.FC<TourViewerProps> = ({
   const [showMeasure, setShowMeasure] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [measurementPoints, setMeasurementPoints] = useState<[Vec3 | null, Vec3 | null]>([null, null]);
+
+  useEffect(() => {
+    if (availableModes.length > 0 && !availableModes.includes(currentMode)) {
+      setCurrentMode(availableModes[0]);
+    }
+    setActiveRoomId(tour?.rooms?.[0]?.id);
+    setMeasurementPoints([null, null]);
+    setShowMeasure(false);
+  }, [tour?.id, hasGaussian, hasMesh, hasPanorama, isExternal]);
 
   const handlePointPicked = (pt: Vec3) => {
     setMeasurementPoints(([a, b]) => {
@@ -82,10 +90,16 @@ export const TourViewer: React.FC<TourViewerProps> = ({
           />
         )}
         {currentMode === 'panorama' && (
-          <PanoramaViewer
-            panoramaUrl={tour?.representation?.panorama?.url || 'https://images.unsplash.com/photo-1600585154340-be6161a56a0c?auto=format&fit=crop&w=2000&q=80'}
-            isRtl={isRtl}
-          />
+          tour?.representation?.panorama?.url ? (
+            <PanoramaViewer
+              panoramaUrl={tour.representation.panorama.url}
+              isRtl={isRtl}
+            />
+          ) : (
+            <div className="w-full h-full flex items-center justify-center text-slate-400 text-sm">
+              {isRtl ? 'لا توجد صورة بانورامية متوفرة لهذا العقار' : 'No panorama image available for this property'}
+            </div>
+          )
         )}
         {currentMode === 'external' && tour?.assetUrl && (
           <iframe
@@ -141,6 +155,8 @@ export const TourViewer: React.FC<TourViewerProps> = ({
               isRtl={isRtl}
               selectedPoints={measurementPoints}
               onPointSelect={handlePointPicked}
+              onReset={() => setMeasurementPoints([null, null])}
+              onClose={() => setShowMeasure(false)}
             />
           </div>
         )}

@@ -212,12 +212,11 @@ async function executeMultiTierRateLimitLua(
 }
 
 /** In-memory simulate check (does not record) */
-function simulateRateLimit(clientId: string, limit: number): { allowed: boolean; remaining: number; retryAfterSeconds: number } {
+function simulateRateLimit(key: string, limit: number): { allowed: boolean; remaining: number; retryAfterSeconds: number } {
   cleanupStale();
-  const id = sanitizeClientIdentifier(clientId);
   const now = Date.now();
   const cutoff = now - windowMs;
-  const record = clients.get(id);
+  const record = clients.get(key);
   const validTimestamps = record ? record.timestamps.filter(t => t > cutoff) : [];
   if (validTimestamps.length >= limit) {
     const oldest = validTimestamps[0];
@@ -228,13 +227,12 @@ function simulateRateLimit(clientId: string, limit: number): { allowed: boolean;
 }
 
 /** In-memory commit record */
-function commitRateLimit(clientId: string): void {
-  const id = sanitizeClientIdentifier(clientId);
+function commitRateLimit(key: string): void {
   const now = Date.now();
-  let record = clients.get(id);
+  let record = clients.get(key);
   if (!record) {
     record = { timestamps: [] };
-    clients.set(id, record);
+    clients.set(key, record);
   }
   record.timestamps.push(now);
 }
@@ -253,6 +251,16 @@ export async function checkDistributedRateLimit(options: DistributedRateLimitOpt
   const userLimit = options.userLimit ?? 60;
   const taskLimit = options.taskLimit ?? 10;
   const isStrictFailClosed = process.env.RATE_LIMIT_FAIL_CLOSED === 'true' || process.env.NODE_ENV === 'production';
+
+  // Strict Fail-Closed in production when Redis is unconfigured
+  if (process.env.NODE_ENV === 'production' && !testRedisClient && !testRedisError && (!process.env.REDIS_URL || process.env.REDIS_URL.startsWith('mock://'))) {
+    return {
+      allowed: false,
+      remaining: 0,
+      retryAfterSeconds: 30,
+      reason: 'Rate limit service is not configured in production',
+    };
+  }
 
   // Try Redis distributed limiter
   try {
@@ -299,7 +307,7 @@ export async function checkDistributedRateLimit(options: DistributedRateLimitOpt
         remaining: info,
         retryAfterSeconds: 0,
       };
-    } else if (isStrictFailClosed && (process.env.REDIS_URL || process.env.RATE_LIMIT_FAIL_CLOSED === 'true')) {
+    } else if (isStrictFailClosed) {
       return {
         allowed: false,
         remaining: 0,

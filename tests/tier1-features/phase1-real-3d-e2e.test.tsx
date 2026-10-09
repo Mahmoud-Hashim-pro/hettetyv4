@@ -9,6 +9,7 @@ import controlPlaneHandler, {
 } from '../../api/reconstruction';
 import { validatePhotoCapture } from '../../src/features/reconstruction/CaptureValidator';
 import { TourViewer } from '../../src/components/3d/TourViewer';
+import { MeasurementTool } from '../../src/components/3d/MeasurementTool';
 import { ThreeDTour } from '../../src/types/three-d-tour';
 import zlib from 'zlib';
 import fs from 'fs';
@@ -532,4 +533,45 @@ describe('Tier 1 — Phase 1: Real Property Image -> Real 3D E2E Pipeline', () =
     expect(cloud.bounds.min).toEqual([-1.0, -2.0, -3.0]);
     expect(cloud.bounds.max).toEqual([1.0, 2.0, 3.0]);
   });
+
+  it('wires onReset callback in MeasurementTool so parent-controlled points can be cleared', () => {
+    let resetCalled = false;
+    const { getByTitle } = render(
+      <MeasurementTool
+        selectedPoints={[[0, 0, 0], [1, 2, 3]]}
+        onReset={() => {
+          resetCalled = true;
+        }}
+      />
+    );
+
+    const resetBtn = getByTitle('Reset');
+    fireEvent.click(resetBtn);
+    expect(resetCalled).toBe(true);
+  });
+
+  it('eliminates ungrounded demo gaussian and stock panorama fallbacks when tour lacks those representations', () => {
+    // Tour with only a mesh representation
+    const meshTour: ThreeDTour = {
+      id: 'tour_mesh_only',
+      status: 'ready',
+      representation: {
+        mesh: {
+          url: 'https://cdn.hettety.com/tour_mesh_only/mesh.glb',
+          format: 'glb',
+          vertexCount: 100,
+          faceCount: 50,
+        },
+      },
+    };
+
+    const { queryByText } = render(
+      <TourViewer tour={meshTour} title="Mesh Only Property" />
+    );
+
+    // Should NOT show gaussian or panorama controls
+    expect(queryByText('Gaussian')).toBeNull();
+    expect(queryByText('Panorama')).toBeNull();
+  });
 });
+

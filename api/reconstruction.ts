@@ -743,8 +743,14 @@ export function generateV4SignedUploadUrl(
  * Enqueues a verified reconstruction job to Redis stream exclusively
  */
 export async function enqueueToRedis(job: ReconstructionJobPayload, redisUrl?: string): Promise<boolean> {
-  const url = redisUrl || process.env.REDIS_URL || 'mock://redis';
-  if (url.startsWith('mock://') || process.env.NODE_ENV === 'test') {
+  const url = redisUrl || process.env.REDIS_URL;
+  if (!url || url.startsWith('mock://')) {
+    if (process.env.NODE_ENV === 'production') {
+      throw new Error('CONFIGURATION_ERROR: REDIS_URL is required in production to enqueue reconstruction jobs.');
+    }
+    return true;
+  }
+  if (process.env.NODE_ENV === 'test' && !redisUrl && !process.env.REDIS_URL) {
     return true;
   }
 
@@ -765,8 +771,11 @@ export async function enqueueToRedis(job: ReconstructionJobPayload, redisUrl?: s
 
     await client.quit();
     return true;
-  } catch (err) {
+  } catch (err: any) {
     console.error('[ControlPlane] Redis enqueue error:', err);
+    if (process.env.NODE_ENV === 'production') {
+      throw err;
+    }
     return false;
   }
 }
@@ -1139,17 +1148,22 @@ export default async function handler(req: any, res: any) {
       });
 
       // Enqueue to Redis stream
-      const enqueued = await enqueueToRedis(updatedJob);
-      if (!enqueued && process.env.REDIS_URL && !process.env.REDIS_URL.startsWith('mock://') && process.env.NODE_ENV !== 'test') {
+      let enqueued = false;
+      try {
+        enqueued = await enqueueToRedis(updatedJob);
+        if (!enqueued && (process.env.NODE_ENV === 'production' || process.env.REDIS_URL)) {
+          throw new Error('Failed to enqueue reconstruction job to worker stream.');
+        }
+      } catch (enqueueErr: any) {
         await runJobTransaction(jobId, (current) => {
           current.status = 'FAILED';
           current.stage = 'QUEUE_FAILED';
           current.errorCode = 'REDIS_ENQUEUE_FAILED';
-          current.errorMessage = 'Failed to enqueue reconstruction job to worker stream.';
+          current.errorMessage = enqueueErr.message || 'Failed to enqueue reconstruction job to worker stream.';
           return { updatedJob: current };
         });
-        return res.status(500).json({
-          error: 'REDIS_ENQUEUE_FAILED: Failed to enqueue reconstruction job to worker stream.',
+        return res.status(503).json({
+          error: `QUEUE_UNAVAILABLE: ${enqueueErr.message || 'Failed to enqueue reconstruction job to worker queue. Please retry later.'}`,
           jobId: updatedJob.id,
           status: 'FAILED',
         });
@@ -1207,17 +1221,22 @@ export default async function handler(req: any, res: any) {
       });
 
       // Enqueue to Redis stream AFTER setting QUEUED
-      const enqueued = await enqueueToRedis(updatedJob);
-      if (!enqueued && process.env.REDIS_URL && !process.env.REDIS_URL.startsWith('mock://') && process.env.NODE_ENV !== 'test') {
+      let enqueued = false;
+      try {
+        enqueued = await enqueueToRedis(updatedJob);
+        if (!enqueued && (process.env.NODE_ENV === 'production' || process.env.REDIS_URL)) {
+          throw new Error('Failed to enqueue retry to worker stream.');
+        }
+      } catch (enqueueErr: any) {
         await runJobTransaction(jobId, (current) => {
           current.status = 'FAILED';
           current.stage = 'QUEUE_FAILED';
           current.errorCode = 'REDIS_ENQUEUE_FAILED';
-          current.errorMessage = 'Failed to enqueue retry to worker stream.';
+          current.errorMessage = enqueueErr.message || 'Failed to enqueue retry to worker stream.';
           return { updatedJob: current };
         });
-        return res.status(500).json({
-          error: 'REDIS_ENQUEUE_FAILED: Failed to enqueue retry to worker stream.',
+        return res.status(503).json({
+          error: `QUEUE_UNAVAILABLE: ${enqueueErr.message || 'Failed to enqueue retry to worker queue.'}`,
           jobId: updatedJob.id,
           attemptId: updatedJob.attemptId,
           status: 'FAILED',

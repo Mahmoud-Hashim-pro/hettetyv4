@@ -233,10 +233,18 @@ class TestHettety3DReconstructionE2E(unittest.TestCase):
             {"type": "door_standard", "measured_units": 2.14, "known_meters": 2.15}
         ])
         self.assertFalse(assumed["is_calibrated"])
+        self.assertTrue(assumed["is_assumed_scale"])
+
+        # Architectural prior even with endpoints: remains uncalibrated (assumed scale only)
+        prior_with_pts = calibrate_sparse_scale([(1, 2, 3)], [
+            {"type": "architectural_prior", "source": "architectural_prior", "point_a": [0, 0, 0], "point_b": [0, 2.15, 0], "known_meters": 2.15}
+        ])
+        self.assertFalse(prior_with_pts["is_calibrated"])
+        self.assertTrue(prior_with_pts["is_assumed_scale"])
 
         # Verified surveyor benchmark marker: awards calibrated status
         surveyor = calibrate_sparse_scale([(1, 2, 3)], [
-            {"type": "surveyor_marker", "point_a": [0, 0, 0], "point_b": [2.0, 0, 0], "known_meters": 2.0}
+            {"type": "surveyor_marker", "source": "surveyor_measurement", "point_a": [0, 0, 0], "point_b": [2.0, 0, 0], "known_meters": 2.0}
         ])
         self.assertTrue(surveyor["is_calibrated"])
         self.assertGreaterEqual(surveyor["confidence_score"], 0.90)

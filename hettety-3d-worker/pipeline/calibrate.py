@@ -248,7 +248,14 @@ def calibrate_sparse_scale(
 
     for ref in active_anchors:
         ref_type = ref.get("type", "custom")
+        ref_source = ref.get("source", "")
         known = ref.get("known_meters") or ref.get("physicalMeters") or 0.0
+
+        is_prior = (
+            ref_type in ("architectural_prior", "assumed_standard", "nominal_prior", "door_standard", "ceiling_standard", "corridor_standard") or
+            ref_source in ("architectural_prior", "assumed_prior", "nominal_prior") or
+            ref.get("is_prior", False) is True
+        )
 
         pt_a = None
         pt_b = None
@@ -289,7 +296,12 @@ def calibrate_sparse_scale(
             dy = float(pt_b[1]) - float(pt_a[1])
             dz = float(pt_b[2]) - float(pt_a[2])
             measured = math.sqrt(dx * dx + dy * dy + dz * dz)
-            has_physical_ground_truth = True
+            if not is_prior and (
+                ref_type in ("lidar_benchmark", "surveyor_marker", "ar_survey_measurement") or
+                ref_source in ("surveyor_measurement", "lidar_measurement", "laser_measure") or
+                (ref.get("physicalMeters") is not None and ref.get("physicalMeters") > 0 and ref_source != "architectural_prior")
+            ):
+                has_physical_ground_truth = True
         else:
             measured = ref.get("measured_units", 0.0)
 
@@ -299,14 +311,18 @@ def calibrate_sparse_scale(
         scale = known / measured
 
         # Only LiDAR benchmarks and surveyor markers with physical measurements qualify as ground truth
-        if ref_type in ("lidar_benchmark", "surveyor_marker"):
+        if not is_prior and ref_type in ("lidar_benchmark", "surveyor_marker"):
             weight = 4.0
             has_physical_ground_truth = True
-        elif ref_type == "ar_survey_measurement" or (pt_a and pt_b):
+        elif not is_prior and (
+            ref_type == "ar_survey_measurement" or
+            ref_source in ("surveyor_measurement", "lidar_measurement", "laser_measure") or
+            (pt_a and pt_b and ref.get("physicalMeters") is not None and ref.get("physicalMeters") > 0)
+        ):
             weight = 2.5
             has_physical_ground_truth = True
         else:
-            # Generic architectural assumption (e.g. assumed door 2.15m without spatial ground truth)
+            # Generic architectural assumption (e.g. assumed door 2.15m without verified physical ground truth)
             weight = 0.8
 
         weighted_scale += scale * weight
@@ -350,6 +366,7 @@ def calibrate_sparse_scale(
 
     return {
         "is_calibrated": is_calibrated,
+        "is_assumed_scale": bool(not is_calibrated and valid_scales),
         "scale_factor": round(final_scale, 4),
         "confidence_score": round(confidence_score, 2),
         "error_margin_percent": round(error_margin_percent, 1),
@@ -357,7 +374,9 @@ def calibrate_sparse_scale(
         "disclaimer": (
             "Calibrated 1:1 Metric Scale from verified physical reference markers."
             if is_calibrated else
-            "Uncalibrated: reference discrepancy exceeded 5% tolerance or lacked verified physical ground truth."
+            ("Nominal architectural prior scale: scale estimated from architectural assumptions but not certified ground truth."
+             if valid_scales else
+             "Uncalibrated: reference discrepancy exceeded 5% tolerance or lacked verified physical ground truth.")
         )
     }
 

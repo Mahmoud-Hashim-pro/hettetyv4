@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Ruler, RotateCcw, Info, AlertTriangle, Crosshair, MapPin } from 'lucide-react';
+import { Ruler, RotateCcw, Info, AlertTriangle, Crosshair, MapPin, X } from 'lucide-react';
 import { Vec3, calculateDistanceMeters, formatDistance } from '../../lib/3d/coordinates';
 
 interface MeasurementToolProps {
@@ -9,14 +9,17 @@ interface MeasurementToolProps {
   showDemoPresets?: boolean;
   selectedPoints?: [Vec3 | null, Vec3 | null];
   onPointSelect?: (point: Vec3) => void;
+  onReset?: () => void;
 }
 
 export const MeasurementTool: React.FC<MeasurementToolProps> = ({
+  onClose,
   isCalibrated = false,
   isRtl = false,
   showDemoPresets = false,
   selectedPoints: controlledPoints,
   onPointSelect,
+  onReset,
 }) => {
   const [internalPointA, setInternalPointA] = useState<Vec3 | null>(null);
   const [internalPointB, setInternalPointB] = useState<Vec3 | null>(null);
@@ -29,6 +32,7 @@ export const MeasurementTool: React.FC<MeasurementToolProps> = ({
   const handleReset = () => {
     setInternalPointA(null);
     setInternalPointB(null);
+    onReset?.();
   };
 
   const handleSampleWallMeasure = () => {
@@ -67,14 +71,28 @@ export const MeasurementTool: React.FC<MeasurementToolProps> = ({
           <Ruler size={16} className="text-brand-500" />
           <span>{isRtl ? 'أداة القياس الفراغي الهندسي' : '3D Metric Measurement Tool'}</span>
         </div>
-        <button
-          type="button"
-          onClick={handleReset}
-          className="text-slate-400 hover:text-slate-600 dark:hover:text-white p-1 cursor-pointer"
-          title={isRtl ? 'إعادة التعيين' : 'Reset'}
-        >
-          <RotateCcw size={13} />
-        </button>
+        <div className="flex items-center gap-1">
+          <button
+            type="button"
+            onClick={handleReset}
+            className="text-slate-400 hover:text-slate-600 dark:hover:text-white p-1 cursor-pointer"
+            title={isRtl ? 'إعادة التعيين' : 'Reset'}
+            aria-label={isRtl ? 'إعادة تعيين القياس' : 'Reset measurement'}
+          >
+            <RotateCcw size={13} />
+          </button>
+          {onClose && (
+            <button
+              type="button"
+              onClick={onClose}
+              className="text-slate-400 hover:text-slate-600 dark:hover:text-white p-1 cursor-pointer"
+              title={isRtl ? 'إغلاق' : 'Close'}
+              aria-label={isRtl ? 'إغلاق أداة القياس' : 'Close measurement tool'}
+            >
+              <X size={13} />
+            </button>
+          )}
+        </div>
       </div>
 
       {!isCalibrated && (

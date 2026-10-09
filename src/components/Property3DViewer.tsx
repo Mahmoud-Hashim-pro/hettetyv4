@@ -543,6 +543,15 @@ const Property3DViewer: React.FC<Property3DViewerProps> = ({ images, depthMaps, 
   const switchMode = (m: 'tour' | 'pano' | 'depth') => { setMode(m); setIndex(0); setAutoRotate(true); };
 
   useEffect(() => {
+    const nextMode = hasTourAsset ? 'tour' : validPanoramas.length ? 'pano' : 'depth';
+    setMode(nextMode);
+    setActiveRoomId(rooms[0]?.id || null);
+    setIndex(0);
+    setShowMeasure(false);
+    setShowFloorPlan(false);
+  }, [threeDTour?.id, threeDTour?.assetUrl, hasTourAsset, validPanoramas.length, validImages.length, rooms]);
+
+  useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'ArrowRight') next();
       if (e.key === 'ArrowLeft') prev();
@@ -731,6 +740,7 @@ const Property3DViewer: React.FC<Property3DViewerProps> = ({ images, depthMaps, 
                    threeDTour?.representation?.gaussianSplat?.isCalibratedMetric)
             )}
             isRtl={isRtl}
+            onClose={() => setShowMeasure(false)}
           />
         </div>
       )}

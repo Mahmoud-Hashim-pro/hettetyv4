@@ -1023,8 +1023,21 @@ If a user has a complex legal dispute, a payment issue, or needs urgent support,
           }
         }
       } else {
-        const response = await api.chat(userMsg.text);
-        aiText = response.success ? response.data : "Mock API failed";
+        // Attempt on-demand lazy initialization if chatRef was not pre-warmed
+        try {
+          const sysInstruction = chatConfigRef.current?.systemInstruction || "You are Hettety AI, an intelligent real estate advisor for the Egyptian property market.";
+          chatRef.current = createChat({
+            task: 'chat',
+            config: { systemInstruction: sysInstruction },
+          });
+          const response: any = await withRetry(() => chatRef.current.sendMessage({ message: userMsg.text }));
+          aiText = response.text;
+        } catch (initErr) {
+          console.error("AI Assistant on-demand initialization error:", initErr);
+          aiText = isRtl
+            ? 'المساعد الذكي غير متاح حالياً أو قيد التهيئة. يرجى المحاولة مرة أخرى بعد لحظات.'
+            : 'The AI Assistant is currently initializing or unavailable. Please retry in a moment.';
+        }
       }
 
       // If the model asked to open the 3D viewer, strip the marker and launch it

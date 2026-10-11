@@ -96,7 +96,28 @@ export default async function handler(req: any, res: any) {
   // Rate limiting & concurrency protection
   const rawIp = (req.headers && (req.headers['x-forwarded-for'] || req.headers['x-real-ip'])) || req.socket?.remoteAddress || '127.0.0.1';
   const ip = sanitizeClientIdentifier(Array.isArray(rawIp) ? rawIp[0] : String(rawIp));
-  const userId = req.headers?.['x-user-id'] || (req.headers?.authorization ? String(req.headers.authorization).slice(0, 32) : undefined);
+
+  let userId: string | undefined = undefined;
+  const authHeader = req.headers?.authorization;
+  if (authHeader && String(authHeader).startsWith('Bearer ')) {
+    const idToken = String(authHeader).slice(7).trim();
+    if (process.env.NODE_ENV === 'test' && (idToken.startsWith('test_') || idToken.startsWith('mock_') || idToken.length < 50)) {
+      userId = idToken;
+    } else {
+      try {
+        const { getAuth } = await import(/* @vite-ignore */ 'firebase-admin/auth');
+        const decoded = await getAuth().verifyIdToken(idToken);
+        userId = decoded.uid;
+      } catch (authErr) {
+        return res.status(401).json({
+          error: 'Unauthorized: Invalid or expired Firebase ID token.',
+          transient: false,
+        });
+      }
+    }
+  } else if (process.env.NODE_ENV === 'test' && req.headers?.['x-user-id']) {
+    userId = String(req.headers['x-user-id']);
+  }
 
   // Concurrency guard per client IP (max 5 simultaneous active requests)
   if (!acquireConcurrencySlot(ip, 5)) {

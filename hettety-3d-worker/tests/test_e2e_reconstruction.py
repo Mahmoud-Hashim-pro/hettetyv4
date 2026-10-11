@@ -1133,7 +1133,49 @@ class TestHettety3DReconstructionE2E(unittest.TestCase):
         public_tour_spz = os.path.join(storage.local_root, "properties", "prop_qg_abort_01", "tour", "valid_test.spz")
         self.assertFalse(os.path.exists(public_tour_spz), "Rejected tour must never upload artifacts to public tour pointer!")
 
+    def test_36_worker_never_writes_directly_to_public_tour_pointer(self):
+        """Verifies that even on successful publish, worker writes strictly to isolated attempt path and never touches /tour/ directly."""
+        valid_glb = os.path.join(self.temp_dir, "valid_pass.glb")
+        create_minimal_valid_glb(valid_glb)
+        valid_spz = os.path.join(self.temp_dir, "valid_pass.spz")
+        with open(valid_spz, "wb") as f:
+            f.write(b"SPZ_PASS_DATA" * 20)
+
+        storage = ObjectStorageClient(provider="local")
+
+        res = publish_tour_assets(
+            job_id="job_iso_pub_99",
+            property_id="prop_iso_pub_99",
+            spz_path=valid_spz,
+            glb_path=valid_glb,
+            bounds={"min": [-1, 0, -1], "max": [1, 2, 1]},
+            cdn_base_url="https://cdn.hettety.com",
+            callback_url="mock://callback",
+            api_key="mock",
+            storage_client=storage,
+            image_count=30,
+            registered_cameras=30,
+            splat_count=50000,
+            is_calibrated_metric=True,
+            calibration_confidence=0.95,
+            calibration_rmse=0.03,
+            attempt_id="attempt_iso_1",
+            worker_id="worker_gpu_iso_1"
+        )
+
+        self.assertTrue(res["success"])
+        # Attempt directory must contain uploaded artifacts
+        attempt_dir = os.path.join(storage.local_root, "properties", "prop_iso_pub_99", "3d", "job_iso_pub_99", "attempt_iso_1")
+        self.assertTrue(os.path.exists(os.path.join(attempt_dir, "valid_pass.spz")))
+        self.assertTrue(os.path.exists(os.path.join(attempt_dir, "valid_pass.glb")))
+        self.assertTrue(os.path.exists(os.path.join(attempt_dir, "manifest.json")))
+
+        # Public tour pointer must NOT be written by the worker (reserved strictly for Control Plane promotion)
+        tour_dir = os.path.join(storage.local_root, "properties", "prop_iso_pub_99", "tour")
+        self.assertFalse(os.path.exists(tour_dir), "Worker must NEVER write directly to public tour pointer /tour/!")
+
 if __name__ == "__main__":
     unittest.main()
+
 
 

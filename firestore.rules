@@ -535,11 +535,22 @@ service cloud.firestore {
                     && request.resource.data.buyerId != request.resource.data.sellerId
                     && request.resource.data.keys().hasAll(['propertyId', 'buyerId', 'sellerId', 'agreedPrice', 'depositAmount', 'status', 'idempotencyKey', 'createdAt'])
                     && request.resource.data.agreedPrice > 0
-                    && request.resource.data.status in ['offer_submitted', 'offer_accepted'];
+                    && request.resource.data.status == 'offer_submitted'
+                    && request.resource.data.get('depositStatus', 'unpaid') == 'unpaid';
       allow update: if isAuthenticated() && (
                       isAdmin() ||
-                      (resource.data.buyerId == request.auth.uid && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'depositStatus', 'paymentMethod', 'escrowReference', 'updatedAt'])) ||
-                      (resource.data.sellerId == request.auth.uid && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'updatedAt']))
+                      (
+                        resource.data.buyerId == request.auth.uid &&
+                        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'updatedAt']) &&
+                        request.resource.data.status == 'cancelled' &&
+                        resource.data.status in ['offer_submitted', 'counter_offered']
+                      ) ||
+                      (
+                        resource.data.sellerId == request.auth.uid &&
+                        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'updatedAt']) &&
+                        request.resource.data.status in ['offer_accepted', 'counter_offered', 'cancelled'] &&
+                        resource.data.status in ['offer_submitted', 'counter_offered']
+                      )
                     );
       allow delete: if isAdmin();
     }

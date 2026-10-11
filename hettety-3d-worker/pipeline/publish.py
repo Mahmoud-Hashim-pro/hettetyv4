@@ -50,8 +50,6 @@ def publish_tour_assets(
     version_dir = f"properties/{property_id}/3d/{job_id}/{attempt_tag}"
     remote_spz_path = f"{version_dir}/{spz_filename}"
     remote_glb_path = f"{version_dir}/{glb_filename}"
-    tour_spz_path = f"properties/{property_id}/tour/{spz_filename}"
-    tour_glb_path = f"properties/{property_id}/tour/{glb_filename}"
 
     spz_url = f"{cdn_base_url}/{remote_spz_path}"
     glb_url = f"{cdn_base_url}/{remote_glb_path}"
@@ -260,7 +258,6 @@ def publish_tour_assets(
     }
 
     remote_manifest_path = f"{version_dir}/manifest.json"
-    tour_manifest_path = f"properties/{property_id}/tour/manifest.json"
     manifest_url = f"{cdn_base_url}/{remote_manifest_path}"
     with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as mf:
         json.dump(manifest_content, mf, indent=2)
@@ -270,10 +267,6 @@ def publish_tour_assets(
         manifest_sha256 = compute_sha256(local_manifest_tmp)
         if storage_client:
             storage_client.upload_file(local_manifest_tmp, remote_manifest_path)
-            # 4. Promote all verified attempt artifacts to the active public tour pointer
-            storage_client.upload_file(spz_path, tour_spz_path)
-            storage_client.upload_file(glb_path, tour_glb_path)
-            storage_client.upload_file(local_manifest_tmp, tour_manifest_path)
     finally:
         try:
             os.remove(local_manifest_tmp)

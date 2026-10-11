@@ -182,8 +182,16 @@ export async function getAdminServices(): Promise<{ adminDb: any; adminAuth: any
       }
     }
 
-    const dbId = process.env.FIRESTORE_DATABASE_ID;
-    adminDbInstance = dbId ? getFirestore(dbId) : getFirestore();
+    const configPath = path.resolve(process.cwd(), 'firebase-applet-config.json');
+    let fallbackDbId = 'ai-studio-7dc9cb2d-ccba-48fa-8d31-f2b7a4759743';
+    if (fs.existsSync(configPath)) {
+      try {
+        const parsedConfig = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+        if (parsedConfig.firestoreDatabaseId) fallbackDbId = parsedConfig.firestoreDatabaseId;
+      } catch {}
+    }
+    const dbId = process.env.FIRESTORE_DATABASE_ID || fallbackDbId;
+    adminDbInstance = dbId && dbId !== '(default)' ? getFirestore(dbId) : getFirestore();
     adminAuthInstance = getAuth();
     return { adminDb: adminDbInstance, adminAuth: adminAuthInstance };
   } catch (err: any) {
@@ -1635,6 +1643,78 @@ export default async function handler(req: any, res: any) {
         if (!bounds || !bounds.min || !bounds.max || bounds.min.some((v: any) => !isFinite(v)) || bounds.max.some((v: any) => !isFinite(v))) {
           return res.status(422).json({
             error: 'ARTIFACT_VALIDATION_FAILED: Spatial bounds must contain finite coordinates.',
+          });
+        }
+
+        // Verify active attempt and bound worker before promotion (Fail Closed)
+        if (job.attemptId && attemptId && job.attemptId !== attemptId) {
+          return res.status(409).json({
+            error: `STALE_ATTEMPT_IGNORED: Callback attempt ${attemptId} is stale. Current active attempt is ${job.attemptId}.`,
+            errorCode: 'STALE_ATTEMPT_IGNORED',
+          });
+        }
+        if (job.workerId && workerId && job.workerId !== workerId) {
+          return res.status(409).json({
+            error: `WORKER_MISMATCH_IGNORED: Job ${jobId} is currently assigned to worker ${job.workerId}. Callback from worker ${workerId} was rejected.`,
+            errorCode: 'WORKER_MISMATCH_IGNORED',
+          });
+        }
+
+        // Atomic Promotion: Promote verified attempt artifacts to public tour pointer
+        try {
+          const tourSplatPath = `properties/${job.propertyId}/tour/${path.basename(splatPath) || 'scene.spz'}`;
+          const tourMeshPath = `properties/${job.propertyId}/tour/${path.basename(meshPath) || 'mesh.glb'}`;
+          const tourManifestPath = `properties/${job.propertyId}/tour/manifest.json`;
+
+          // 1. Local storage promotion
+          for (const root of candidateStorageRoots) {
+            const srcSplatFull = path.resolve(root, splatPath);
+            const srcMeshFull = path.resolve(root, meshPath);
+            if (fs.existsSync(srcSplatFull) || fs.existsSync(srcMeshFull)) {
+              const tourDir = path.resolve(root, `properties/${job.propertyId}/tour`);
+              fs.mkdirSync(tourDir, { recursive: true });
+              if (fs.existsSync(srcSplatFull) && splatPath !== tourSplatPath) {
+                fs.copyFileSync(srcSplatFull, path.resolve(root, tourSplatPath));
+              }
+              if (fs.existsSync(srcMeshFull) && meshPath !== tourMeshPath) {
+                fs.copyFileSync(srcMeshFull, path.resolve(root, tourMeshPath));
+              }
+              const manifestCandidate = manifestUrl
+                ? extractNormalizedPath(manifestUrl)
+                : `properties/${job.propertyId}/3d/${job.id}/${attemptId || job.attemptId || 'attempt_1'}/manifest.json`;
+              const srcManifestFull = path.resolve(root, manifestCandidate);
+              if (fs.existsSync(srcManifestFull)) {
+                fs.copyFileSync(srcManifestFull, path.resolve(root, tourManifestPath));
+              }
+            }
+          }
+
+          // 2. Cloud GCS promotion (if configured)
+          if (process.env.STORAGE_PROVIDER === 'gcs' && process.env.GCS_BUCKET_NAME && process.env.NODE_ENV !== 'test') {
+            const storagePkg = '@google-cloud/storage';
+            const { Storage } = await import(/* @vite-ignore */ storagePkg);
+            const storage = new Storage();
+            const bucket = storage.bucket(process.env.GCS_BUCKET_NAME);
+
+            if (splatPath !== tourSplatPath) {
+              await bucket.file(splatPath).copy(bucket.file(tourSplatPath));
+            }
+            if (meshPath !== tourMeshPath) {
+              await bucket.file(meshPath).copy(bucket.file(tourMeshPath));
+            }
+            const manifestCandidate = manifestUrl
+              ? extractNormalizedPath(manifestUrl)
+              : `properties/${job.propertyId}/3d/${job.id}/${attemptId || job.attemptId || 'attempt_1'}/manifest.json`;
+            const [manifestExists] = await bucket.file(manifestCandidate).exists();
+            if (manifestExists) {
+              await bucket.file(manifestCandidate).copy(bucket.file(tourManifestPath));
+            }
+          }
+        } catch (promoteErr: any) {
+          console.error('[ControlPlane] Artifact promotion to tour pointer failed:', promoteErr);
+          return res.status(502).json({
+            error: `PROMOTION_FAILED: Failed to promote attempt artifacts to public tour pointer: ${promoteErr.message}`,
+            errorCode: 'PROMOTION_FAILED',
           });
         }
       }

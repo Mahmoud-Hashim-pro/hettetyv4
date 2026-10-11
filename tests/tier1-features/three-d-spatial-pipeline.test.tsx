@@ -2876,7 +2876,162 @@ NaN NaN NaN
       expect(constructedTour.preflightCaptureValidation?.coverageScore).toBe(90);
       expect(constructedTour.preflightCaptureValidation?.blurScore).toBe(92);
     });
+
+    it('P0-AtomicPromotion: atomically promotes verified attempt artifacts to public tour pointer upon READY transition', async () => {
+      const { default: controlPlaneHandler, controlPlaneJobs, mockPropertiesStore } = await import('../../api/reconstruction');
+      const fs = await import('fs');
+      const path = await import('path');
+      const crypto = await import('crypto');
+
+      const jobId = 'job-atomic-promo-101';
+      const propId = 'prop-atomic-promo-101';
+      const attemptId = 'attempt_promo_1';
+      const workerId = 'worker-promo-node-1';
+
+      mockPropertiesStore.set(propId, { authorUid: 'owner-promo-101' });
+      controlPlaneJobs.set(jobId, {
+        id: jobId,
+        propertyId: propId,
+        ownerId: 'owner-promo-101',
+        status: 'PUBLISHING',
+        stage: 'PUBLISHING',
+        attemptId,
+        workerId,
+        stateVersion: 1,
+      } as any);
+
+      // Create isolated attempt artifacts on storage disk
+      const storageRoot = path.resolve(process.cwd(), 'storage', 'spatial_assets');
+      const attemptDir = path.resolve(storageRoot, `properties/${propId}/3d/${jobId}/${attemptId}`);
+      fs.mkdirSync(attemptDir, { recursive: true });
+
+      const spzContent = Buffer.from('ATOMIC_PROMOTION_SPZ_PAYLOAD_' + Date.now());
+      const glbContent = Buffer.from('ATOMIC_PROMOTION_GLB_PAYLOAD_' + Date.now());
+      fs.writeFileSync(path.resolve(attemptDir, 'scene.spz'), spzContent);
+      fs.writeFileSync(path.resolve(attemptDir, 'mesh.glb'), glbContent);
+
+      const spzSha = crypto.createHash('sha256').update(spzContent).digest('hex');
+      const glbSha = crypto.createHash('sha256').update(glbContent).digest('hex');
+
+      let statusRes = 0;
+      let jsonRes: any = null;
+      const mockRes = {
+        status: (s: number) => { statusRes = s; return mockRes; },
+        json: (j: any) => { jsonRes = j; return mockRes; },
+      };
+
+      await controlPlaneHandler(
+        {
+          method: 'POST',
+          query: { action: 'worker-callback' },
+          headers: { authorization: 'Bearer hettety-worker-secret-internal' },
+          body: {
+            jobId,
+            attemptId,
+            workerId,
+            propertyId: propId,
+            status: 'READY',
+            representation: {
+              gaussianSplat: {
+                format: 'spz',
+                url: `https://cdn.hettety.com/properties/${propId}/3d/${jobId}/${attemptId}/scene.spz`,
+                splatCount: 50000,
+                sizeBytes: spzContent.length,
+                sha256: spzSha,
+              },
+              mesh: {
+                format: 'glb',
+                url: `https://cdn.hettety.com/properties/${propId}/3d/${jobId}/${attemptId}/mesh.glb`,
+                faceCount: 1500,
+                sizeBytes: glbContent.length,
+                isCalibratedMetric: true,
+                sha256: glbSha,
+              },
+            },
+            bounds: { min: [-2, 0, -2], max: [2, 3, 2] },
+            qualityReport: {
+              passed: true,
+              status: 'READY',
+              overallScore: 92,
+              metrics: { isCalibratedMetric: true },
+            },
+          },
+        },
+        mockRes
+      );
+
+      expect(statusRes).toBe(200);
+      expect(controlPlaneJobs.get(jobId)?.status).toBe('READY');
+
+      // Assert that Control Plane atomically promoted files to public /tour/ pointer
+      const tourDir = path.resolve(storageRoot, `properties/${propId}/tour`);
+      expect(fs.existsSync(path.resolve(tourDir, 'scene.spz'))).toBe(true);
+      expect(fs.existsSync(path.resolve(tourDir, 'mesh.glb'))).toBe(true);
+
+      const promotedSpz = fs.readFileSync(path.resolve(tourDir, 'scene.spz'));
+      const promotedGlb = fs.readFileSync(path.resolve(tourDir, 'mesh.glb'));
+      expect(crypto.createHash('sha256').update(promotedSpz).digest('hex')).toBe(spzSha);
+      expect(crypto.createHash('sha256').update(promotedGlb).digest('hex')).toBe(glbSha);
+
+      // Cleanup test artifacts
+      try {
+        fs.rmSync(attemptDir, { recursive: true, force: true });
+        fs.rmSync(tourDir, { recursive: true, force: true });
+      } catch {}
+    });
+
+    it('P0-StaleAttemptPromotionAbort: rejects callback and aborts promotion if callback attempt is stale', async () => {
+      const { default: controlPlaneHandler, controlPlaneJobs, mockPropertiesStore } = await import('../../api/reconstruction');
+      const jobId = 'job-stale-promo-202';
+      const propId = 'prop-stale-promo-202';
+
+      mockPropertiesStore.set(propId, { authorUid: 'owner-stale-202' });
+      controlPlaneJobs.set(jobId, {
+        id: jobId,
+        propertyId: propId,
+        ownerId: 'owner-stale-202',
+        status: 'PUBLISHING',
+        stage: 'PUBLISHING',
+        attemptId: 'attempt_current_active',
+        workerId: 'worker-stale-node-2',
+        stateVersion: 3,
+      } as any);
+
+      let statusRes = 0;
+      let jsonRes: any = null;
+      const mockRes = {
+        status: (s: number) => { statusRes = s; return mockRes; },
+        json: (j: any) => { jsonRes = j; return mockRes; },
+      };
+
+      await controlPlaneHandler(
+        {
+          method: 'POST',
+          query: { action: 'worker-callback' },
+          headers: { authorization: 'Bearer hettety-worker-secret-internal' },
+          body: {
+            jobId,
+            attemptId: 'attempt_stale_lagging',
+            workerId: 'worker-stale-node-2',
+            propertyId: propId,
+            status: 'READY',
+            representation: {
+              gaussianSplat: { format: 'spz', url: `properties/${propId}/3d/${jobId}/attempt_stale_lagging/scene.spz`, splatCount: 1000, sha256: 'a'.repeat(64) },
+              mesh: { format: 'glb', url: `properties/${propId}/3d/${jobId}/attempt_stale_lagging/mesh.glb`, faceCount: 500, sha256: 'b'.repeat(64) },
+            },
+            bounds: { min: [-1, 0, -1], max: [1, 2, 1] },
+            qualityReport: { passed: true },
+          },
+        },
+        mockRes
+      );
+
+      expect(statusRes).toBe(409);
+      expect(jsonRes.error).toContain('STALE_ATTEMPT_IGNORED');
+      expect(controlPlaneJobs.get(jobId)?.status).toBe('PUBLISHING');
+    });
   });
 });
+
 
 

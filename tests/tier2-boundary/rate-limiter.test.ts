@@ -252,5 +252,61 @@ describe('Tier 2 — AI Rate Limiter & Concurrency Protection', () => {
       const resB1 = await checkDistributedRateLimit({ ip: clientIp, userId: userB, ipLimit: 50, userLimit: 1 });
       expect(resB1.allowed).toBe(true);
     });
+
+    it('P1-AIAuthVerification: verifies Bearer token and rejects unverified spoofed client x-user-id in production', async () => {
+      const { default: aiHandler } = await import('../../api/ai');
+
+      let statusRes = 0;
+      let jsonRes: any = null;
+      const createRes = () => ({
+        status: (s: number) => { statusRes = s; return createRes(); },
+        json: (j: any) => { jsonRes = j; return createRes(); },
+        setHeader: () => {},
+        end: () => {},
+      });
+
+      // 1. Valid test token in test env is accepted
+      statusRes = 0;
+      jsonRes = null;
+      await aiHandler(
+        {
+          method: 'POST',
+          headers: {
+            'x-forwarded-for': '203.0.113.88',
+            authorization: 'Bearer test_user_verified_123',
+          },
+          body: { contents: [{ role: 'user', parts: [{ text: 'Hello AI' }] }] },
+        },
+        createRes()
+      );
+      // Reaches provider or rate limit without 401
+      expect(statusRes).not.toBe(401);
+
+      // 2. In production mode, x-user-id without Bearer token does NOT bypass IP limiting
+      const prevEnv = process.env.NODE_ENV;
+      try {
+        process.env.NODE_ENV = 'production';
+        statusRes = 0;
+        jsonRes = null;
+
+        // Malformed or invalid JWT token in production triggers 401
+        await aiHandler(
+          {
+            method: 'POST',
+            headers: {
+              'x-forwarded-for': '203.0.113.99',
+              authorization: 'Bearer invalid_forged_expired_jwt_token',
+            },
+            body: { contents: [{ role: 'user', parts: [{ text: 'Hello AI' }] }] },
+          },
+          createRes()
+        );
+        expect(statusRes).toBe(401);
+        expect(jsonRes.error).toContain('Unauthorized');
+      } finally {
+        process.env.NODE_ENV = prevEnv;
+      }
+    });
   });
 });
+

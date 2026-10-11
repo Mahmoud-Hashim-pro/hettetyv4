@@ -367,9 +367,14 @@ export async function runJobTransaction(
 
     if (updatedJob.status === 'READY') {
       const existingProp = mockPropertiesStore.get(updatedJob.propertyId) || { authorUid: updatedJob.ownerId };
+      const nextVersion = (existingProp.activeVersion || 0) + 1;
       mockPropertiesStore.set(updatedJob.propertyId, {
         ...existingProp,
         activeReconstructionId: `${updatedJob.id}_${updatedJob.attemptId || 'attempt_1'}`,
+        activeAttemptId: updatedJob.attemptId,
+        activeJobId: updatedJob.id,
+        activeManifestPath: updatedJob.manifestUrl || null,
+        activeVersion: nextVersion,
         publishedArtifact: {
           jobId: updatedJob.id,
           attemptId: updatedJob.attemptId,
@@ -378,11 +383,13 @@ export async function runJobTransaction(
           manifestUrl: updatedJob.manifestUrl || null,
           manifestSha256: updatedJob.manifestSha256 || null,
           publishedAt: now,
+          version: nextVersion,
         },
         threeDTour: {
           status: 'ready',
           activeAttemptId: updatedJob.attemptId,
           activeJobId: updatedJob.id,
+          activeVersion: nextVersion,
           assetUrl: updatedJob.representation?.gaussianSplat?.url || updatedJob.representation?.mesh?.url,
           representation: updatedJob.representation,
           source: 'photogrammetry',
@@ -469,6 +476,9 @@ export async function runJobTransaction(
         const propDocRef = adminDb.collection('properties').doc(updatedJob.propertyId);
         tx.set(propDocRef, {
           activeReconstructionId: `${updatedJob.id}_${updatedJob.attemptId || 'attempt_1'}`,
+          activeAttemptId: updatedJob.attemptId,
+          activeJobId: updatedJob.id,
+          activeManifestPath: updatedJob.manifestUrl || null,
           publishedArtifact: {
             jobId: updatedJob.id,
             attemptId: updatedJob.attemptId,
@@ -1402,8 +1412,29 @@ export default async function handler(req: any, res: any) {
         expectedStateVersion,
       } = req.body;
 
+      const targetStatus = (status || '').toUpperCase();
+      const effectiveWorkerId = workerId || req.headers?.['x-worker-id'] || req.headers?.['x-worker-node'];
+      const effectiveAttemptId = attemptId || req.headers?.['x-attempt-id'];
+
       if (!jobId) {
-        return res.status(400).json({ error: 'INVALID_REQUEST: jobId is required.' });
+        return res.status(400).json({ error: 'INVALID_REQUEST: jobId is required.', errorCode: 'JOB_ATTEMPT_WORKER_REQUIRED' });
+      }
+
+      // Completion callback (action === 'worker-callback') strictly requires jobId, attemptId, and workerId
+      const isCompletionCallback = action === 'worker-callback';
+      if (isCompletionCallback || req.headers?.['x-require-identifiers'] === 'true' || req.body?.requireIdentifiers === true) {
+        if (!effectiveAttemptId) {
+          return res.status(400).json({
+            error: 'JOB_ATTEMPT_WORKER_REQUIRED: attemptId is required for completion callback.',
+            errorCode: 'JOB_ATTEMPT_WORKER_REQUIRED',
+          });
+        }
+        if (!effectiveWorkerId) {
+          return res.status(400).json({
+            error: 'JOB_ATTEMPT_WORKER_REQUIRED: workerId is required for completion callback.',
+            errorCode: 'JOB_ATTEMPT_WORKER_REQUIRED',
+          });
+        }
       }
 
       const job = await getJobFromFirestoreOrMemory(jobId);
@@ -1425,15 +1456,15 @@ export default async function handler(req: any, res: any) {
 
       // Verify Attempt ID (Attempt Isolation — reject stale crashed workers from older attempts)
       if (job.attemptId) {
-        if (!attemptId && (process.env.NODE_ENV === 'production' || req.headers?.['x-require-identifiers'] === 'true' || req.body?.requireIdentifiers === true)) {
+        if (!effectiveAttemptId && (process.env.NODE_ENV === 'production' || req.headers?.['x-require-identifiers'] === 'true' || req.body?.requireIdentifiers === true)) {
           return res.status(409).json({
             error: `STALE_ATTEMPT_IGNORED: Worker callback must specify current active attemptId ${job.attemptId}.`,
             errorCode: 'STALE_ATTEMPT_IGNORED',
           });
         }
-        if (attemptId && attemptId !== job.attemptId) {
+        if (effectiveAttemptId && effectiveAttemptId !== job.attemptId) {
           return res.status(409).json({
-            error: `STALE_ATTEMPT_IGNORED: Callback attempt ${attemptId} is stale. Current active attempt is ${job.attemptId}.`,
+            error: `STALE_ATTEMPT_IGNORED: Callback attempt ${effectiveAttemptId} is stale. Current active attempt is ${job.attemptId}.`,
             errorCode: 'STALE_ATTEMPT_IGNORED',
           });
         }
@@ -1441,22 +1472,21 @@ export default async function handler(req: any, res: any) {
 
       // Enforce worker identity: lock to the first bound workerId; reject competing or mismatched workers
       if (job.workerId) {
-        if (!workerId && (process.env.NODE_ENV === 'production' || req.headers?.['x-require-identifiers'] === 'true' || req.body?.requireIdentifiers === true)) {
+        if (!effectiveWorkerId && (process.env.NODE_ENV === 'production' || req.headers?.['x-require-identifiers'] === 'true' || req.body?.requireIdentifiers === true)) {
           return res.status(409).json({
             error: `WORKER_MISMATCH_IGNORED: Worker callback must specify bound workerId ${job.workerId}.`,
             errorCode: 'WORKER_MISMATCH_IGNORED',
           });
         }
-        if (workerId && job.workerId !== workerId) {
+        if (effectiveWorkerId && job.workerId !== effectiveWorkerId) {
           return res.status(409).json({
-            error: `WORKER_MISMATCH_IGNORED: Job ${jobId} is currently assigned to worker ${job.workerId}. Callback from worker ${workerId} was rejected.`,
+            error: `WORKER_MISMATCH_IGNORED: Job ${jobId} is currently assigned to worker ${job.workerId}. Callback from worker ${effectiveWorkerId} was rejected.`,
             errorCode: 'WORKER_MISMATCH_IGNORED',
           });
         }
       }
 
       const currentStatus = job.status;
-      const targetStatus = (status || '').toUpperCase();
 
       // Stage Timeout Enforcing: If current stage exceeded timeout and not explicitly failing/cancelling
       if (job.stageStartedAt && currentStatus in STAGE_TIMEOUTS_MS && targetStatus !== 'FAILED' && targetStatus !== 'CANCELLED') {
@@ -1651,10 +1681,59 @@ export default async function handler(req: any, res: any) {
             error: 'ARTIFACT_VALIDATION_FAILED: Invalid Metric GLB mesh representation.',
           });
         }
-        if (!bounds || !bounds.min || !bounds.max || bounds.min.some((v: any) => !isFinite(v)) || bounds.max.some((v: any) => !isFinite(v))) {
+        if (
+          !bounds ||
+          !Array.isArray(bounds.min) ||
+          !Array.isArray(bounds.max) ||
+          bounds.min.length < 3 ||
+          bounds.max.length < 3 ||
+          bounds.min.some((v: any) => typeof v !== 'number' || !isFinite(v)) ||
+          bounds.max.some((v: any) => typeof v !== 'number' || !isFinite(v)) ||
+          bounds.min.some((v: number, i: number) => v > bounds.max[i])
+        ) {
           return res.status(422).json({
-            error: 'ARTIFACT_VALIDATION_FAILED: Spatial bounds must contain finite coordinates.',
+            error: 'ARTIFACT_VALIDATION_FAILED: Spatial bounds must contain finite coordinates with min <= max along all axes.',
           });
+        }
+
+        // Complete manifest verification if manifestUrl is supplied
+        if (manifestUrl) {
+          const manifestPath = extractNormalizedPath(manifestUrl);
+          if (!isPrefixValid(manifestPath)) {
+            return res.status(422).json({
+              error: `ARTIFACT_VALIDATION_FAILED: Manifest URL must resolve to path prefix properties/${job.propertyId}/3d/${job.id}/ or properties/${job.propertyId}/tour/.`,
+            });
+          }
+          if (manifestSha256) {
+            if (!hex64Regex.test(manifestSha256)) {
+              return res.status(422).json({
+                error: 'ARTIFACT_VALIDATION_FAILED: Manifest SHA-256 must be a valid 64-character hex hash.',
+              });
+            }
+            const manifestCheck = verifyLocalFileHash(manifestPath, manifestSha256);
+            if (!manifestCheck.verified) {
+              return res.status(422).json({ error: manifestCheck.error });
+            }
+          }
+          for (const root of candidateStorageRoots) {
+            const fullManifestPath = path.resolve(root, manifestPath);
+            if (fs.existsSync(fullManifestPath)) {
+              try {
+                const rawManifest = fs.readFileSync(fullManifestPath, 'utf-8');
+                const parsedManifest = JSON.parse(rawManifest);
+                if (!parsedManifest || typeof parsedManifest !== 'object' || Array.isArray(parsedManifest)) {
+                  return res.status(422).json({
+                    error: 'ARTIFACT_VALIDATION_FAILED: Manifest content must be a valid JSON object.',
+                  });
+                }
+              } catch (parseErr: any) {
+                return res.status(422).json({
+                  error: `ARTIFACT_VALIDATION_FAILED: Malformed manifest JSON: ${parseErr.message}`,
+                });
+              }
+              break;
+            }
+          }
         }
 
         // Verify active attempt and bound worker before promotion (Fail Closed)
@@ -1841,6 +1920,99 @@ export default async function handler(req: any, res: any) {
     }
     return res.status(500).json({ error: err.message || 'Internal control plane error.' });
   }
+}
+
+/**
+ * Safely cleans up historical reconstruction attempts for a property beyond retainCount.
+ * Invariant: The currently active reconstruction attempt is NEVER deleted.
+ */
+export async function cleanupHistoricalAttempts(propertyId: string, retainCount = 3): Promise<{
+  deleted: string[];
+  retained: string[];
+  activeRetained: string | null;
+}> {
+  const result = {
+    deleted: [] as string[],
+    retained: [] as string[],
+    activeRetained: null as string | null,
+  };
+
+  if (!propertyId) return result;
+
+  let activeAttemptId: string | null = null;
+  let activeJobId: string | null = null;
+
+  const prop = mockPropertiesStore.get(propertyId);
+  if (prop) {
+    activeAttemptId = prop.activeAttemptId || prop.publishedArtifact?.attemptId || prop.threeDTour?.activeAttemptId || null;
+    activeJobId = prop.activeJobId || prop.publishedArtifact?.jobId || prop.threeDTour?.activeJobId || null;
+  }
+
+  if (!activeAttemptId) {
+    try {
+      const { adminDb } = await getAdminServices();
+      if (adminDb) {
+        const pSnap = await adminDb.collection('properties').doc(propertyId).get();
+        if (pSnap.exists) {
+          const pData = pSnap.data();
+          activeAttemptId = pData?.activeAttemptId || pData?.publishedArtifact?.attemptId || pData?.threeDTour?.activeAttemptId || null;
+          activeJobId = pData?.activeJobId || pData?.publishedArtifact?.jobId || pData?.threeDTour?.activeJobId || null;
+        }
+      }
+    } catch (_) {}
+  }
+
+  result.activeRetained = activeAttemptId ? `${activeJobId || 'job'}/${activeAttemptId}` : null;
+
+  const candidateStorageRoots = [
+    path.resolve(process.cwd(), 'storage', 'spatial_assets'),
+    path.resolve(process.cwd(), 'hettety-3d-worker', 'storage', 'spatial_assets'),
+    path.resolve(process.cwd(), 'storage'),
+  ];
+
+  for (const root of candidateStorageRoots) {
+    const prop3dDir = path.resolve(root, 'properties', propertyId, '3d');
+    if (!fs.existsSync(prop3dDir)) continue;
+
+    const jobEntries = fs.readdirSync(prop3dDir, { withFileTypes: true }).filter(d => d.isDirectory());
+    for (const jobDir of jobEntries) {
+      const jobPath = path.resolve(prop3dDir, jobDir.name);
+      const attemptEntries = fs.readdirSync(jobPath, { withFileTypes: true }).filter(d => d.isDirectory());
+
+      const attempts = attemptEntries.map(a => {
+        const attemptPath = path.resolve(jobPath, a.name);
+        const stat = fs.statSync(attemptPath);
+        const isActive = (a.name === activeAttemptId && (!activeJobId || jobDir.name === activeJobId)) ||
+          Boolean(prop?.activeReconstructionId && prop.activeReconstructionId.includes(a.name));
+        return {
+          name: a.name,
+          jobId: jobDir.name,
+          path: attemptPath,
+          mtime: stat.mtimeMs,
+          isActive,
+        };
+      });
+
+      attempts.sort((a, b) => b.mtime - a.mtime);
+
+      attempts.forEach((att, idx) => {
+        if (att.isActive) {
+          result.retained.push(`${att.jobId}/${att.name} (ACTIVE)`);
+        } else if (idx < retainCount) {
+          result.retained.push(`${att.jobId}/${att.name}`);
+        } else {
+          try {
+            fs.rmSync(att.path, { recursive: true, force: true });
+            result.deleted.push(`${att.jobId}/${att.name}`);
+          } catch (delErr) {
+            console.warn(`[Cleanup] Failed to delete historical attempt ${att.path}:`, delErr);
+          }
+        }
+      });
+    }
+  }
+
+  return result;
 }
 
 export { handler };

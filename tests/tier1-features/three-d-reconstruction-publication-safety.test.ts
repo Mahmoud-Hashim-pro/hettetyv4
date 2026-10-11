@@ -367,4 +367,192 @@ describe('Tier 1 — Phase 1: 3D Reconstruction Publication Safety & Concurrency
     expect(status).toBe(422);
     expect(json.error).toContain('ARTIFACT_CORRUPTED');
   });
+
+  it('Invariant 7: Missing attemptId rejected with 400', async () => {
+    const { default: handler, controlPlaneJobs, mockPropertiesStore } = await import('../../api/reconstruction');
+    const propId = 'prop-pub-safety';
+    const jobId = 'job-missing-attempt-id';
+
+    mockPropertiesStore.set(propId, { authorUid: 'owner-safe-01' });
+    controlPlaneJobs.set(jobId, {
+      id: jobId,
+      propertyId: propId,
+      ownerId: 'owner-safe-01',
+      status: 'PUBLISHING',
+      attemptId: 'attempt_1',
+      workerId: 'worker-node-1',
+    } as any);
+
+    let status = 0;
+    let json: any = null;
+    await handler({
+      method: 'POST',
+      query: { action: 'worker-callback' },
+      headers: { authorization: 'Bearer hettety-worker-secret-internal' },
+      body: {
+        jobId,
+        // attemptId is omitted
+        workerId: 'worker-node-1',
+        propertyId: propId,
+        status: 'READY',
+      },
+    }, { status: (s: number) => ({ json: (j: any) => { status = s; json = j; } }), json: (j: any) => { json = j; } });
+
+    expect(status).toBe(400);
+    expect(json.errorCode).toBe('JOB_ATTEMPT_WORKER_REQUIRED');
+  });
+
+  it('Invariant 8: Missing workerId rejected with 400', async () => {
+    const { default: handler, controlPlaneJobs, mockPropertiesStore } = await import('../../api/reconstruction');
+    const propId = 'prop-pub-safety';
+    const jobId = 'job-missing-worker-id';
+
+    mockPropertiesStore.set(propId, { authorUid: 'owner-safe-01' });
+    controlPlaneJobs.set(jobId, {
+      id: jobId,
+      propertyId: propId,
+      ownerId: 'owner-safe-01',
+      status: 'PUBLISHING',
+      attemptId: 'attempt_1',
+      workerId: 'worker-node-1',
+    } as any);
+
+    let status = 0;
+    let json: any = null;
+    await handler({
+      method: 'POST',
+      query: { action: 'worker-callback' },
+      headers: { authorization: 'Bearer hettety-worker-secret-internal' },
+      body: {
+        jobId,
+        attemptId: 'attempt_1',
+        // workerId is omitted
+        propertyId: propId,
+        status: 'READY',
+      },
+    }, { status: (s: number) => ({ json: (j: any) => { status = s; json = j; } }), json: (j: any) => { json = j; } });
+
+    expect(status).toBe(400);
+    expect(json.errorCode).toBe('JOB_ATTEMPT_WORKER_REQUIRED');
+  });
+
+  it('Invariant 9: Failed activation can be retried safely', async () => {
+    const { default: handler, controlPlaneJobs, mockPropertiesStore } = await import('../../api/reconstruction');
+    const propId = 'prop-pub-safety';
+    const jobId = 'job-retry-safe-01';
+
+    mockPropertiesStore.set(propId, { authorUid: 'owner-safe-01' });
+    controlPlaneJobs.set(jobId, {
+      id: jobId,
+      propertyId: propId,
+      ownerId: 'owner-safe-01',
+      status: 'PUBLISHING',
+      attemptId: 'attempt_1',
+      workerId: 'worker-retry-node',
+      createdAt: new Date().toISOString(),
+    } as any);
+
+    const attemptDir = path.resolve(storageRoot, `properties/${propId}/3d/${jobId}/attempt_1`);
+    fs.mkdirSync(attemptDir, { recursive: true });
+    const spzBuf = Buffer.from('VALID_RETRY_SPZ');
+    const glbBuf = Buffer.from('VALID_RETRY_GLB');
+    fs.writeFileSync(path.resolve(attemptDir, 'scene.spz'), spzBuf);
+    fs.writeFileSync(path.resolve(attemptDir, 'mesh.glb'), glbBuf);
+    const spzSha = crypto.createHash('sha256').update(spzBuf).digest('hex');
+    const glbSha = crypto.createHash('sha256').update(glbBuf).digest('hex');
+
+    // First attempt fails during promotion due to disk glitch
+    const copySpy = vi.spyOn(fs, 'copyFileSync').mockImplementationOnce(() => {
+      throw new Error('Disk temporary lock');
+    });
+
+    let status1 = 0;
+    let json1: any = null;
+    await handler({
+      method: 'POST',
+      query: { action: 'worker-callback' },
+      headers: { authorization: 'Bearer hettety-worker-secret-internal' },
+      body: {
+        jobId,
+        attemptId: 'attempt_1',
+        workerId: 'worker-retry-node',
+        propertyId: propId,
+        status: 'READY',
+        representation: {
+          gaussianSplat: { format: 'spz', url: `properties/${propId}/3d/${jobId}/attempt_1/scene.spz`, splatCount: 5000, sha256: spzSha },
+          mesh: { format: 'glb', url: `properties/${propId}/3d/${jobId}/attempt_1/mesh.glb`, faceCount: 2000, sha256: glbSha },
+        },
+        bounds: { min: [-1, 0, -1], max: [1, 2, 1] },
+        qualityReport: { passed: true, status: 'READY' },
+      },
+    }, { status: (s: number) => ({ json: (j: any) => { status1 = s; json1 = j; } }), json: (j: any) => { json1 = j; } });
+
+    copySpy.mockRestore();
+    expect(status1).toBe(502);
+
+    // Worker retries the exact same callback — succeeds and promotes atomically
+    let status2 = 0;
+    let json2: any = null;
+    await handler({
+      method: 'POST',
+      query: { action: 'worker-callback' },
+      headers: { authorization: 'Bearer hettety-worker-secret-internal' },
+      body: {
+        jobId,
+        attemptId: 'attempt_1',
+        workerId: 'worker-retry-node',
+        propertyId: propId,
+        status: 'READY',
+        representation: {
+          gaussianSplat: { format: 'spz', url: `properties/${propId}/3d/${jobId}/attempt_1/scene.spz`, splatCount: 5000, sha256: spzSha },
+          mesh: { format: 'glb', url: `properties/${propId}/3d/${jobId}/attempt_1/mesh.glb`, faceCount: 2000, sha256: glbSha },
+        },
+        bounds: { min: [-1, 0, -1], max: [1, 2, 1] },
+        qualityReport: { passed: true, status: 'READY' },
+      },
+    }, { status: (s: number) => ({ json: (j: any) => { status2 = s; json2 = j; } }), json: (j: any) => { json2 = j; } });
+
+    expect(status2).toBe(200);
+    const propRecord = mockPropertiesStore.get(propId);
+    expect(propRecord?.activeReconstructionId).toBe(`${jobId}_attempt_1`);
+    expect(propRecord?.activeVersion).toBeGreaterThan(0);
+  });
+
+  it('Invariant 10: Cleanup never deletes the active version', async () => {
+    const { cleanupHistoricalAttempts, mockPropertiesStore } = await import('../../api/reconstruction');
+    const propId = 'prop-cleanup-test';
+    const jobId = 'job-cleanup-01';
+
+    // Set attempt_active as the active version in mockPropertiesStore
+    mockPropertiesStore.set(propId, {
+      authorUid: 'owner-cleanup',
+      activeReconstructionId: `${jobId}_attempt_active`,
+      activeAttemptId: 'attempt_active',
+      activeJobId: jobId,
+    });
+
+    const jobDir = path.resolve(storageRoot, `properties/${propId}/3d/${jobId}`);
+    const activeDir = path.resolve(jobDir, 'attempt_active');
+    const oldDir1 = path.resolve(jobDir, 'attempt_old_1');
+    const oldDir2 = path.resolve(jobDir, 'attempt_old_2');
+    const oldDir3 = path.resolve(jobDir, 'attempt_old_3');
+
+    fs.mkdirSync(activeDir, { recursive: true });
+    fs.mkdirSync(oldDir1, { recursive: true });
+    fs.mkdirSync(oldDir2, { recursive: true });
+    fs.mkdirSync(oldDir3, { recursive: true });
+
+    // Run cleanup retaining only 1 historical attempt
+    const report = await cleanupHistoricalAttempts(propId, 1);
+
+    // Active version must ALWAYS be retained
+    expect(fs.existsSync(activeDir)).toBe(true);
+    expect(report.activeRetained).toContain('attempt_active');
+    expect(report.deleted.length).toBeGreaterThan(0);
+
+    // Clean up test dir
+    try {
+      fs.rmSync(path.resolve(storageRoot, `properties/${propId}`), { recursive: true, force: true });
+    } catch (_) {}
+  });
 });

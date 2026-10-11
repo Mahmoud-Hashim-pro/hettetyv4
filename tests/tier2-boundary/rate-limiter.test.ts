@@ -235,6 +235,35 @@ describe('Tier 2 — AI Rate Limiter & Concurrency Protection', () => {
       }
     });
 
+    it('strictly fails closed in production when REDIS_URL is missing even without RATE_LIMIT_FAIL_CLOSED flag', async () => {
+      const prevEnv = process.env.NODE_ENV;
+      const prevRedis = process.env.REDIS_URL;
+      const prevFailClosed = process.env.RATE_LIMIT_FAIL_CLOSED;
+      try {
+        process.env.NODE_ENV = 'production';
+        delete process.env.REDIS_URL;
+        delete process.env.RATE_LIMIT_FAIL_CLOSED; // Flag explicitly absent/unset
+
+        // 1. checkDistributedRateLimit must reject
+        const distRes = await checkDistributedRateLimit({ ip: '198.51.100.99', ipLimit: 10 });
+        expect(distRes.allowed).toBe(false);
+        expect(distRes.remaining).toBe(0);
+        expect(distRes.reason).toContain('Rate limit service is not configured in production');
+
+        // 2. checkRateLimit must also reject
+        const memRes = checkRateLimit('198.51.100.99', 10);
+        expect(memRes.allowed).toBe(false);
+        expect(memRes.remaining).toBe(0);
+        expect(memRes.reason).toContain('Rate limit service is not configured in production');
+      } finally {
+        process.env.NODE_ENV = prevEnv;
+        if (prevRedis) process.env.REDIS_URL = prevRedis;
+        else delete process.env.REDIS_URL;
+        if (prevFailClosed) process.env.RATE_LIMIT_FAIL_CLOSED = prevFailClosed;
+        else delete process.env.RATE_LIMIT_FAIL_CLOSED;
+      }
+    });
+
     it('isolates user in-memory keys without port-stripping collision', async () => {
       const clientIp = '198.51.100.123';
       const userA = 'user_alpha';

@@ -51,6 +51,15 @@ export function sanitizeClientIdentifier(rawIp: string): string {
 
 /** In-memory sliding-window fallback check */
 export function checkRateLimit(clientId: string, limit: number = maxRequestsPerWindow): RateLimitResult {
+  if (process.env.NODE_ENV === 'production' && !testRedisClient && (!process.env.REDIS_URL || process.env.REDIS_URL.startsWith('mock://'))) {
+    return {
+      allowed: false,
+      remaining: 0,
+      retryAfterSeconds: 30,
+      reason: 'Rate limit service is not configured in production',
+    };
+  }
+
   cleanupStale();
   const id = sanitizeClientIdentifier(clientId);
   const now = Date.now();
@@ -325,6 +334,16 @@ export async function checkDistributedRateLimit(options: DistributedRateLimitOpt
         reason: 'Rate limit service unavailable in strict production mode',
       };
     }
+  }
+
+  // In production mode, NEVER fall through to in-memory fallback
+  if (process.env.NODE_ENV === 'production') {
+    return {
+      allowed: false,
+      remaining: 0,
+      retryAfterSeconds: 30,
+      reason: 'Rate limit service unavailable in strict production mode',
+    };
   }
 
   // Fallback to in-memory atomic multi-tier check (check all, then commit all)

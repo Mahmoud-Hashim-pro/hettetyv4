@@ -79,7 +79,7 @@ describe('Tier 1 — Phase 7: Transactions & Reservation Domain', () => {
       expect(accepted.status).toBe('offer_accepted');
     });
 
-    it('funds reservation deposit into escrow and issues receipt number', () => {
+    it('records deposit payment request as deposit_pending with REQ-RES reference', () => {
       const tx = createPropertyOffer({
         propertyId: 'p-100',
         propertyTitle: 'New Cairo Penthouse',
@@ -89,7 +89,27 @@ describe('Tier 1 — Phase 7: Transactions & Reservation Domain', () => {
       });
       const accepted = acceptOffer(tx, 'seller-88');
 
-      const escrow = placeReservationDeposit(accepted, 'instapay', 'buyer-99');
+      const depositReq = placeReservationDeposit(accepted, 'instapay', 'buyer-99');
+      expect(depositReq.transaction.status).toBe('deposit_pending');
+      expect(depositReq.transaction.depositStatus).toBe('payment_pending');
+      expect(depositReq.receiptNumber).toContain('RCP-HET');
+      expect(depositReq.escrowReference).toMatch(/^REQ-RES-/);
+    });
+
+    it('funds reservation deposit into authoritative escrow strictly with compliance_admin role', () => {
+      const tx = createPropertyOffer({
+        propertyId: 'p-100',
+        propertyTitle: 'New Cairo Penthouse',
+        agreedPrice: 8000000,
+        buyer: { id: 'buyer-99', name: 'Omar Sherif', phone: '+201012345678' },
+        seller: { id: 'seller-88', name: 'Tarek Nour' },
+      });
+      const accepted = acceptOffer(tx, 'seller-88');
+
+      const escrow = placeReservationDeposit(accepted, 'instapay', 'buyer-99', {
+        isAuthoritative: true,
+        actorRole: 'compliance_admin',
+      });
       expect(escrow.transaction.status).toBe('deposit_escrowed');
       expect(escrow.transaction.depositStatus).toBe('held_in_escrow');
       expect(escrow.receiptNumber).toContain('RCP-HET');
@@ -170,7 +190,7 @@ describe('Tier 1 — Phase 7: Transactions & Reservation Domain', () => {
       isVerified: true,
     };
 
-    it('navigates through 3-step ReservationModal and completes escrow hold', () => {
+    it('creates formal offer in ReservationModal without auto-accepting or premature escrow hold', () => {
       const onCompleteMock = vi.fn();
 
       render(
@@ -189,9 +209,52 @@ describe('Tier 1 — Phase 7: Transactions & Reservation Domain', () => {
       expect(screen.getByTestId('reservation-modal')).toBeInTheDocument();
       expect(screen.getByText('Official Escrow Property Reservation')).toBeInTheDocument();
 
-      // Step 1: Proceed to Secured Payment
-      const proceedBtn = screen.getByRole('button', { name: /Proceed to Secured Payment/i });
-      fireEvent.click(proceedBtn);
+      // Step 1: Submit Formal Offer
+      const submitBtn = screen.getByRole('button', { name: /Submit Formal Offer/i });
+      fireEvent.click(submitBtn);
+
+      // Verify offer submission confirmation without premature auto-acceptance
+      expect(screen.getByText('Offer Successfully Submitted')).toBeInTheDocument();
+      expect(
+        screen.getByText(/Your offer has been submitted. The reservation deposit becomes available after the seller accepts the offer./i)
+      ).toBeInTheDocument();
+      expect(onCompleteMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          status: 'offer_submitted',
+          depositStatus: 'unpaid',
+        })
+      );
+    });
+
+    it('navigates through deposit funding and completes deposit request registration for accepted offer', () => {
+      const onCompleteMock = vi.fn();
+
+      const acceptedTx = acceptOffer(
+        createPropertyOffer({
+          propertyId: mockProperty.id,
+          propertyTitle: mockProperty.title,
+          agreedPrice: mockProperty.price,
+          buyer: { id: 'buyer-user-77', name: 'Hossam Ghaly', phone: '+201122334455' },
+          seller: { id: mockProperty.authorUid || 'seller-ww', name: mockProperty.developer || 'Equity' },
+        }),
+        'seller-ww'
+      );
+
+      render(
+        <ReservationModal
+          isOpen={true}
+          onClose={vi.fn()}
+          property={mockProperty}
+          currentUserId="buyer-user-77"
+          currentUserName="Hossam Ghaly"
+          currentUserPhone="+201122334455"
+          existingTransaction={acceptedTx}
+          onReservationComplete={onCompleteMock}
+          isRtl={false}
+        />
+      );
+
+      expect(screen.getByTestId('reservation-modal')).toBeInTheDocument();
 
       // Step 2: Confirm & Fund
       expect(screen.getByText(/Select your preferred payment method/i)).toBeInTheDocument();
@@ -200,8 +263,14 @@ describe('Tier 1 — Phase 7: Transactions & Reservation Domain', () => {
 
       // Step 3: Receipt View
       expect(screen.getByTestId('escrow-receipt-view')).toBeInTheDocument();
-      expect(screen.getByText('Escrow Deposit Successfully Secured!')).toBeInTheDocument();
-      expect(onCompleteMock).toHaveBeenCalled();
+      expect(screen.getByText('Reservation Deposit Request Registered!')).toBeInTheDocument();
+      expect(screen.getByText(/Transparency Notice/i)).toBeInTheDocument();
+      expect(onCompleteMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          status: 'deposit_pending',
+          depositStatus: 'payment_pending',
+        })
+      );
     });
 
     it('renders TransactionManagementCard with status badge and seller action', () => {

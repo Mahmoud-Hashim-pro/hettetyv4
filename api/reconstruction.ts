@@ -769,22 +769,27 @@ export function generateV4SignedUploadUrl(
  * Enqueues a verified reconstruction job to Redis stream exclusively
  */
 export async function enqueueToRedis(job: ReconstructionJobPayload, redisUrl?: string): Promise<boolean> {
-  const queueKey = `reconstruction:${job.id}:${job.attemptId || 'attempt_1'}`;
-  if (enqueuedWorkerJobs.has(queueKey)) {
-    return true;
-  }
-  enqueuedWorkerJobs.add(queueKey);
-
   const url = redisUrl || process.env.REDIS_URL;
   if (!url || url.startsWith('mock://')) {
     if (process.env.NODE_ENV === 'production') {
       throw new Error('CONFIGURATION_ERROR: REDIS_URL is required in production to enqueue reconstruction jobs.');
     }
+    const queueKey = `reconstruction:${job.id}:${job.attemptId || 'attempt_1'}`;
+    if (enqueuedWorkerJobs.has(queueKey)) {
+      return true;
+    }
+    enqueuedWorkerJobs.add(queueKey);
     return true;
   }
   if (process.env.NODE_ENV === 'test' && !redisUrl && !process.env.REDIS_URL) {
     return true;
   }
+
+  const queueKey = `reconstruction:${job.id}:${job.attemptId || 'attempt_1'}`;
+  if (enqueuedWorkerJobs.has(queueKey)) {
+    return true;
+  }
+  enqueuedWorkerJobs.add(queueKey);
 
   try {
     const redisPkg = 're' + 'dis';
@@ -934,13 +939,6 @@ export default async function handler(req: any, res: any) {
       const allowedVideoMimes = ['video/mp4', 'video/quicktime', 'video/webm'];
 
       for (const f of files) {
-        if (f.name) {
-          if (f.name.includes('..') || f.name.includes('/') || f.name.includes('\\')) {
-            return res.status(400).json({
-              error: `INVALID_FILENAME: Filename '${f.name}' contains illegal path characters.`,
-            });
-          }
-        }
         if (f.mimeType) {
           const mime = String(f.mimeType).toLowerCase();
           const isPhoto = type !== 'video';
@@ -948,6 +946,19 @@ export default async function handler(req: any, res: any) {
           if (!valid) {
             return res.status(400).json({
               error: `INVALID_FILE_TYPE: Unsupported MIME type '${f.mimeType}' for ${type || 'photos'} reconstruction. Allowed: ${(isPhoto ? allowedPhotoMimes : allowedVideoMimes).join(', ')}.`,
+            });
+          }
+        }
+        if (f.name) {
+          const rawName = String(f.name);
+          const baseName = path.basename(rawName.replace(/\\/g, '/'));
+          const ext = path.extname(baseName).toLowerCase();
+          const allowedExts = type === 'video'
+            ? ['.mp4', '.mov', '.webm']
+            : ['.jpg', '.jpeg', '.png', '.webp', '.heic'];
+          if (!ext || !allowedExts.includes(ext)) {
+            return res.status(400).json({
+              error: `INVALID_FILENAME: Filename '${f.name}' must have a valid extension (${allowedExts.join(', ')}).`,
             });
           }
         }

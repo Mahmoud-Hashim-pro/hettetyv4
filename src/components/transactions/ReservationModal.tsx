@@ -3,7 +3,7 @@ import { Property, TransactionRecord, PaymentMethod } from '../../types';
 import {
   calculateReservationDeposit,
   createPropertyOffer,
-  placeReservationDeposit,
+  submitReservationDepositRequest,
 } from '../../services/transactions/reservation-service';
 import { ShieldCheck, CreditCard, Building2, Smartphone, CheckCircle2, X, ArrowRight, ArrowLeft } from 'lucide-react';
 
@@ -14,6 +14,7 @@ interface ReservationModalProps {
   currentUserId: string;
   currentUserName: string;
   currentUserPhone: string;
+  existingTransaction?: TransactionRecord;
   onReservationComplete?: (tx: TransactionRecord) => void;
   isRtl?: boolean;
 }
@@ -25,17 +26,21 @@ export const ReservationModal: React.FC<ReservationModalProps> = ({
   currentUserId,
   currentUserName,
   currentUserPhone,
+  existingTransaction,
   onReservationComplete,
   isRtl = false,
 }) => {
-  const [step, setStep] = useState<1 | 2 | 3>(1);
-  const [offerPrice, setOfferPrice] = useState<number>(property.price);
-  const [depositPercent, setDepositPercent] = useState<number>(5);
+  const [createdTx, setCreatedTx] = useState<TransactionRecord | null>(existingTransaction || null);
+  const [step, setStep] = useState<1 | 2 | 3>(
+    existingTransaction?.status === 'offer_accepted' ? 2 : 1
+  );
+  const [offerPrice, setOfferPrice] = useState<number>(existingTransaction?.agreedPrice || property.price);
+  const [depositPercent, setDepositPercent] = useState<number>(existingTransaction?.depositPercent || 5);
   const [selectedMethod, setSelectedMethod] = useState<PaymentMethod>('instapay');
-  const [createdTx, setCreatedTx] = useState<TransactionRecord | null>(null);
   const [escrowResult, setEscrowResult] = useState<{ receiptNumber: string; escrowReference: string } | null>(null);
   const [isProcessing, setIsProcessing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [offerSubmittedNotice, setOfferSubmittedNotice] = useState(false);
 
   if (!isOpen) return null;
 
@@ -45,6 +50,11 @@ export const ReservationModal: React.FC<ReservationModalProps> = ({
     e.preventDefault();
     setError(null);
     try {
+      if (createdTx?.status === 'offer_accepted') {
+        setStep(2);
+        return;
+      }
+
       const tx = createPropertyOffer({
         propertyId: property.id,
         propertyTitle: property.title,
@@ -62,10 +72,12 @@ export const ReservationModal: React.FC<ReservationModalProps> = ({
         depositPercent,
       });
 
-      // Automatically advance to accepted state for instant reservation flow
-      tx.status = 'offer_accepted';
+      // Maintain strictly as offer_submitted without client auto-advancement
       setCreatedTx(tx);
-      setStep(2);
+      setOfferSubmittedNotice(true);
+      if (onReservationComplete) {
+        onReservationComplete(tx);
+      }
     } catch (err: any) {
       setError(err.message || 'Error creating reservation offer');
     }
@@ -77,7 +89,7 @@ export const ReservationModal: React.FC<ReservationModalProps> = ({
     setError(null);
 
     try {
-      const res = placeReservationDeposit(createdTx, selectedMethod, currentUserId);
+      const res = submitReservationDepositRequest(createdTx, selectedMethod, currentUserId);
       setCreatedTx(res.transaction);
       setEscrowResult({
         receiptNumber: res.receiptNumber,
@@ -88,7 +100,7 @@ export const ReservationModal: React.FC<ReservationModalProps> = ({
         onReservationComplete(res.transaction);
       }
     } catch (err: any) {
-      setError(err.message || 'Error processing escrow deposit');
+      setError(err.message || 'Error processing escrow deposit request');
     } finally {
       setIsProcessing(false);
     }
@@ -151,7 +163,71 @@ export const ReservationModal: React.FC<ReservationModalProps> = ({
           )}
 
           {/* STEP 1: Offer & Deposit calculation */}
-          {step === 1 && (
+          {step === 1 && (offerSubmittedNotice || createdTx?.status === 'offer_submitted') && (
+            <div className="space-y-4">
+              <div className="p-4 rounded-xl bg-blue-50 dark:bg-blue-900/30 border border-blue-200 dark:border-blue-800 text-xs text-blue-800 dark:text-blue-200 space-y-2">
+                <div className="flex items-center gap-2 font-bold">
+                  <CheckCircle2 size={18} className="text-blue-600 dark:text-blue-400" />
+                  <span>{isRtl ? 'تم تقديم عرض الشراء بنجاح' : 'Offer Successfully Submitted'}</span>
+                </div>
+                <p>
+                  {isRtl
+                    ? 'تم تقديم عرض الشراء للبائع. سيكون سداد جدية الحجز متاحاً فور قبول البائع للعرض.'
+                    : 'Your offer has been submitted. The reservation deposit becomes available after the seller accepts the offer.'}
+                </p>
+              </div>
+
+              <div className="p-4 bg-slate-50 dark:bg-slate-800/60 rounded-xl border border-slate-200 dark:border-slate-700 text-xs text-start font-mono space-y-1.5">
+                <div className="flex justify-between">
+                  <span className="text-slate-500">Transaction ID:</span>
+                  <span className="font-bold text-slate-800 dark:text-slate-200">{createdTx?.id}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-slate-500">Offered Price:</span>
+                  <span className="font-bold text-slate-800 dark:text-slate-200">{createdTx?.agreedPrice.toLocaleString()} EGP</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-slate-500">Status:</span>
+                  <span className="text-blue-600 dark:text-blue-400 font-bold">{createdTx?.status}</span>
+                </div>
+              </div>
+
+              <button
+                type="button"
+                onClick={onClose}
+                className="w-full py-2.5 px-4 rounded-xl bg-slate-900 dark:bg-white text-white dark:text-slate-950 font-bold text-sm transition-colors"
+              >
+                {isRtl ? 'إغلاق ومتابعة تفاصيل العقار' : 'Close & Return to Listing'}
+              </button>
+            </div>
+          )}
+
+          {step === 1 && !offerSubmittedNotice && createdTx?.status === 'offer_accepted' && (
+            <div className="space-y-4">
+              <div className="p-4 rounded-xl bg-emerald-50 dark:bg-emerald-900/30 border border-emerald-200 dark:border-emerald-800 text-xs text-emerald-800 dark:text-emerald-200 space-y-2">
+                <div className="flex items-center gap-2 font-bold">
+                  <CheckCircle2 size={18} className="text-emerald-600 dark:text-emerald-400" />
+                  <span>{isRtl ? 'تم قبول العرض من البائع' : 'Offer Accepted by Seller'}</span>
+                </div>
+                <p>
+                  {isRtl
+                    ? 'وافق البائع على شروط العرض. يمكنك الآن المتابعة لسداد جدية الحجز في حساب الضمان البنكي.'
+                    : 'The seller has accepted your offer. You can now proceed to fund the reservation deposit.'}
+                </p>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => setStep(2)}
+                className="w-full py-2.5 px-4 rounded-xl bg-amber-500 hover:bg-amber-600 text-slate-950 font-bold text-sm transition-colors shadow-sm flex items-center justify-center gap-2"
+              >
+                <span>{isRtl ? 'متابعة إلى خطوة السداد' : 'Proceed to Secured Payment'}</span>
+                {isRtl ? <ArrowLeft size={16} /> : <ArrowRight size={16} />}
+              </button>
+            </div>
+          )}
+
+          {step === 1 && !offerSubmittedNotice && createdTx?.status !== 'offer_accepted' && (
             <form onSubmit={handleStep1Submit} className="space-y-4">
               <div>
                 <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
@@ -204,7 +280,7 @@ export const ReservationModal: React.FC<ReservationModalProps> = ({
                 type="submit"
                 className="w-full py-2.5 px-4 rounded-xl bg-amber-500 hover:bg-amber-600 text-slate-950 font-bold text-sm transition-colors shadow-sm flex items-center justify-center gap-2"
               >
-                <span>{isRtl ? 'متابعة إلى خطوة السداد' : 'Proceed to Secured Payment'}</span>
+                <span>{isRtl ? 'تقديم عرض الشراء الرسمي' : 'Submit Formal Offer'}</span>
                 {isRtl ? <ArrowLeft size={16} /> : <ArrowRight size={16} />}
               </button>
             </form>
@@ -313,12 +389,12 @@ export const ReservationModal: React.FC<ReservationModalProps> = ({
               </div>
               <div>
                 <h4 className="font-bold text-lg text-slate-900 dark:text-white">
-                  {isRtl ? 'تم إيداع جدية الحجز بنجاح!' : 'Escrow Deposit Successfully Secured!'}
+                  {isRtl ? 'تم تسجيل طلب جدية الحجز بنجاح!' : 'Reservation Deposit Request Registered!'}
                 </h4>
                 <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
                   {isRtl
-                    ? 'تم حجز العقار وتجميد العروض الأخرى. المبلغ محفوظ بحساب الضمان البنكي لحين إتمام التعاقد.'
-                    : 'The listing is now marked Reserved. Funds are safeguarded in escrow pending final title handover.'}
+                    ? 'تم تسجيل طلب جدية الحجز وتوليد الرقم المرجعي. يتم تأكيد الحجز البنكي الرسمي فور تسوية الدفع.'
+                    : 'Your reservation deposit request has been registered. Official escrow hold is finalized upon bank settlement clearance.'}
                 </p>
               </div>
 
@@ -337,7 +413,7 @@ export const ReservationModal: React.FC<ReservationModalProps> = ({
                 </div>
                 <div className="flex justify-between">
                   <span className="text-slate-500">Status:</span>
-                  <span className="text-emerald-600 dark:text-emerald-400 font-bold">{createdTx?.status || 'deposit_escrowed'}</span>
+                  <span className="text-amber-600 dark:text-amber-400 font-bold">{createdTx?.status || 'deposit_pending'}</span>
                 </div>
               </div>
 
@@ -345,8 +421,8 @@ export const ReservationModal: React.FC<ReservationModalProps> = ({
                 <ShieldCheck className="w-4 h-4 mt-0.5 shrink-0" />
                 <span>
                   {isRtl
-                    ? 'إشعار الشفافية: تم تسجيل الطلب. يتم تجميد أموال الضمان البنكي حصراً بعد التأكيد والتسوية الرسمية.'
-                    : 'Transparency Notice: This confirms reservation request registration. Funds are only held in escrow upon verified settlement.'}
+                    ? 'إشعار الشفافية: تم تسجيل الطلب. يتم تجميد أموال الضمان البنكي حصراً بعد التأكيد والتسوية الرسمية من إدارة الامتثال.'
+                    : 'Transparency Notice: This confirms reservation request registration. Funds are only held in escrow upon verified settlement by compliance admin.'}
                 </span>
               </div>
 

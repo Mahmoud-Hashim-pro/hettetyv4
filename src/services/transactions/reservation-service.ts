@@ -221,7 +221,7 @@ export const placeReservationDeposit = (
 
   const now = new Date().toISOString();
   const receiptNumber = `RCP-HET-${Date.now().toString().slice(-6)}`;
-  const isEscrowed = options?.isAuthoritative || process.env.NODE_ENV === 'test';
+  const isEscrowed = Boolean(options?.isAuthoritative && options?.actorRole === 'compliance_admin');
   const escrowReference = isEscrowed
     ? `ESCROW-CBE-${Math.random().toString(36).substring(2, 9).toUpperCase()}`
     : `REQ-RES-${Math.random().toString(36).substring(2, 9).toUpperCase()}`;

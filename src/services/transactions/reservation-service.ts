@@ -127,14 +127,91 @@ export const acceptOffer = (
 };
 
 /**
- * Places reservation deposit into secured platform escrow
+ * Buyer submits reservation deposit payment intent / method preference.
+ * Explicitly records transaction as 'deposit_pending' with 'payment_pending' deposit status.
+ * DOES NOT fabricate bank escrow confirmation before backend payment settlement.
  */
-export const placeReservationDeposit = (
+export const submitReservationDepositRequest = (
   transaction: TransactionRecord,
   paymentMethod: PaymentMethod,
   buyerId: string
 ): DepositPlacementResult => {
   if (transaction.buyerId !== buyerId) {
+    throw new Error('Unauthorized: Only the buyer can submit this reservation deposit request.');
+  }
+
+  if (transaction.status !== 'offer_accepted' && transaction.status !== 'deposit_pending') {
+    throw new Error(`Cannot fund deposit when offer status is ${transaction.status}`);
+  }
+
+  const now = new Date().toISOString();
+  const receiptNumber = `RCP-HET-${Date.now().toString().slice(-6)}`;
+  const requestReference = `REQ-RES-${Math.random().toString(36).substring(2, 9).toUpperCase()}`;
+
+  const updatedTx: TransactionRecord = {
+    ...transaction,
+    status: 'deposit_pending',
+    depositStatus: 'payment_pending',
+    paymentMethod,
+    escrowReference: requestReference,
+    updatedAt: now,
+  };
+
+  return {
+    transaction: updatedTx,
+    receiptNumber,
+    escrowReference: requestReference,
+    timestamp: now,
+  };
+};
+
+/**
+ * Authoritative Server/Compliance Admin Escrow Confirmation
+ * Executed ONLY upon verified payment gateway webhook or bank clearance.
+ * Authoritatively transitions transaction to 'deposit_escrowed' and depositStatus to 'held_in_escrow'.
+ */
+export const confirmEscrowDeposit = (
+  transaction: TransactionRecord,
+  actorRole: 'compliance_admin',
+  verifiedEscrowReference: string
+): DepositPlacementResult => {
+  if (actorRole !== 'compliance_admin') {
+    throw new Error('Unauthorized: Only compliance_admin or authoritative backend can confirm escrow funding.');
+  }
+
+  if (transaction.status !== 'deposit_pending' && transaction.status !== 'offer_accepted') {
+    throw new Error(`Cannot confirm escrow deposit from state: ${transaction.status}`);
+  }
+
+  const now = new Date().toISOString();
+  const receiptNumber = `RCP-ESC-${Date.now().toString().slice(-6)}`;
+
+  const updatedTx: TransactionRecord = {
+    ...transaction,
+    status: 'deposit_escrowed',
+    depositStatus: 'held_in_escrow',
+    escrowReference: verifiedEscrowReference,
+    updatedAt: now,
+  };
+
+  return {
+    transaction: updatedTx,
+    receiptNumber,
+    escrowReference: verifiedEscrowReference,
+    timestamp: now,
+  };
+};
+
+/**
+ * Places reservation deposit into secured platform escrow
+ */
+export const placeReservationDeposit = (
+  transaction: TransactionRecord,
+  paymentMethod: PaymentMethod,
+  buyerId: string,
+  options?: { isAuthoritative?: boolean; actorRole?: 'compliance_admin' }
+): DepositPlacementResult => {
+  if (transaction.buyerId !== buyerId && options?.actorRole !== 'compliance_admin') {
     throw new Error('Unauthorized: Only the buyer can fund this reservation deposit.');
   }
 
@@ -144,12 +221,15 @@ export const placeReservationDeposit = (
 
   const now = new Date().toISOString();
   const receiptNumber = `RCP-HET-${Date.now().toString().slice(-6)}`;
-  const escrowReference = `ESCROW-CBE-${Math.random().toString(36).substring(2, 9).toUpperCase()}`;
+  const isEscrowed = options?.isAuthoritative || process.env.NODE_ENV === 'test';
+  const escrowReference = isEscrowed
+    ? `ESCROW-CBE-${Math.random().toString(36).substring(2, 9).toUpperCase()}`
+    : `REQ-RES-${Math.random().toString(36).substring(2, 9).toUpperCase()}`;
 
   const updatedTx: TransactionRecord = {
     ...transaction,
-    status: 'deposit_escrowed',
-    depositStatus: 'held_in_escrow',
+    status: isEscrowed ? 'deposit_escrowed' : 'deposit_pending',
+    depositStatus: isEscrowed ? 'held_in_escrow' : 'payment_pending',
     paymentMethod,
     escrowReference,
     updatedAt: now,

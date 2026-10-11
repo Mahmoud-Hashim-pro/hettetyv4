@@ -369,6 +369,7 @@ export async function runJobTransaction(
       const existingProp = mockPropertiesStore.get(updatedJob.propertyId) || { authorUid: updatedJob.ownerId };
       mockPropertiesStore.set(updatedJob.propertyId, {
         ...existingProp,
+        activeReconstructionId: `${updatedJob.id}_${updatedJob.attemptId || 'attempt_1'}`,
         publishedArtifact: {
           jobId: updatedJob.id,
           attemptId: updatedJob.attemptId,
@@ -380,6 +381,8 @@ export async function runJobTransaction(
         },
         threeDTour: {
           status: 'ready',
+          activeAttemptId: updatedJob.attemptId,
+          activeJobId: updatedJob.id,
           assetUrl: updatedJob.representation?.gaussianSplat?.url || updatedJob.representation?.mesh?.url,
           representation: updatedJob.representation,
           source: 'photogrammetry',
@@ -465,6 +468,7 @@ export async function runJobTransaction(
         // Canonical published artifact record on properties collection
         const propDocRef = adminDb.collection('properties').doc(updatedJob.propertyId);
         tx.set(propDocRef, {
+          activeReconstructionId: `${updatedJob.id}_${updatedJob.attemptId || 'attempt_1'}`,
           publishedArtifact: {
             jobId: updatedJob.id,
             attemptId: updatedJob.attemptId,
@@ -476,6 +480,8 @@ export async function runJobTransaction(
           },
           threeDTour: {
             status: 'ready',
+            activeAttemptId: updatedJob.attemptId,
+            activeJobId: updatedJob.id,
             assetUrl: updatedJob.representation?.gaussianSplat?.url || updatedJob.representation?.mesh?.url,
             representation: updatedJob.representation,
             source: 'photogrammetry',
@@ -1322,8 +1328,8 @@ export default async function handler(req: any, res: any) {
       const workerSecret = getWorkerSharedSecret();
       const authHeader = req.headers?.authorization || req.headers?.Authorization || '';
       const providedSecret = authHeader.replace(/^Bearer\s+/i, '').trim();
-
-      if (process.env.NODE_ENV !== 'test' && providedSecret !== workerSecret) {
+      const isTestWorkerAuth = process.env.NODE_ENV === 'test' && Boolean(req.headers?.['x-worker-auth'] || req.headers?.['x-worker-token'] === 'true');
+      if (!isTestWorkerAuth && providedSecret !== workerSecret) {
         return res.status(401).json({ error: 'UNAUTHORIZED: Invalid or missing worker secret token.' });
       }
 
@@ -1373,7 +1379,8 @@ export default async function handler(req: any, res: any) {
       const authHeader = req.headers?.authorization || req.headers?.Authorization || '';
       const providedSecret = authHeader.replace(/^Bearer\s+/i, '').trim();
 
-      if (process.env.NODE_ENV !== 'test' && providedSecret !== workerSecret) {
+      const isTestWorkerAuth = process.env.NODE_ENV === 'test' && Boolean(req.headers?.['x-worker-auth'] || req.headers?.['x-worker-token'] === 'true');
+      if (!isTestWorkerAuth && providedSecret !== workerSecret) {
         return res.status(401).json({ error: 'UNAUTHORIZED: Invalid or missing worker secret token.' });
       }
 
@@ -1418,28 +1425,32 @@ export default async function handler(req: any, res: any) {
 
       // Verify Attempt ID (Attempt Isolation — reject stale crashed workers from older attempts)
       if (job.attemptId) {
-        if (!attemptId && process.env.NODE_ENV === 'production') {
+        if (!attemptId && (process.env.NODE_ENV === 'production' || req.headers?.['x-require-identifiers'] === 'true' || req.body?.requireIdentifiers === true)) {
           return res.status(409).json({
             error: `STALE_ATTEMPT_IGNORED: Worker callback must specify current active attemptId ${job.attemptId}.`,
+            errorCode: 'STALE_ATTEMPT_IGNORED',
           });
         }
         if (attemptId && attemptId !== job.attemptId) {
           return res.status(409).json({
             error: `STALE_ATTEMPT_IGNORED: Callback attempt ${attemptId} is stale. Current active attempt is ${job.attemptId}.`,
+            errorCode: 'STALE_ATTEMPT_IGNORED',
           });
         }
       }
 
       // Enforce worker identity: lock to the first bound workerId; reject competing or mismatched workers
       if (job.workerId) {
-        if (!workerId && process.env.NODE_ENV === 'production') {
+        if (!workerId && (process.env.NODE_ENV === 'production' || req.headers?.['x-require-identifiers'] === 'true' || req.body?.requireIdentifiers === true)) {
           return res.status(409).json({
             error: `WORKER_MISMATCH_IGNORED: Worker callback must specify bound workerId ${job.workerId}.`,
+            errorCode: 'WORKER_MISMATCH_IGNORED',
           });
         }
         if (workerId && job.workerId !== workerId) {
           return res.status(409).json({
             error: `WORKER_MISMATCH_IGNORED: Job ${jobId} is currently assigned to worker ${job.workerId}. Callback from worker ${workerId} was rejected.`,
+            errorCode: 'WORKER_MISMATCH_IGNORED',
           });
         }
       }
@@ -1658,6 +1669,31 @@ export default async function handler(req: any, res: any) {
             error: `WORKER_MISMATCH_IGNORED: Job ${jobId} is currently assigned to worker ${job.workerId}. Callback from worker ${workerId} was rejected.`,
             errorCode: 'WORKER_MISMATCH_IGNORED',
           });
+        }
+
+        // Cross-Job Stale Protection: Ensure no newer reconstruction has already been published for this property
+        let activePropertyArtifact = mockPropertiesStore.get(job.propertyId)?.publishedArtifact;
+        if (!activePropertyArtifact) {
+          try {
+            const { adminDb } = await getAdminServices();
+            if (adminDb) {
+              const pSnap = await adminDb.collection('properties').doc(job.propertyId).get();
+              if (pSnap.exists) {
+                activePropertyArtifact = pSnap.data()?.publishedArtifact;
+              }
+            }
+          } catch (_) {}
+        }
+
+        if (activePropertyArtifact && activePropertyArtifact.publishedAt) {
+          const currentPublishedTime = new Date(activePropertyArtifact.publishedAt).getTime();
+          const thisJobCreatedTime = new Date(job.createdAt || 0).getTime();
+          if (activePropertyArtifact.jobId !== job.id && currentPublishedTime > thisJobCreatedTime) {
+            return res.status(409).json({
+              error: `STALE_ATTEMPT_IGNORED: A newer reconstruction (${activePropertyArtifact.jobId}) is already active for property ${job.propertyId}. Late-finishing job ${job.id} cannot overwrite active reconstruction.`,
+              errorCode: 'STALE_ATTEMPT_IGNORED',
+            });
+          }
         }
 
         // Atomic Promotion: Promote verified attempt artifacts to public tour pointer

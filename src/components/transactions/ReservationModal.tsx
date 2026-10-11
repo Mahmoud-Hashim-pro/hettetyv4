@@ -332,13 +332,22 @@ export const ReservationModal: React.FC<ReservationModalProps> = ({
                   <span className="font-bold text-slate-800 dark:text-slate-200">{escrowResult?.receiptNumber}</span>
                 </div>
                 <div className="flex justify-between">
-                  <span className="text-slate-500">Escrow Ref:</span>
+                  <span className="text-slate-500">Reference:</span>
                   <span className="font-bold text-slate-800 dark:text-slate-200">{escrowResult?.escrowReference}</span>
                 </div>
                 <div className="flex justify-between">
                   <span className="text-slate-500">Status:</span>
-                  <span className="text-emerald-600 dark:text-emerald-400 font-bold">deposit_escrowed</span>
+                  <span className="text-emerald-600 dark:text-emerald-400 font-bold">{createdTx?.status || 'deposit_escrowed'}</span>
                 </div>
+              </div>
+
+              <div className="p-2.5 rounded-xl bg-amber-500/10 border border-amber-500/20 text-[11px] text-amber-700 dark:text-amber-300 text-start flex items-start gap-2">
+                <ShieldCheck className="w-4 h-4 mt-0.5 shrink-0" />
+                <span>
+                  {isRtl
+                    ? 'إشعار الشفافية: تم تسجيل الطلب. يتم تجميد أموال الضمان البنكي حصراً بعد التأكيد والتسوية الرسمية.'
+                    : 'Transparency Notice: This confirms reservation request registration. Funds are only held in escrow upon verified settlement.'}
+                </span>
               </div>
 
               <button

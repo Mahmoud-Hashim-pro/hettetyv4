@@ -31,6 +31,7 @@ const unit: Property = {
 
 describe('Tier 1 — a viewer that cannot load says so', () => {
   beforeEach(() => {
+    window.location.hash = '';
     localStorage.clear();
     sessionStorage.clear();
     localStorage.setItem('hettety_consent', JSON.stringify({ necessary: true }));

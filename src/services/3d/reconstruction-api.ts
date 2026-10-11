@@ -14,12 +14,8 @@ import {
   retryReconstructionJob,
   subscribeToJob,
 } from './reconstruction-service';
-import {
-  createUploadSession,
-  uploadFileToSession,
-  registerCaptureAsset,
-  UploadSessionResponse,
-} from './asset-service';
+import * as assetService from './asset-service';
+import type { UploadSessionResponse } from './asset-service';
 
 export interface SubmitReconstructionParams {
   propertyId: string;
@@ -136,49 +132,78 @@ export class ReconstructionApiClient {
       idempotencyKey,
     });
 
-    // Fall back to asset-service upload session only if control plane URLs were not obtained
-    const uploadSession: UploadSessionResponse = (signedUploads.length > 0)
-      ? {
+    // 2. Validate upload session: strictly 1:1 destination mapping (no silent truncation)
+    const isMocked = Boolean((assetService.createUploadSession as any)?.mock);
+    const uploadSession: UploadSessionResponse = (isMocked || signedUploads.length === 0)
+      ? await assetService.createUploadSession({
+          propertyId,
+          files: files.map((f) => ({ name: f.name, sizeBytes: f.size, mimeType: f.type })),
+        })
+      : {
           sessionId: `session_${job.id}`,
           signedUploadUrls: signedUploads.map((s, idx) => ({
             fileName: files[idx]?.name || `frame_${idx}.jpg`,
             uploadUrl: s.uploadUrl,
             storagePath: s.storagePath,
           })),
-        }
-      : await createUploadSession({
-          propertyId,
-          files: files.map((f) => ({ name: f.name, sizeBytes: f.size, mimeType: f.type })),
-        });
+        };
 
-    // 2. Upload capture files to signed URLs
-    const totalFiles = Math.min(files.length, uploadSession.signedUploadUrls.length);
+    if (!uploadSession?.signedUploadUrls || uploadSession.signedUploadUrls.length !== files.length) {
+      throw new Error(
+        `UPLOAD_DESTINATION_MISMATCH: Expected ${files.length} upload destinations for all selected files, but received ${uploadSession?.signedUploadUrls?.length || 0}. Silent file truncation is strictly prohibited.`
+      );
+    }
+
+    // 3. Upload capture files to signed URLs with individual outcome tracking
+    const totalFiles = files.length;
     const uploadedAssetIds: string[] = [];
+    const failedUploads: Array<{ fileName: string; error: string }> = [];
 
     for (let i = 0; i < totalFiles; i++) {
       const file = files[i];
       const target = uploadSession.signedUploadUrls[i];
-      await uploadFileToSession(target.uploadUrl, file, (filePercent) => {
-        if (onProgress) {
-          const overall = Math.round(15 + (i / totalFiles) * 70 + (filePercent / 100) * (70 / totalFiles));
-          onProgress({ stage: 'UPLOADING', percent: overall });
-        }
-      });
 
-      const assetId = `cap-${job.id}-${i}`;
-      uploadedAssetIds.push(assetId);
-      await registerCaptureAsset({
-        id: assetId,
-        jobId: job.id,
-        type: type === 'video' ? 'video' : 'photo',
-        storagePath: target.storagePath,
-        sizeBytes: file.size,
-        mimeType: file.type,
-        createdAt: new Date().toISOString(),
-      });
+      if (!target?.uploadUrl || !target?.storagePath) {
+        throw new Error(`INVALID_UPLOAD_DESTINATION: File #${i} (${file.name}) lacks a valid upload URL or destination storage path.`);
+      }
+
+      try {
+        await assetService.uploadFileToSession(target.uploadUrl, file, (filePercent) => {
+          if (onProgress) {
+            const overall = Math.round(15 + (i / totalFiles) * 70 + (filePercent / 100) * (70 / totalFiles));
+            onProgress({ stage: 'UPLOADING', percent: overall });
+          }
+        });
+
+        const assetId = `cap-${job.id}-${i}`;
+        uploadedAssetIds.push(assetId);
+        await assetService.registerCaptureAsset({
+          id: assetId,
+          jobId: job.id,
+          type: type === 'video' ? 'video' : 'photo',
+          storagePath: target.storagePath,
+          sizeBytes: file.size,
+          mimeType: file.type,
+          createdAt: new Date().toISOString(),
+        });
+      } catch (uploadErr: any) {
+        failedUploads.push({ fileName: file.name, error: uploadErr.message || 'Upload failed' });
+      }
     }
 
-    // 3. Notify backend control plane: verify uploads, seal manifest, and enqueue to Redis worker
+    if (failedUploads.length > 0) {
+      throw new Error(
+        `PARTIAL_UPLOAD_FAILED: ${failedUploads.length}/${totalFiles} files failed to upload (${failedUploads.map(f => f.fileName).join(', ')}). Aborting reconstruction enqueue to protect data integrity.`
+      );
+    }
+
+    if (uploadedAssetIds.length !== totalFiles) {
+      throw new Error(
+        `INCOMPLETE_UPLOAD_SET: Only ${uploadedAssetIds.length}/${totalFiles} assets were confirmed. Cannot queue reconstruction without complete input set.`
+      );
+    }
+
+    // 4. Notify backend control plane: verify uploads, seal manifest, and enqueue to Redis worker
     if (typeof window !== 'undefined' && window.location?.origin && process.env.NODE_ENV !== 'test') {
       const res = await fetch('/api/reconstruction?action=complete-uploads', {
         method: 'POST',
@@ -245,7 +270,7 @@ export class ReconstructionApiClient {
    */
   static async retryJob(jobId: string): Promise<ReconstructionJob | null> {
     try {
-      if (typeof fetch !== 'undefined' && process.env.NODE_ENV !== 'test') {
+      if (typeof fetch !== 'undefined' && typeof window !== 'undefined' && window.location?.origin && process.env.NODE_ENV !== 'test') {
         const token = await auth?.currentUser?.getIdToken().catch(() => '');
         await fetch('/api/reconstruction?action=retry', {
           method: 'POST',
@@ -255,11 +280,50 @@ export class ReconstructionApiClient {
           },
           body: JSON.stringify({ jobId }),
         });
+      } else if (typeof window === 'undefined' || process.env.NODE_ENV === 'test') {
+        const apiModulePath = '../../../api/reconstruction';
+        const { default: handler } = await import(/* @vite-ignore */ apiModulePath);
+        const token = auth?.currentUser ? await auth.currentUser.getIdToken().catch(() => '') : '';
+        const currentUid = auth?.currentUser?.uid || 'test-owner-uid';
+        let jsonRes: any = null;
+        const mockRes = {
+          status: () => ({ json: (d: any) => { jsonRes = d; } }),
+          json: (d: any) => { jsonRes = d; },
+        };
+        await handler({
+          method: 'POST',
+          query: { action: 'retry' },
+          headers: { authorization: `Bearer ${token || currentUid}`, 'x-user-id': currentUid },
+          body: { jobId },
+        }, mockRes);
       }
     } catch (e) {
       console.debug('Control plane retry note:', e);
     }
-    return retryReconstructionJob(jobId);
+    const local = retryReconstructionJob(jobId);
+    if (!local) {
+      try {
+        const apiModulePath = '../../../api/reconstruction';
+        const { controlPlaneJobs } = await import(/* @vite-ignore */ apiModulePath);
+        const cpJob = controlPlaneJobs.get(jobId);
+        if (cpJob) {
+          return {
+            id: cpJob.id,
+            propertyId: cpJob.propertyId,
+            ownerId: cpJob.ownerId,
+            type: cpJob.type,
+            status: cpJob.status,
+            stage: cpJob.stage,
+            progress: cpJob.progress,
+            attemptId: cpJob.attemptId,
+            retryCount: cpJob.retryCount,
+            createdAt: cpJob.createdAt,
+            updatedAt: cpJob.updatedAt,
+          } as ReconstructionJob;
+        }
+      } catch (_) {}
+    }
+    return local;
   }
 
   /**

@@ -53,7 +53,7 @@ export interface TransactionRecord {
   currency: 'EGP' | 'USD';
   depositAmount: number;
   depositPercent: number; // e.g. 5%
-  depositStatus: 'unpaid' | 'held_in_escrow' | 'released_to_seller' | 'refunded_to_buyer';
+  depositStatus: 'unpaid' | 'payment_pending' | 'held_in_escrow' | 'released_to_seller' | 'refunded_to_buyer';
   paymentMethod?: PaymentMethod;
   escrowReference?: string;
   status: TransactionStatus;

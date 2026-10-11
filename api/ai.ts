@@ -151,7 +151,7 @@ export default async function handler(req: any, res: any) {
     const aiReq = validate(parsed);
     // Any fileUrl becomes inline bytes here, so routing and every provider below
     // see one shape: a message made of text and inline data.
-    aiReq.contents = await resolveFileUrls(aiReq.contents);
+    aiReq.contents = await resolveFileUrls(aiReq.contents, userId);
 
     const { provider, model: primary, note } = resolve(aiReq);
 

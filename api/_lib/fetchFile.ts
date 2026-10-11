@@ -10,6 +10,10 @@ import { Message, Part, ProviderError } from './types.js';
 const STORAGE_HOST = 'firebasestorage.googleapis.com';
 /** Storage rules cap a PDF at 15MB; refuse anything larger before buffering it. */
 const MAX_FETCH_BYTES = 16 * 1024 * 1024;
+/** Bound aggregate payload size across all attachments in a single request (25MB). */
+const MAX_AGGREGATE_FETCH_BYTES = 25 * 1024 * 1024;
+/** Maximum number of file attachments allowed per AI request. */
+const MAX_FILE_ATTACHMENTS = 5;
 
 const ALLOWED_MIME_TYPES = new Set([
   'application/pdf',
@@ -19,7 +23,7 @@ const ALLOWED_MIME_TYPES = new Set([
   'image/gif',
 ]);
 
-function assertFetchable(raw: string): URL {
+function assertFetchable(raw: string, callerUid?: string, isAdmin?: boolean): URL {
   let url: URL;
   try {
     url = new URL(raw);
@@ -37,6 +41,22 @@ function assertFetchable(raw: string): URL {
   if (bucket && !url.pathname.startsWith(`/v0/b/${bucket}/`)) {
     throw new ProviderError('That file is not in this project\'s storage bucket', 400);
   }
+
+  // Ownership verification for private/confidential paths
+  if (callerUid && !isAdmin) {
+    const decodedPath = decodeURIComponent(url.pathname);
+    // 1. Private user documents: /v0/b/.../o/user_documents/{userId}/...
+    const userDocMatch = decodedPath.match(/\/o\/user_documents\/([^/]+)/);
+    if (userDocMatch && userDocMatch[1] !== callerUid) {
+      throw new ProviderError('Unauthorized: You cannot attach another user\'s private documents', 403, false);
+    }
+    // 2. Private legal property documents: /v0/b/.../o/properties/{ownerUid}/legal/...
+    const legalDocMatch = decodedPath.match(/\/o\/properties\/([^/]+)\/legal\//);
+    if (legalDocMatch && legalDocMatch[1] !== callerUid) {
+      throw new ProviderError('Unauthorized: You cannot attach another user\'s legal documents', 403, false);
+    }
+  }
+
   return url;
 }
 
@@ -136,9 +156,27 @@ async function fetchAsInline(url: URL, mimeType: string) {
 }
 
 /** Resolves every fileUrl part in the conversation, leaving other parts untouched. */
-export async function resolveFileUrls(contents: Message[]): Promise<Message[]> {
-  const needsWork = contents.some((m) => m.parts.some((p) => 'fileUrl' in p));
-  if (!needsWork) return contents;
+export async function resolveFileUrls(
+  contents: Message[],
+  callerUid?: string,
+  isAdmin?: boolean
+): Promise<Message[]> {
+  const fileParts: { url: string; mimeType: string }[] = [];
+  for (const m of contents) {
+    for (const p of m.parts) {
+      if ('fileUrl' in p && p.fileUrl) {
+        fileParts.push(p.fileUrl);
+      }
+    }
+  }
+
+  if (fileParts.length === 0) return contents;
+
+  if (fileParts.length > MAX_FILE_ATTACHMENTS) {
+    throw new ProviderError(`Too many file attachments (maximum ${MAX_FILE_ATTACHMENTS} permitted per AI request)`, 400, false);
+  }
+
+  let cumulativeBytes = 0;
 
   return Promise.all(
     contents.map(async (m) => ({
@@ -150,7 +188,13 @@ export async function resolveFileUrls(contents: Message[]): Promise<Message[]> {
           if (typeof mimeType !== 'string' || !mimeType) {
             throw new ProviderError('`fileUrl.mimeType` is required', 400);
           }
-          return fetchAsInline(assertFetchable(url), mimeType);
+          const inlinePart = await fetchAsInline(assertFetchable(url, callerUid, isAdmin), mimeType);
+          const dataBuf = Buffer.from((inlinePart as any).inlineData.data, 'base64');
+          cumulativeBytes += dataBuf.byteLength;
+          if (cumulativeBytes > MAX_AGGREGATE_FETCH_BYTES) {
+            throw new ProviderError(`Aggregate attachment size exceeds maximum allowed ${Math.round(MAX_AGGREGATE_FETCH_BYTES / (1024 * 1024))}MB limit`, 413, false);
+          }
+          return inlinePart;
         })
       ),
     }))

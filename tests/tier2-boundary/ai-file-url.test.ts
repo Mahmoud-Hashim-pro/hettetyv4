@@ -148,5 +148,62 @@ describe('Tier 2 — Fetching a staged file for the AI', () => {
     await expect(resolveFileUrls(msg(good, 'application/pdf'))).rejects.toThrow(/too large/i);
     expect(cancelCalled).toBe(true);
   });
+
+  it('strictly rejects requests exceeding maximum 5 file attachments', async () => {
+    const multiMsg: Message[] = [
+      {
+        role: 'user',
+        parts: [
+          { text: 'Analyze these files' },
+          { fileUrl: { url: good, mimeType: 'application/pdf' } },
+          { fileUrl: { url: good, mimeType: 'application/pdf' } },
+          { fileUrl: { url: good, mimeType: 'application/pdf' } },
+          { fileUrl: { url: good, mimeType: 'application/pdf' } },
+          { fileUrl: { url: good, mimeType: 'application/pdf' } },
+          { fileUrl: { url: good, mimeType: 'application/pdf' } }, // 6th attachment
+        ],
+      },
+    ];
+
+    await expect(resolveFileUrls(multiMsg)).rejects.toThrow(/Too many file attachments/i);
+  });
+
+  it('strictly rejects requests when aggregate attachment payload exceeds 25MB limit', async () => {
+    // 2 files, each 14MB (total 28MB > 25MB)
+    const bigFileBytes = Buffer.from('%PDF-' + 'X'.repeat(14 * 1024 * 1024));
+    globalThis.fetch = okFetch(bigFileBytes) as any;
+
+    const twoFilesMsg: Message[] = [
+      {
+        role: 'user',
+        parts: [
+          { text: 'Analyze these big files' },
+          { fileUrl: { url: good, mimeType: 'application/pdf' } },
+          { fileUrl: { url: good, mimeType: 'application/pdf' } },
+        ],
+      },
+    ];
+
+    await expect(resolveFileUrls(twoFilesMsg)).rejects.toThrow(/Aggregate attachment size exceeds/i);
+  });
+
+  it('strictly verifies caller ownership for private user documents and confidential legal property documents', async () => {
+    process.env.STORAGE_BUCKET = BUCKET;
+    const callerUid = 'user-alice-123';
+    const strangerUserDoc = `https://firebasestorage.googleapis.com/v0/b/${BUCKET}/o/user_documents%2Fuser-bob-999%2Fpassport.pdf?alt=media`;
+    const strangerLegalDoc = `https://firebasestorage.googleapis.com/v0/b/${BUCKET}/o/properties%2Fuser-bob-999%2Flegal%2Fdeed.pdf?alt=media`;
+    const ownUserDoc = `https://firebasestorage.googleapis.com/v0/b/${BUCKET}/o/user_documents%2F${callerUid}%2Fmy_id.pdf?alt=media`;
+
+    // 1. Trying to attach another user's private document is rejected
+    await expect(resolveFileUrls(msg(strangerUserDoc), callerUid)).rejects.toThrow(/Unauthorized.*another user's private documents/i);
+
+    // 2. Trying to attach another user's legal document is rejected
+    await expect(resolveFileUrls(msg(strangerLegalDoc), callerUid)).rejects.toThrow(/Unauthorized.*another user's legal documents/i);
+
+    // 3. Attaching own private document is permitted
+    globalThis.fetch = okFetch() as any;
+    const res = await resolveFileUrls(msg(ownUserDoc), callerUid);
+    expect(res[0].parts[1]).toHaveProperty('inlineData');
+  });
 });
 

@@ -42,9 +42,14 @@ function assertFetchable(raw: string, callerUid?: string, isAdmin?: boolean): UR
     throw new ProviderError('That file is not in this project\'s storage bucket', 400);
   }
 
+  // Verify storage object namespace: only /properties/ and /user_documents/ are allowed
+  const decodedPath = decodeURIComponent(url.pathname);
+  if (!/\/o\/(properties|user_documents)\//.test(decodedPath)) {
+    throw new ProviderError('Invalid storage object namespace: only properties and user_documents are permitted', 400, false);
+  }
+
   // Ownership verification for private/confidential paths
   if (callerUid && !isAdmin) {
-    const decodedPath = decodeURIComponent(url.pathname);
     // 1. Private user documents: /v0/b/.../o/user_documents/{userId}/...
     const userDocMatch = decodedPath.match(/\/o\/user_documents\/([^/]+)/);
     if (userDocMatch && userDocMatch[1] !== callerUid) {
@@ -87,20 +92,54 @@ function verifyFileSignature(buf: Buffer, mimeType: string) {
   }
 }
 
-async function readStreamWithLimit(res: any, maxBytes: number): Promise<Buffer> {
+class AggregateByteTracker {
+  private totalBytes = 0;
+  constructor(private readonly maxBytes: number = MAX_AGGREGATE_FETCH_BYTES) {}
+
+  addAndCheck(chunkBytes: number, reader?: { cancel: () => Promise<any> | any }): void {
+    this.totalBytes += chunkBytes;
+    if (this.totalBytes > this.maxBytes) {
+      if (reader && typeof reader.cancel === 'function') {
+        try {
+          reader.cancel();
+        } catch {
+          // ignore error on reader cancel
+        }
+      }
+      throw new ProviderError(
+        `Aggregate attachment size exceeds maximum allowed ${Math.round(this.maxBytes / (1024 * 1024))}MB limit`,
+        413,
+        false
+      );
+    }
+  }
+
+  getTotal(): number {
+    return this.totalBytes;
+  }
+}
+
+async function readStreamWithLimit(
+  res: any,
+  maxBytes: number,
+  tracker?: AggregateByteTracker
+): Promise<Buffer> {
   if (res.body && typeof res.body.getReader === 'function') {
     const reader = res.body.getReader();
     const chunks: Uint8Array[] = [];
-    let totalBytes = 0;
+    let fileBytes = 0;
     try {
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
         if (value) {
-          totalBytes += value.byteLength;
-          if (totalBytes > maxBytes) {
+          fileBytes += value.byteLength;
+          if (fileBytes > maxBytes) {
             await reader.cancel();
             throw new ProviderError('That file is too large to read', 413, false);
+          }
+          if (tracker) {
+            tracker.addAndCheck(value.byteLength, reader);
           }
           chunks.push(value);
         }
@@ -117,10 +156,13 @@ async function readStreamWithLimit(res: any, maxBytes: number): Promise<Buffer> 
   if (buf.byteLength > maxBytes) {
     throw new ProviderError('That file is too large to read', 413, false);
   }
+  if (tracker) {
+    tracker.addAndCheck(buf.byteLength);
+  }
   return buf;
 }
 
-async function fetchAsInline(url: URL, mimeType: string) {
+async function fetchAsInline(url: URL, mimeType: string, tracker?: AggregateByteTracker) {
   if (!ALLOWED_MIME_TYPES.has(mimeType)) {
     throw new ProviderError(`Unsupported file mimeType "${mimeType}"`, 400, false);
   }
@@ -148,8 +190,15 @@ async function fetchAsInline(url: URL, mimeType: string) {
   if (declared > MAX_FETCH_BYTES) {
     throw new ProviderError('That file is too large to read', 413, false);
   }
+  if (tracker && declared > 0 && tracker.getTotal() + declared > MAX_AGGREGATE_FETCH_BYTES) {
+    throw new ProviderError(
+      `Aggregate attachment size exceeds maximum allowed ${Math.round(MAX_AGGREGATE_FETCH_BYTES / (1024 * 1024))}MB limit`,
+      413,
+      false
+    );
+  }
 
-  const buf = await readStreamWithLimit(res, MAX_FETCH_BYTES);
+  const buf = await readStreamWithLimit(res, MAX_FETCH_BYTES, tracker);
   verifyFileSignature(buf, mimeType);
 
   return { inlineData: { mimeType, data: buf.toString('base64') } } as Part;
@@ -176,7 +225,7 @@ export async function resolveFileUrls(
     throw new ProviderError(`Too many file attachments (maximum ${MAX_FILE_ATTACHMENTS} permitted per AI request)`, 400, false);
   }
 
-  let cumulativeBytes = 0;
+  const tracker = new AggregateByteTracker(MAX_AGGREGATE_FETCH_BYTES);
 
   return Promise.all(
     contents.map(async (m) => ({
@@ -188,12 +237,7 @@ export async function resolveFileUrls(
           if (typeof mimeType !== 'string' || !mimeType) {
             throw new ProviderError('`fileUrl.mimeType` is required', 400);
           }
-          const inlinePart = await fetchAsInline(assertFetchable(url, callerUid, isAdmin), mimeType);
-          const dataBuf = Buffer.from((inlinePart as any).inlineData.data, 'base64');
-          cumulativeBytes += dataBuf.byteLength;
-          if (cumulativeBytes > MAX_AGGREGATE_FETCH_BYTES) {
-            throw new ProviderError(`Aggregate attachment size exceeds maximum allowed ${Math.round(MAX_AGGREGATE_FETCH_BYTES / (1024 * 1024))}MB limit`, 413, false);
-          }
+          const inlinePart = await fetchAsInline(assertFetchable(url, callerUid, isAdmin), mimeType, tracker);
           return inlinePart;
         })
       ),

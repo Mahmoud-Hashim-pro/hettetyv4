@@ -258,7 +258,7 @@ describe('Tier 1 — Phase 7: Transactions & Reservation Domain', () => {
 
       // Step 2: Confirm & Fund
       expect(screen.getByText(/Select your preferred payment method/i)).toBeInTheDocument();
-      const fundBtn = screen.getByRole('button', { name: /Confirm & Fund/i });
+      const fundBtn = screen.getByRole('button', { name: /Submit Deposit Request|Confirm & Fund/i });
       fireEvent.click(fundBtn);
 
       // Step 3: Receipt View

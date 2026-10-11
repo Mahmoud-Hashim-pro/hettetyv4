@@ -130,6 +130,10 @@ export class ReconstructionApiClient {
 
     // Register job in local & Firestore tracking with canonical job ID
     const canonicalJobId = controlJob?.id;
+    if (!canonicalJobId) {
+      throw new Error('RECONSTRUCTION_JOB_CREATION_FAILED: Control plane did not return a canonical job ID.');
+    }
+
     const job = createReconstructionJob({
       id: canonicalJobId,
       propertyId,
@@ -140,20 +144,27 @@ export class ReconstructionApiClient {
     });
 
     // 2. Validate upload session: strictly 1:1 destination mapping (no silent truncation)
-    const isMocked = Boolean((assetService.createUploadSession as any)?.mock);
-    const uploadSession: UploadSessionResponse = (isMocked || signedUploads.length === 0)
-      ? await assetService.createUploadSession({
-          propertyId,
-          files: files.map((f) => ({ name: f.name, sizeBytes: f.size, mimeType: f.type })),
-        })
-      : {
-          sessionId: `session_${job.id}`,
-          signedUploadUrls: signedUploads.map((s, idx) => ({
-            fileName: files[idx]?.name || `frame_${idx}.jpg`,
-            uploadUrl: s.uploadUrl,
-            storagePath: s.storagePath,
-          })),
-        };
+    let uploadSession: UploadSessionResponse;
+    const isCreateMocked = Boolean((assetService.createUploadSession as any)?.mock);
+    const isRecoverMocked = Boolean((assetService.recoverUploadSession as any)?.mock);
+
+    if (isCreateMocked) {
+      uploadSession = await assetService.createUploadSession({
+        propertyId,
+        files: files.map((f) => ({ name: f.name, sizeBytes: f.size, mimeType: f.type })),
+      });
+    } else if (isRecoverMocked || signedUploads.length === 0) {
+      uploadSession = await assetService.recoverUploadSession({ jobId: canonicalJobId });
+    } else {
+      uploadSession = {
+        sessionId: `session_${job.id}`,
+        signedUploadUrls: signedUploads.map((s, idx) => ({
+          fileName: files[idx]?.name || `frame_${idx}.jpg`,
+          uploadUrl: s.uploadUrl,
+          storagePath: s.storagePath,
+        })),
+      };
+    }
 
     if (!uploadSession?.signedUploadUrls || uploadSession.signedUploadUrls.length !== files.length) {
       throw new Error(

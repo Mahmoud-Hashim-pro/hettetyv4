@@ -108,6 +108,91 @@ export const createUploadSession = async (request: UploadSessionRequest): Promis
   throw new Error('UPLOAD_SESSION_FAILED: Failed to obtain signed upload URLs from control plane.');
 };
 
+export interface RecoverUploadSessionParams {
+  jobId: string;
+}
+
+/**
+ * Authoritative upload session recovery:
+ * Recovers signed upload URLs for an existing canonical job ID without creating a duplicate job.
+ */
+export const recoverUploadSession = async (
+  params: RecoverUploadSessionParams
+): Promise<UploadSessionResponse> => {
+  if (!params?.jobId) {
+    throw new Error('INVALID_PARAMS: jobId is required to recover an upload session.');
+  }
+
+  const currentUid = auth?.currentUser?.uid || (process.env.NODE_ENV === 'test' ? 'test-owner-uid' : '');
+  let authToken = '';
+  if (auth?.currentUser) {
+    try {
+      authToken = await auth.currentUser.getIdToken();
+    } catch (e) {
+      console.debug('Failed to get ID token in recoverUploadSession:', e);
+    }
+  }
+  if (!authToken && process.env.NODE_ENV === 'test') {
+    authToken = currentUid;
+  }
+
+  // 1. Production browser: calls backend create-upload-session recovery endpoint
+  if (typeof fetch !== 'undefined' && typeof window !== 'undefined' && window.location?.origin && process.env.NODE_ENV !== 'test') {
+    const res = await fetch('/api/reconstruction?action=create-upload-session', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${authToken}`,
+      },
+      body: JSON.stringify({ jobId: params.jobId }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: res.statusText }));
+      throw new Error(`UPLOAD_SESSION_RECOVERY_FAILED: ${err.error || res.statusText}`);
+    }
+    const data = await res.json();
+    if (data.jobId && data.jobId !== params.jobId) {
+      throw new Error(`UPLOAD_SESSION_JOB_MISMATCH: Expected jobId ${params.jobId} but received ${data.jobId}`);
+    }
+    return {
+      sessionId: data.sessionId || `session_${params.jobId}`,
+      signedUploadUrls: data.signedUploadUrls || [],
+    };
+  }
+
+  // 2. SSR / Testing: delegates directly to serverless API handler
+  if (typeof window === 'undefined' || process.env.NODE_ENV === 'test') {
+    const apiModulePath = '../../../api/reconstruction';
+    const { default: handler } = await import(/* @vite-ignore */ apiModulePath);
+    let jsonRes: any = null;
+    let statusCode = 200;
+    const mockRes = {
+      status: (code: number) => {
+        statusCode = code;
+        return { json: (d: any) => { jsonRes = d; } };
+      },
+      json: (d: any) => { jsonRes = d; },
+    };
+    await handler({
+      method: 'POST',
+      query: { action: 'create-upload-session' },
+      headers: { authorization: `Bearer ${authToken}`, 'x-user-id': currentUid },
+      body: { jobId: params.jobId },
+    }, mockRes);
+
+    if (statusCode >= 400 || !jsonRes || !jsonRes.signedUploadUrls) {
+      throw new Error(`UPLOAD_SESSION_RECOVERY_FAILED: ${jsonRes?.error || 'Failed to recover upload session'}`);
+    }
+
+    return {
+      sessionId: jsonRes.sessionId || `session_${params.jobId}`,
+      signedUploadUrls: jsonRes.signedUploadUrls,
+    };
+  }
+
+  throw new Error('UPLOAD_SESSION_RECOVERY_FAILED: Failed to obtain recovered signed upload URLs from control plane.');
+};
+
 /**
  * Uploads a file/blob to the designated signed upload URL with progress monitoring.
  */

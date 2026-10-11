@@ -75,11 +75,11 @@ service firebase.storage {
       allow write: if false;
     }
 
-    // Immutable versioned attempt artifacts (Historical reconstruction archive):
-    // Archival read restricted to super-admins / backend audit logs.
-    // Client writes strictly DENIED — guarantees absolute immutability against client-side SDK mutations.
+    // Immutable versioned attempt artifacts (Published 3D Spatial Assets loaded directly by tour viewer):
+    // Publicly readable for 3D property tour viewer from immutable attempt directories.
+    // Client writes strictly DENIED — mutations performed exclusively by trusted backend Admin SDK.
     match /properties/{propertyId}/3d/{jobId}/{attemptId}/{fileName} {
-      allow read: if isSuperAdmin();
+      allow read: if true;
       allow write: if false;
     }
 

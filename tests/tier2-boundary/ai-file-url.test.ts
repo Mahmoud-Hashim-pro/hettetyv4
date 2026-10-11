@@ -205,5 +205,61 @@ describe('Tier 2 — Fetching a staged file for the AI', () => {
     const res = await resolveFileUrls(msg(ownUserDoc), callerUid);
     expect(res[0].parts[1]).toHaveProperty('inlineData');
   });
+
+  it('rejects files outside properties and user_documents storage namespaces', async () => {
+    process.env.STORAGE_BUCKET = BUCKET;
+    const invalidNamespaceDoc = `https://firebasestorage.googleapis.com/v0/b/${BUCKET}/o/internal_secrets%2Fkeys.pdf?alt=media`;
+    await expect(resolveFileUrls(msg(invalidNamespaceDoc))).rejects.toThrow(/Invalid storage object namespace/i);
+  });
+
+  it('aborts stream reader immediately when aggregate streaming chunks across files exceed 25MB ceiling', async () => {
+    let cancelCalled = false;
+    let fileIndex = 0;
+
+    globalThis.fetch = vi.fn().mockImplementation(async () => {
+      fileIndex++;
+      const isSecondFile = fileIndex === 2;
+      let readCount = 0;
+      const mockReader = {
+        read: async () => {
+          readCount++;
+          if (!isSecondFile) {
+            // First file: 15MB
+            if (readCount === 1) return { done: false, value: new Uint8Array(15 * 1024 * 1024) };
+            return { done: true, value: undefined };
+          } else {
+            // Second file: chunk 1 is 11MB -> total 26MB (>25MB)
+            if (readCount === 1) return { done: false, value: new Uint8Array(11 * 1024 * 1024) };
+            return { done: true, value: undefined };
+          }
+        },
+        cancel: async () => {
+          cancelCalled = true;
+        },
+      };
+
+      return {
+        ok: true,
+        status: 200,
+        headers: { get: () => '0' },
+        body: { getReader: () => mockReader },
+      };
+    }) as any;
+
+    const twoFilesMsg: Message[] = [
+      {
+        role: 'user',
+        parts: [
+          { text: 'Analyze these big streaming files' },
+          { fileUrl: { url: good, mimeType: 'application/pdf' } },
+          { fileUrl: { url: good, mimeType: 'application/pdf' } },
+        ],
+      },
+    ];
+
+    await expect(resolveFileUrls(twoFilesMsg)).rejects.toThrow(/Aggregate attachment size exceeds/i);
+    expect(cancelCalled).toBe(true);
+  });
 });
+
 

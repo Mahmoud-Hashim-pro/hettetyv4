@@ -2963,20 +2963,19 @@ NaN NaN NaN
       expect(statusRes).toBe(200);
       expect(controlPlaneJobs.get(jobId)?.status).toBe('READY');
 
-      // Assert that Control Plane atomically promoted files to public /tour/ pointer
-      const tourDir = path.resolve(storageRoot, `properties/${propId}/tour`);
-      expect(fs.existsSync(path.resolve(tourDir, 'scene.spz'))).toBe(true);
-      expect(fs.existsSync(path.resolve(tourDir, 'mesh.glb'))).toBe(true);
-
-      const promotedSpz = fs.readFileSync(path.resolve(tourDir, 'scene.spz'));
-      const promotedGlb = fs.readFileSync(path.resolve(tourDir, 'mesh.glb'));
-      expect(crypto.createHash('sha256').update(promotedSpz).digest('hex')).toBe(spzSha);
-      expect(crypto.createHash('sha256').update(promotedGlb).digest('hex')).toBe(glbSha);
+      // Assert that Control Plane atomically switched property active pointers to immutable attempt
+      const propRecord = mockPropertiesStore.get(propId);
+      expect(propRecord?.activeAttemptId).toBe(attemptId);
+      expect(propRecord?.activeJobId).toBe(jobId);
+      expect(propRecord?.activeVersion).toBeGreaterThan(0);
+      expect(propRecord?.publishedArtifact?.spzPath).toContain(`3d/${jobId}/${attemptId}/scene.spz`);
+      expect(propRecord?.publishedArtifact?.glbPath).toContain(`3d/${jobId}/${attemptId}/mesh.glb`);
+      expect(fs.existsSync(path.resolve(attemptDir, 'scene.spz'))).toBe(true);
+      expect(fs.existsSync(path.resolve(attemptDir, 'mesh.glb'))).toBe(true);
 
       // Cleanup test artifacts
       try {
         fs.rmSync(attemptDir, { recursive: true, force: true });
-        fs.rmSync(tourDir, { recursive: true, force: true });
       } catch {}
     });
 

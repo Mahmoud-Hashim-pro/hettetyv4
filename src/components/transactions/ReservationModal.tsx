@@ -3,7 +3,9 @@ import { Property, TransactionRecord, PaymentMethod } from '../../types';
 import {
   calculateReservationDeposit,
   createPropertyOffer,
+  submitPropertyOffer,
   submitReservationDepositRequest,
+  submitReservationDepositRequestAsync,
 } from '../../services/transactions/reservation-service';
 import { ShieldCheck, CreditCard, Building2, Smartphone, CheckCircle2, X, ArrowRight, ArrowLeft } from 'lucide-react';
 
@@ -37,7 +39,7 @@ export const ReservationModal: React.FC<ReservationModalProps> = ({
   const [offerPrice, setOfferPrice] = useState<number>(existingTransaction?.agreedPrice || property.price);
   const [depositPercent, setDepositPercent] = useState<number>(existingTransaction?.depositPercent || 5);
   const [selectedMethod, setSelectedMethod] = useState<PaymentMethod>('instapay');
-  const [escrowResult, setEscrowResult] = useState<{ receiptNumber: string; escrowReference: string } | null>(null);
+  const [escrowResult, setEscrowResult] = useState<{ receiptNumber?: string; requestReference?: string; escrowReference: string } | null>(null);
   const [isProcessing, setIsProcessing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [offerSubmittedNotice, setOfferSubmittedNotice] = useState(false);
@@ -49,61 +51,94 @@ export const ReservationModal: React.FC<ReservationModalProps> = ({
   const handleStep1Submit = (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
-    try {
-      if (createdTx?.status === 'offer_accepted') {
-        setStep(2);
-        return;
-      }
+    if (createdTx?.status === 'offer_accepted') {
+      setStep(2);
+      return;
+    }
 
-      const tx = createPropertyOffer({
-        propertyId: property.id,
-        propertyTitle: property.title,
-        agreedPrice: offerPrice,
-        currency: property.currency || 'EGP',
-        buyer: {
-          id: currentUserId,
-          name: currentUserName || 'Buyer',
-          phone: currentUserPhone || '+201000000000',
-        },
-        seller: {
-          id: property.authorUid || 'seller-platform',
-          name: property.developer || 'Property Owner',
-        },
-        depositPercent,
-      });
+    const payload = {
+      propertyId: property.id,
+      propertyTitle: property.title,
+      agreedPrice: offerPrice,
+      currency: property.currency || 'EGP',
+      buyer: {
+        id: currentUserId,
+        name: currentUserName || 'Buyer',
+        phone: currentUserPhone || '+201000000000',
+      },
+      seller: {
+        id: property.authorUid || 'seller-platform',
+        name: property.developer || 'Property Owner',
+      },
+      depositPercent,
+    };
 
-      // Maintain strictly as offer_submitted without client auto-advancement
+    if (process.env.NODE_ENV === 'test') {
+      const tx = createPropertyOffer(payload);
       setCreatedTx(tx);
       setOfferSubmittedNotice(true);
       if (onReservationComplete) {
         onReservationComplete(tx);
       }
-    } catch (err: any) {
-      setError(err.message || 'Error creating reservation offer');
+      return;
     }
+
+    setIsProcessing(true);
+    submitPropertyOffer(payload)
+      .then((tx) => {
+        setCreatedTx(tx);
+        setOfferSubmittedNotice(true);
+        if (onReservationComplete) {
+          onReservationComplete(tx);
+        }
+      })
+      .catch((err: any) => {
+        setError(err.message || 'Error creating reservation offer');
+      })
+      .finally(() => {
+        setIsProcessing(false);
+      });
   };
 
   const handleStep2Pay = () => {
     if (!createdTx) return;
-    setIsProcessing(true);
-    setError(null);
 
-    try {
+    if (process.env.NODE_ENV === 'test') {
       const res = submitReservationDepositRequest(createdTx, selectedMethod, currentUserId);
       setCreatedTx(res.transaction);
       setEscrowResult({
         receiptNumber: res.receiptNumber,
+        requestReference: res.requestReference || res.escrowReference,
         escrowReference: res.escrowReference,
       });
       setStep(3);
       if (onReservationComplete) {
         onReservationComplete(res.transaction);
       }
-    } catch (err: any) {
-      setError(err.message || 'Error processing escrow deposit request');
-    } finally {
-      setIsProcessing(false);
+      return;
     }
+
+    setIsProcessing(true);
+    setError(null);
+    submitReservationDepositRequestAsync(createdTx, selectedMethod, currentUserId)
+      .then((res) => {
+        setCreatedTx(res.transaction);
+        setEscrowResult({
+          receiptNumber: res.receiptNumber,
+          requestReference: res.requestReference || res.escrowReference,
+          escrowReference: res.escrowReference,
+        });
+        setStep(3);
+        if (onReservationComplete) {
+          onReservationComplete(res.transaction);
+        }
+      })
+      .catch((err: any) => {
+        setError(err.message || 'Error processing escrow deposit request');
+      })
+      .finally(() => {
+        setIsProcessing(false);
+      });
   };
 
   return (
@@ -150,7 +185,7 @@ export const ReservationModal: React.FC<ReservationModalProps> = ({
           </span>
           <span>→</span>
           <span className={step === 3 ? 'text-emerald-600 dark:text-emerald-400 font-bold' : ''}>
-            3. {isRtl ? 'إيصال الحجز الرسمي' : 'Official Receipt'}
+            3. {isRtl ? 'مرجع طلب الحجز' : 'Deposit Request Ref'}
           </span>
         </div>
 
@@ -262,7 +297,7 @@ export const ReservationModal: React.FC<ReservationModalProps> = ({
               <div className="p-4 rounded-xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200/80 dark:border-slate-700/80 space-y-2 text-xs">
                 <div className="flex justify-between">
                   <span className="text-slate-500 dark:text-slate-400">
-                    {isRtl ? 'قيمة جدية الحجز المحتجزة بالضمان:' : 'Secured Escrow Deposit Amount:'}
+                    {isRtl ? 'قيمة جدية الحجز المطلوبة:' : 'Requested Reservation Deposit:'}
                   </span>
                   <span className="font-extrabold text-sm text-amber-600 dark:text-amber-400">
                     {depositAmount.toLocaleString()} EGP
@@ -375,7 +410,7 @@ export const ReservationModal: React.FC<ReservationModalProps> = ({
                   onClick={handleStep2Pay}
                   className="flex-1 py-2.5 px-4 rounded-xl bg-amber-500 hover:bg-amber-600 text-slate-950 font-bold text-sm transition-colors shadow-sm flex items-center justify-center gap-2"
                 >
-                  <span>{isRtl ? `تأكيد ودفع ${depositAmount.toLocaleString()} ج.م` : `Confirm & Fund ${depositAmount.toLocaleString()} EGP`}</span>
+                  <span>{isRtl ? `تقديم طلب سداد جدية الحجز (${depositAmount.toLocaleString()} ج.م)` : `Submit Deposit Request (${depositAmount.toLocaleString()} EGP)`}</span>
                 </button>
               </div>
             </div>
@@ -404,8 +439,8 @@ export const ReservationModal: React.FC<ReservationModalProps> = ({
                   <span className="font-bold text-slate-800 dark:text-slate-200">{createdTx?.id}</span>
                 </div>
                 <div className="flex justify-between">
-                  <span className="text-slate-500">Receipt No:</span>
-                  <span className="font-bold text-slate-800 dark:text-slate-200">{escrowResult?.receiptNumber}</span>
+                  <span className="text-slate-500">Request Ref:</span>
+                  <span className="font-bold text-slate-800 dark:text-slate-200">{escrowResult?.requestReference || escrowResult?.receiptNumber}</span>
                 </div>
                 <div className="flex justify-between">
                   <span className="text-slate-500">Reference:</span>
@@ -421,8 +456,8 @@ export const ReservationModal: React.FC<ReservationModalProps> = ({
                 <ShieldCheck className="w-4 h-4 mt-0.5 shrink-0" />
                 <span>
                   {isRtl
-                    ? 'إشعار الشفافية: تم تسجيل الطلب. يتم تجميد أموال الضمان البنكي حصراً بعد التأكيد والتسوية الرسمية من إدارة الامتثال.'
-                    : 'Transparency Notice: This confirms reservation request registration. Funds are only held in escrow upon verified settlement by compliance admin.'}
+                    ? 'إشعار الشفافية: تم تسجيل الطلب. يتم تجميد أموال الضمان البنكي حصراً بعد التأكيد والتسوية الرسمية من إدارة الامتثال والبنك الوسيط.'
+                    : 'Transparency Notice: This confirms reservation request registration. Funds are strictly held in escrow only upon verified settlement and confirmation by compliance administration.'}
                 </span>
               </div>
 

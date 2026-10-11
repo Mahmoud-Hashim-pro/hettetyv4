@@ -261,4 +261,41 @@ describe('Tier 1 — Phase 2: Upload Reliability, 1:1 Destination Integrity & Jo
     const res2 = await enqueueToRedis(mockJob);
     expect(res2).toBe(true);
   });
+
+  it('Requirement 10: assetService.recoverUploadSession invokes create-upload-session and returns exact jobId', async () => {
+    const ownerId = 'test-owner-uid';
+    const jobId = 'job-asset-recov-77';
+    controlPlaneJobs.set(jobId, {
+      id: jobId,
+      propertyId: 'prop-recov-77',
+      ownerId,
+      status: 'UPLOADING',
+      attemptId: 'attempt_1',
+      manifest: [
+        { id: 'cap-1', storagePath: `properties/prop-recov-77/3d/raw/${jobId}/img1.jpg`, sizeBytes: 1000, mimeType: 'image/jpeg', validationStatus: 'PENDING' },
+      ],
+      createdAt: new Date().toISOString(),
+    } as any);
+
+    const recovered = await assetService.recoverUploadSession({ jobId });
+    expect(recovered.sessionId).toBe(`session_${jobId}`);
+    expect(recovered.signedUploadUrls.length).toBe(1);
+  });
+
+  it('Requirement 11: failed enqueue cleans up reservation from in-memory set so retry succeeds', async () => {
+    const { enqueueToRedis, enqueuedWorkerJobs } = await import('../../api/reconstruction');
+    const failJob = {
+      id: 'job-fail-retry-1',
+      attemptId: 'attempt_1',
+      propertyId: 'prop-fail',
+      ownerId: 'owner-1',
+      status: 'QUEUED',
+      createdAt: new Date().toISOString(),
+    } as any;
+
+    enqueuedWorkerJobs.clear();
+    // Simulate invalid redis URL that fails connection
+    await enqueueToRedis(failJob, 'redis://127.0.0.1:1').catch(() => false);
+    expect(enqueuedWorkerJobs.has('reconstruction:job-fail-retry-1:attempt_1')).toBe(false);
+  });
 });

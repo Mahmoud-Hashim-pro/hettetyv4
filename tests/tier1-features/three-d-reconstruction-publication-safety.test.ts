@@ -195,9 +195,9 @@ describe('Tier 1 — Phase 1: 3D Reconstruction Publication Safety & Concurrency
     const spzSha = crypto.createHash('sha256').update(spzBuf).digest('hex');
     const glbSha = crypto.createHash('sha256').update(glbBuf).digest('hex');
 
-    // Simulate an unexpected disk write error during copy
-    const copySpy = vi.spyOn(fs, 'copyFileSync').mockImplementationOnce(() => {
-      throw new Error('EACCES: permission denied during atomic promotion copy');
+    // Simulate an unexpected failure during atomic promotion pointer update
+    const setSpy = vi.spyOn(mockPropertiesStore, 'set').mockImplementationOnce(() => {
+      throw new Error('EACCES: permission denied during atomic promotion');
     });
 
     let status = 0;
@@ -221,7 +221,7 @@ describe('Tier 1 — Phase 1: 3D Reconstruction Publication Safety & Concurrency
       },
     }, { status: (s: number) => ({ json: (j: any) => { status = s; json = j; } }), json: (j: any) => { json = j; } });
 
-    copySpy.mockRestore();
+    setSpy.mockRestore();
 
     expect(status).toBe(502);
     expect(json.errorCode).toBe('PROMOTION_FAILED');
@@ -461,8 +461,8 @@ describe('Tier 1 — Phase 1: 3D Reconstruction Publication Safety & Concurrency
     const spzSha = crypto.createHash('sha256').update(spzBuf).digest('hex');
     const glbSha = crypto.createHash('sha256').update(glbBuf).digest('hex');
 
-    // First attempt fails during promotion due to disk glitch
-    const copySpy = vi.spyOn(fs, 'copyFileSync').mockImplementationOnce(() => {
+    // First attempt fails during promotion due to disk/db glitch
+    const setSpy = vi.spyOn(mockPropertiesStore, 'set').mockImplementationOnce(() => {
       throw new Error('Disk temporary lock');
     });
 
@@ -487,7 +487,7 @@ describe('Tier 1 — Phase 1: 3D Reconstruction Publication Safety & Concurrency
       },
     }, { status: (s: number) => ({ json: (j: any) => { status1 = s; json1 = j; } }), json: (j: any) => { json1 = j; } });
 
-    copySpy.mockRestore();
+    setSpy.mockRestore();
     expect(status1).toBe(502);
 
     // Worker retries the exact same callback — succeeds and promotes atomically

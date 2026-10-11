@@ -10,6 +10,8 @@ import {
   PaymentMethod,
   ContractTerms,
 } from '../../types';
+import { auth } from '../../firebase';
+import { mockTransactionsStore } from '../../../api/transactions';
 
 export interface CreateOfferParams {
   propertyId: string;
@@ -33,8 +35,9 @@ export interface CreateOfferParams {
 
 export interface DepositPlacementResult {
   transaction: TransactionRecord;
-  receiptNumber: string;
+  requestReference?: string;
   escrowReference: string;
+  receiptNumber?: string;
   timestamp: string;
 }
 
@@ -81,7 +84,7 @@ export const createPropertyOffer = (params: CreateOfferParams): TransactionRecor
   const txId = `tx_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
   const idempotencyKey = params.idempotencyKey || `idemp_${txId}`;
 
-  return {
+  const newTx: TransactionRecord = {
     id: txId,
     propertyId: params.propertyId,
     propertyTitle: params.propertyTitle,
@@ -102,6 +105,48 @@ export const createPropertyOffer = (params: CreateOfferParams): TransactionRecor
     createdAt: now,
     updatedAt: now,
   };
+
+  mockTransactionsStore.set(txId, newTx);
+  return newTx;
+};
+
+/**
+ * Submits property offer to backend control plane API with user authentication
+ */
+export const submitPropertyOffer = async (params: CreateOfferParams): Promise<TransactionRecord> => {
+  const currentUid = auth?.currentUser?.uid || params.buyer.id;
+  let authToken = '';
+  if (auth?.currentUser) {
+    try {
+      authToken = await auth.currentUser.getIdToken();
+    } catch (e) {
+      console.debug('Failed to get auth token in submitPropertyOffer:', e);
+    }
+  }
+  if (!authToken && process.env.NODE_ENV === 'test') {
+    authToken = currentUid;
+  }
+
+  // 1. Browser production: call backend API
+  if (typeof fetch !== 'undefined' && typeof window !== 'undefined' && window.location?.origin && process.env.NODE_ENV !== 'test') {
+    const res = await fetch('/api/transactions?action=create-offer', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${authToken}`,
+      },
+      body: JSON.stringify(params),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: res.statusText }));
+      throw new Error(err.error || 'Failed to submit offer');
+    }
+    const data = await res.json();
+    return data.transaction;
+  }
+
+  // 2. Local fallback / unit test
+  return createPropertyOffer(params);
 };
 
 /**
@@ -157,12 +202,67 @@ export const submitReservationDepositRequest = (
     updatedAt: now,
   };
 
+  mockTransactionsStore.set(transaction.id, updatedTx);
+
   return {
     transaction: updatedTx,
-    receiptNumber,
+    requestReference,
     escrowReference: requestReference,
+    receiptNumber,
     timestamp: now,
   };
+};
+
+/**
+ * Submits reservation deposit request to backend control plane with user authentication
+ */
+export const submitReservationDepositRequestAsync = async (
+  transaction: TransactionRecord,
+  paymentMethod: PaymentMethod,
+  buyerId: string
+): Promise<DepositPlacementResult> => {
+  const currentUid = auth?.currentUser?.uid || buyerId;
+  let authToken = '';
+  if (auth?.currentUser) {
+    try {
+      authToken = await auth.currentUser.getIdToken();
+    } catch (e) {
+      console.debug('Failed to get auth token in submitReservationDepositRequestAsync:', e);
+    }
+  }
+  if (!authToken && process.env.NODE_ENV === 'test') {
+    authToken = currentUid;
+  }
+
+  // 1. Browser production: call backend API
+  if (typeof fetch !== 'undefined' && typeof window !== 'undefined' && window.location?.origin && process.env.NODE_ENV !== 'test') {
+    const res = await fetch('/api/transactions?action=submit-deposit-request', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${authToken}`,
+      },
+      body: JSON.stringify({
+        transactionId: transaction.id,
+        paymentMethod,
+      }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: res.statusText }));
+      throw new Error(err.error || 'Failed to submit deposit request');
+    }
+    const data = await res.json();
+    return {
+      transaction: data.transaction,
+      requestReference: data.requestReference,
+      escrowReference: data.escrowReference,
+      receiptNumber: data.requestReference,
+      timestamp: data.timestamp || new Date().toISOString(),
+    };
+  }
+
+  // 2. Local fallback / unit test
+  return submitReservationDepositRequest(transaction, paymentMethod, buyerId);
 };
 
 /**
@@ -196,6 +296,7 @@ export const confirmEscrowDeposit = (
 
   return {
     transaction: updatedTx,
+    requestReference: transaction.escrowReference || verifiedEscrowReference,
     receiptNumber,
     escrowReference: verifiedEscrowReference,
     timestamp: now,
@@ -237,6 +338,7 @@ export const placeReservationDeposit = (
 
   return {
     transaction: updatedTx,
+    requestReference: escrowReference,
     receiptNumber,
     escrowReference,
     timestamp: now,

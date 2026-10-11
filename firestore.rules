@@ -420,7 +420,10 @@ service cloud.firestore {
     }
 
     match /properties/{propertyId} {
-      allow read: if (resource.data.get('lifecycleStatus', 'published') == 'published' && resource.data.get('listingState', 'Live') == 'Live')
+      allow read: if (resource.data.get('lifecycleStatus', '') == 'published'
+                      && resource.data.get('listingState', '') == 'Live'
+                      && resource.data.get('verificationStatus', '') == 'Verified'
+                      && resource.data.get('isVerified', false) == true)
                   || (isAuthenticated() && (resource.data.get('authorUid', '') == request.auth.uid || isAdmin()));
       // Admins create anything; any authenticated user may submit their OWN
       // listing for review, but only as an unverified "Pending" entry.
@@ -471,7 +474,9 @@ service cloud.firestore {
       allow create: if isAuthenticated()
                     && request.resource.data.actorId == request.auth.uid
                     && request.resource.data.keys().hasAll(['propertyId', 'actorId', 'actorRole', 'fromStatus', 'toStatus', 'timestamp'])
-                    && isValidPropertyAuditLog(request.resource.data);
+                    && isValidPropertyAuditLog(request.resource.data)
+                    && (request.resource.data.actorRole != 'admin' || isAdmin())
+                    && (!('toStatus' in request.resource.data) || !(request.resource.data.toStatus in ['approved', 'published']) || isAdmin());
       allow update, delete: if false;
     }
 

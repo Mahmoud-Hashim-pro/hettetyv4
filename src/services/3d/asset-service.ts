@@ -32,6 +32,17 @@ export interface UploadSessionResponse {
  */
 export const createUploadSession = async (request: UploadSessionRequest): Promise<UploadSessionResponse> => {
   const currentUid = auth?.currentUser?.uid || (process.env.NODE_ENV === 'test' ? 'test-owner-uid' : '');
+  let authToken = '';
+  if (auth?.currentUser) {
+    try {
+      authToken = await auth.currentUser.getIdToken();
+    } catch (e) {
+      console.debug('Failed to get ID token in asset-service:', e);
+    }
+  }
+  if (!authToken && process.env.NODE_ENV === 'test') {
+    authToken = currentUid;
+  }
 
   // 1. Production browser: calls backend API
   if (typeof fetch !== 'undefined' && typeof window !== 'undefined' && window.location?.origin && process.env.NODE_ENV !== 'test') {
@@ -39,7 +50,7 @@ export const createUploadSession = async (request: UploadSessionRequest): Promis
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        Authorization: `Bearer ${currentUid}`,
+        Authorization: `Bearer ${authToken}`,
       },
       body: JSON.stringify({
         propertyId: request.propertyId,
@@ -63,33 +74,35 @@ export const createUploadSession = async (request: UploadSessionRequest): Promis
   }
 
   // 2. SSR / Testing: delegates directly to serverless API handler
-  const apiModulePath = '../../../api/reconstruction';
-  const { default: handler } = await import(/* @vite-ignore */ apiModulePath);
-  let jsonRes: any = null;
-  const mockRes = {
-    status: () => ({ json: (d: any) => { jsonRes = d; } }),
-    json: (d: any) => { jsonRes = d; },
-  };
-  await handler({
-    method: 'POST',
-    query: { action: 'create-job' },
-    headers: { authorization: `Bearer ${currentUid}`, 'x-user-id': currentUid },
-    body: {
-      propertyId: request.propertyId,
-      files: request.files,
-      type: 'photos',
-    },
-  }, mockRes);
-
-  if (jsonRes && jsonRes.signedUploadUrls) {
-    return {
-      sessionId: jsonRes.sessionId,
-      signedUploadUrls: jsonRes.signedUploadUrls.map((s: any, idx: number) => ({
-        fileName: request.files[idx]?.name || `frame_${idx}.jpg`,
-        uploadUrl: s.uploadUrl,
-        storagePath: s.storagePath,
-      })),
+  if (typeof window === 'undefined' || process.env.NODE_ENV === 'test') {
+    const apiModulePath = '../../../api/reconstruction';
+    const { default: handler } = await import(/* @vite-ignore */ apiModulePath);
+    let jsonRes: any = null;
+    const mockRes = {
+      status: () => ({ json: (d: any) => { jsonRes = d; } }),
+      json: (d: any) => { jsonRes = d; },
     };
+    await handler({
+      method: 'POST',
+      query: { action: 'create-job' },
+      headers: { authorization: `Bearer ${authToken}`, 'x-user-id': currentUid },
+      body: {
+        propertyId: request.propertyId,
+        files: request.files,
+        type: 'photos',
+      },
+    }, mockRes);
+
+    if (jsonRes && jsonRes.signedUploadUrls) {
+      return {
+        sessionId: jsonRes.sessionId,
+        signedUploadUrls: jsonRes.signedUploadUrls.map((s: any, idx: number) => ({
+          fileName: request.files[idx]?.name || `frame_${idx}.jpg`,
+          uploadUrl: s.uploadUrl,
+          storagePath: s.storagePath,
+        })),
+      };
+    }
   }
 
   throw new Error('UPLOAD_SESSION_FAILED: Failed to obtain signed upload URLs from control plane.');

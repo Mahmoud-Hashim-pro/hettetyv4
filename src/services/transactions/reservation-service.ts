@@ -171,6 +171,10 @@ export const finalizeClosing = (
   actorRole: 'seller' | 'compliance_admin',
   deedNumber?: string
 ): TransactionRecord => {
+  if (actorRole !== 'compliance_admin') {
+    throw new Error('Unauthorized: Title deed closing and escrow release must be executed by compliance_admin.');
+  }
+
   if (transaction.status !== 'deposit_escrowed' && transaction.status !== 'closing_scheduled') {
     throw new Error(`Cannot finalize transaction from state: ${transaction.status}`);
   }

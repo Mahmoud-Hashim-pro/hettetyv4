@@ -117,6 +117,8 @@ describe('Tier 1 — Phase 7: Transactions & Reservation Domain', () => {
         updatedAt: new Date().toISOString(),
       };
 
+      expect(() => finalizeClosing(tx, 'seller' as any, 'DEED-9842')).toThrow(/compliance_admin/i);
+
       const closed = finalizeClosing(tx, 'compliance_admin', 'DEED-9842');
       expect(closed.status).toBe('completed');
       expect(closed.depositStatus).toBe('released_to_seller');

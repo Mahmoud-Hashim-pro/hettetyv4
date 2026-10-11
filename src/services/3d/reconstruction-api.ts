@@ -48,6 +48,18 @@ export class ReconstructionApiClient {
       throw new Error('AUTHENTICATION_REQUIRED: User must be signed in to submit 3D reconstruction jobs.');
     }
 
+    let authToken = '';
+    if (auth?.currentUser) {
+      try {
+        authToken = await auth.currentUser.getIdToken();
+      } catch (tokenErr) {
+        console.debug('Failed to acquire Firebase ID token:', tokenErr);
+      }
+    }
+    if (!authToken && process.env.NODE_ENV === 'test') {
+      authToken = currentUid;
+    }
+
     if (!files || files.length === 0) {
       throw new Error('INVALID_INPUT: At least one capture file is required for 3D reconstruction.');
     }
@@ -61,33 +73,29 @@ export class ReconstructionApiClient {
     let signedUploads: Array<{ id: string; uploadUrl: string; storagePath: string }> = [];
 
     // Attempt control plane call via HTTP fetch in browser
-    try {
-      if (typeof window !== 'undefined' && window.location?.origin && process.env.NODE_ENV !== 'test') {
-        const res = await fetch('/api/reconstruction?action=create-job', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${currentUid}`,
-          },
-          body: JSON.stringify({
-            propertyId,
-            files: files.map((f) => ({ name: f.name, sizeBytes: f.size, mimeType: f.type })),
-            type,
-            scaleReferences: referenceAnchors,
-          }),
-        });
-        if (res.ok) {
-          const body = await res.json();
-          controlJob = body.job;
-          signedUploads = body.signedUploadUrls || [];
-        }
+    if (typeof window !== 'undefined' && window.location?.origin && process.env.NODE_ENV !== 'test') {
+      const res = await fetch('/api/reconstruction?action=create-job', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${authToken}`,
+        },
+        body: JSON.stringify({
+          propertyId,
+          files: files.map((f) => ({ name: f.name, sizeBytes: f.size, mimeType: f.type })),
+          type,
+          scaleReferences: referenceAnchors,
+        }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ error: res.statusText }));
+        throw new Error(`RECONSTRUCTION_JOB_CREATION_FAILED: ${err.error || res.statusText}`);
       }
-    } catch (e) {
-      console.debug('Control plane fetch note:', e);
-    }
-
-    // Direct invocation fallback for SSR / testing / unit runs
-    if (!controlJob) {
+      const body = await res.json();
+      controlJob = body.job;
+      signedUploads = body.signedUploadUrls || [];
+    } else if (typeof window === 'undefined' || process.env.NODE_ENV === 'test') {
+      // Direct invocation fallback ONLY for SSR / testing / unit runs
       try {
         const apiModulePath = '../../../api/reconstruction';
         const { default: handler } = await import(/* @vite-ignore */ apiModulePath);
@@ -99,7 +107,7 @@ export class ReconstructionApiClient {
         await handler({
           method: 'POST',
           query: { action: 'create-job' },
-          headers: { authorization: `Bearer ${currentUid}`, 'x-user-id': currentUid },
+          headers: { authorization: `Bearer ${authToken}`, 'x-user-id': currentUid },
           body: {
             propertyId,
             files: files.map((f) => ({ name: f.name, sizeBytes: f.size, mimeType: f.type })),
@@ -171,36 +179,36 @@ export class ReconstructionApiClient {
     }
 
     // 3. Notify backend control plane: verify uploads, seal manifest, and enqueue to Redis worker
-    try {
-      if (typeof window !== 'undefined' && window.location?.origin && process.env.NODE_ENV !== 'test') {
-        await fetch('/api/reconstruction?action=complete-uploads', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${currentUid}`,
-          },
-          body: JSON.stringify({
-            jobId: job.id,
-            propertyId,
-            uploadedAssetIds,
-          }),
-        });
-      } else {
-        const { default: handler } = await import('../../../api/reconstruction');
-        const mockRes = { status: () => ({ json: () => {} }), json: () => {} };
-        await handler({
-          method: 'POST',
-          query: { action: 'complete-uploads' },
-          headers: { authorization: `Bearer ${currentUid}`, 'x-user-id': currentUid },
-          body: {
-            jobId: job.id,
-            propertyId,
-            uploadedAssetIds,
-          },
-        }, mockRes);
+    if (typeof window !== 'undefined' && window.location?.origin && process.env.NODE_ENV !== 'test') {
+      const res = await fetch('/api/reconstruction?action=complete-uploads', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${authToken}`,
+        },
+        body: JSON.stringify({
+          jobId: job.id,
+          propertyId,
+          uploadedAssetIds,
+        }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ error: res.statusText }));
+        throw new Error(`COMPLETE_UPLOADS_FAILED: ${err.error || res.statusText}`);
       }
-    } catch (e) {
-      console.debug('Control plane notification note:', e);
+    } else if (typeof window === 'undefined' || process.env.NODE_ENV === 'test') {
+      const { default: handler } = await import('../../../api/reconstruction');
+      const mockRes = { status: () => ({ json: () => {} }), json: () => {} };
+      await handler({
+        method: 'POST',
+        query: { action: 'complete-uploads' },
+        headers: { authorization: `Bearer ${authToken}`, 'x-user-id': currentUid },
+        body: {
+          jobId: job.id,
+          propertyId,
+          uploadedAssetIds,
+        },
+      }, mockRes);
     }
 
     if (onProgress) {
@@ -216,9 +224,13 @@ export class ReconstructionApiClient {
   static async cancelJob(jobId: string): Promise<boolean> {
     try {
       if (typeof fetch !== 'undefined' && process.env.NODE_ENV !== 'test') {
+        const token = await auth?.currentUser?.getIdToken().catch(() => '');
         await fetch('/api/reconstruction?action=cancel', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: {
+            'Content-Type': 'application/json',
+            ...(token ? { Authorization: `Bearer ${token}` } : {}),
+          },
           body: JSON.stringify({ jobId }),
         });
       }
@@ -234,9 +246,13 @@ export class ReconstructionApiClient {
   static async retryJob(jobId: string): Promise<ReconstructionJob | null> {
     try {
       if (typeof fetch !== 'undefined' && process.env.NODE_ENV !== 'test') {
+        const token = await auth?.currentUser?.getIdToken().catch(() => '');
         await fetch('/api/reconstruction?action=retry', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: {
+            'Content-Type': 'application/json',
+            ...(token ? { Authorization: `Bearer ${token}` } : {}),
+          },
           body: JSON.stringify({ jobId }),
         });
       }

@@ -67,13 +67,44 @@ export const TourViewer: React.FC<TourViewerProps> = ({
 
   const activeRoom = tour?.rooms?.find(r => r.id === activeRoomId) || tour?.rooms?.[0];
 
+  if (!tour || availableModes.length === 0) {
+    return (
+      <div
+        data-testid="tour-unavailable-placeholder"
+        className={`relative w-full h-full min-h-[360px] bg-slate-950 flex flex-col items-center justify-center p-6 text-center ${
+          isFullscreen ? 'fixed inset-0 z-50' : ''
+        }`}
+      >
+        <div className="w-14 h-14 rounded-2xl bg-slate-900 border border-slate-800 flex items-center justify-center mb-4 text-slate-500">
+          <Layers className="w-7 h-7" />
+        </div>
+        <h3 className="text-white font-semibold text-base mb-1">
+          {isRtl ? 'الجولة ثلاثية الأبعاد غير متوفرة' : '3D Tour Unavailable'}
+        </h3>
+        <p className="text-slate-400 text-xs max-w-sm mb-5">
+          {isRtl
+            ? 'لم يتم إنشاء أو اعتماد جولة ثلاثية الأبعاد لهذا العقار بعد.'
+            : 'An authenticated 3D spatial tour has not been published for this listing yet.'}
+        </p>
+        {onClose && (
+          <button
+            onClick={onClose}
+            className="px-4 py-2 bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 text-xs rounded-lg transition-colors"
+          >
+            {isRtl ? 'إغلاق' : 'Close'}
+          </button>
+        )}
+      </div>
+    );
+  }
+
   return (
     <div className={`relative w-full h-full bg-slate-950 flex flex-col overflow-hidden ${isFullscreen ? 'fixed inset-0 z-50' : ''}`}>
       {/* 3D Scene Viewport */}
       <div className="flex-1 w-full h-full relative">
         {currentMode === 'gaussian' && (
           <GaussianViewer
-            tour={tour || { status: 'ready' }}
+            tour={tour}
             activeRoom={activeRoom}
             isRtl={isRtl}
             isMeasuring={showMeasure}
@@ -82,7 +113,7 @@ export const TourViewer: React.FC<TourViewerProps> = ({
         )}
         {currentMode === 'mesh' && (
           <MeshViewer
-            tour={tour || { status: 'ready' }}
+            tour={tour}
             activeRoom={activeRoom}
             isRtl={isRtl}
             isMeasuring={showMeasure}

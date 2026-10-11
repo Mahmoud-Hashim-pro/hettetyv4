@@ -573,5 +573,14 @@ describe('Tier 1 — Phase 1: Real Property Image -> Real 3D E2E Pipeline', () =
     expect(queryByText('Gaussian')).toBeNull();
     expect(queryByText('Panorama')).toBeNull();
   });
+
+  it('renders explicit unavailable placeholder when tour is undefined or lacks valid representations', () => {
+    const { getByTestId, getByText } = render(
+      <TourViewer tour={undefined} title="Unprocessed Property" />
+    );
+
+    expect(getByTestId('tour-unavailable-placeholder')).toBeInTheDocument();
+    expect(getByText('3D Tour Unavailable')).toBeInTheDocument();
+  });
 });
 

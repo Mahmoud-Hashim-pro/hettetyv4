@@ -72,7 +72,9 @@ export interface ReconstructionJobPayload {
 // In-memory control plane store for fast local development and testing
 export const controlPlaneJobs = new Map<string, ReconstructionJobPayload>();
 export const controlPlaneIdempotencyKeys = new Map<string, string>();
+export const controlPlaneIdempotencyPayloads = new Map<string, string>();
 export const inFlightIdempotencyLocks = new Map<string, Promise<any>>();
+export const enqueuedWorkerJobs = new Set<string>();
 export const mockPropertiesStore = new Map<string, { authorUid: string; [key: string]: any }>();
 export const mockAttemptsStore = new Map<string, any[]>();
 
@@ -767,6 +769,12 @@ export function generateV4SignedUploadUrl(
  * Enqueues a verified reconstruction job to Redis stream exclusively
  */
 export async function enqueueToRedis(job: ReconstructionJobPayload, redisUrl?: string): Promise<boolean> {
+  const queueKey = `reconstruction:${job.id}:${job.attemptId || 'attempt_1'}`;
+  if (enqueuedWorkerJobs.has(queueKey)) {
+    return true;
+  }
+  enqueuedWorkerJobs.add(queueKey);
+
   const url = redisUrl || process.env.REDIS_URL;
   if (!url || url.startsWith('mock://')) {
     if (process.env.NODE_ENV === 'production') {
@@ -783,6 +791,13 @@ export async function enqueueToRedis(job: ReconstructionJobPayload, redisUrl?: s
     const redisModule = await import(/* @vite-ignore */ redisPkg);
     const client = redisModule.createClient({ url });
     await client.connect();
+
+    const acquired = await client.set(queueKey, '1', { NX: true, EX: 86400 });
+    if (!acquired) {
+      console.warn(`[ControlPlane] Worker queue key ${queueKey} already enqueued; skipping duplicate.`);
+      await client.quit();
+      return true;
+    }
 
     const jobStr = JSON.stringify(job);
     // Add to Redis Stream ONLY for consumer groups with auto-claim durability
@@ -808,12 +823,70 @@ export async function enqueueToRedis(job: ReconstructionJobPayload, redisUrl?: s
  * Vercel Serverless Function / Express Handler
  */
 export default async function handler(req: any, res: any) {
-  if (req.method !== 'POST') {
-    return res.status(405).json({ error: 'Method not allowed. Use POST.' });
+  if (req.method !== 'POST' && req.method !== 'GET') {
+    return res.status(405).json({ error: 'Method not allowed. Use GET or POST.' });
   }
 
   try {
-    const action = req.query.action || req.body?.action || 'create-job';
+    const action = req.query?.action || req.body?.action || (req.method === 'GET' ? 'get-job' : 'create-job');
+
+    // 0. Action: GET RECONSTRUCTION JOB
+    if (action === 'get-job' || (req.method === 'GET' && (!action || action === 'get-job'))) {
+      const auth = await authenticateRequest(req);
+      const targetJobId = req.query?.jobId || req.query?.id || req.body?.jobId || req.body?.id;
+      if (!targetJobId) {
+        return res.status(400).json({ error: 'INVALID_REQUEST: jobId or id query parameter is required.' });
+      }
+      const job = await getJobFromFirestoreOrMemory(targetJobId);
+      if (!job) {
+        return res.status(404).json({ error: `JOB_NOT_FOUND: Reconstruction job ${targetJobId} does not exist.` });
+      }
+      if (job.ownerId !== auth.uid && !auth.isAdmin && !auth.isWorker) {
+        return res.status(403).json({ error: 'FORBIDDEN: You do not have permission to access this reconstruction job.' });
+      }
+      return res.status(200).json({ job });
+    }
+
+    // 0b. Action: CREATE UPLOAD SESSION (Separate from job creation, allowing session recovery)
+    if (action === 'create-upload-session') {
+      const auth = await authenticateRequest(req);
+      if (auth.isWorker) {
+        return res.status(403).json({ error: 'FORBIDDEN: Worker tokens are not authorized to create upload sessions.' });
+      }
+      const { jobId } = req.body || {};
+      if (!jobId) {
+        return res.status(400).json({ error: 'INVALID_REQUEST: jobId is required to create or recover upload session.' });
+      }
+      const job = await getJobFromFirestoreOrMemory(jobId);
+      if (!job) {
+        return res.status(404).json({ error: `JOB_NOT_FOUND: Reconstruction job ${jobId} does not exist.` });
+      }
+      if (job.ownerId !== auth.uid && !auth.isAdmin) {
+        return res.status(403).json({ error: 'FORBIDDEN: You do not own this reconstruction job.' });
+      }
+      if (['READY', 'CANCELLED'].includes(job.status)) {
+        return res.status(409).json({ error: `TERMINAL_STATE_LOCKED: Job ${jobId} is in terminal state ${job.status}.` });
+      }
+
+      const bucket = process.env.GCS_BUCKET_NAME || 'hettety-spatial-assets';
+      const signedUrls = (job.manifest || []).map((m: any, idx: number) => {
+        const signed = generateV4SignedUploadUrl(bucket, m.storagePath, m.mimeType || 'image/jpeg');
+        return {
+          id: m.id || `cap-${job.id}-${idx}`,
+          uploadUrl: signed.uploadUrl,
+          storagePath: m.storagePath,
+          fileName: path.basename(m.storagePath),
+          sizeBytes: m.sizeBytes,
+        };
+      });
+
+      return res.status(200).json({
+        sessionId: `session_${job.id}`,
+        jobId: job.id,
+        uploadSessionExpiresAt: job.uploadSessionExpiresAt || new Date(Date.now() + 2 * 60 * 60 * 1000).toISOString(),
+        signedUploadUrls: signedUrls,
+      });
+    }
 
     // 1. Action: CREATE RECONSTRUCTION JOB
     if (action === 'create-job') {
@@ -857,8 +930,33 @@ export default async function handler(req: any, res: any) {
       const maxVideoBytes = 500 * 1024 * 1024; // 500 MB
       const maxTotalAlbumBytes = 2 * 1024 * 1024 * 1024; // 2 GB
 
+      const allowedPhotoMimes = ['image/jpeg', 'image/png', 'image/webp', 'image/heic'];
+      const allowedVideoMimes = ['video/mp4', 'video/quicktime', 'video/webm'];
+
       for (const f of files) {
+        if (f.name) {
+          if (f.name.includes('..') || f.name.includes('/') || f.name.includes('\\')) {
+            return res.status(400).json({
+              error: `INVALID_FILENAME: Filename '${f.name}' contains illegal path characters.`,
+            });
+          }
+        }
+        if (f.mimeType) {
+          const mime = String(f.mimeType).toLowerCase();
+          const isPhoto = type !== 'video';
+          const valid = isPhoto ? allowedPhotoMimes.includes(mime) : allowedVideoMimes.includes(mime);
+          if (!valid) {
+            return res.status(400).json({
+              error: `INVALID_FILE_TYPE: Unsupported MIME type '${f.mimeType}' for ${type || 'photos'} reconstruction. Allowed: ${(isPhoto ? allowedPhotoMimes : allowedVideoMimes).join(', ')}.`,
+            });
+          }
+        }
         const size = Number(f.sizeBytes || 0);
+        if (f.sizeBytes !== undefined && (size < 0 || !isFinite(size))) {
+          return res.status(400).json({
+            error: `INVALID_FILE_SIZE: File '${f.name || 'unnamed'}' must have a valid size in bytes.`,
+          });
+        }
         const maxSingle = type === 'video' ? maxVideoBytes : maxPhotoBytes;
         if (size > maxSingle) {
           return res.status(400).json({
@@ -898,11 +996,20 @@ export default async function handler(req: any, res: any) {
         return res.status(ownership.status || 403).json({ error: ownership.reason || 'FORBIDDEN: Ownership verification failed.' });
       }
 
-      // P1-6: Idempotent submission: If idempotencyKey provided, replay existing active job
+      // P1-6: Idempotent submission: If idempotencyKey provided, replay existing active job or detect 409 conflict
       const idempotencyKey = (req.headers?.['idempotency-key'] || req.headers?.['Idempotency-Key'] || req.body?.idempotencyKey)?.toString();
       let keyHash: string | undefined;
+      let scopedKey: string | undefined;
+      let payloadFingerprint: string | undefined;
+
       if (idempotencyKey) {
-        keyHash = crypto.createHash('sha256').update(`${auth.uid}:${propertyId}:${idempotencyKey}`).digest('hex');
+        scopedKey = `reconstruction-create:${auth.uid}:${idempotencyKey}`;
+        keyHash = crypto.createHash('sha256').update(scopedKey).digest('hex');
+        payloadFingerprint = crypto.createHash('sha256').update(JSON.stringify({
+          propertyId,
+          type: type === 'video' ? 'video' : 'photos',
+          fileCount: files.length,
+        })).digest('hex');
 
         // Await in-flight submission with identical idempotency key to prevent concurrent creation races
         if (inFlightIdempotencyLocks.has(keyHash)) {
@@ -911,8 +1018,17 @@ export default async function handler(req: any, res: any) {
           } catch (_) {}
         }
 
-        // 1. Fast-path in-memory store check
-        const cachedJobId = controlPlaneIdempotencyKeys.get(keyHash);
+        // Fast-path in-memory check
+        const cachedJobId = controlPlaneIdempotencyKeys.get(keyHash) || (scopedKey && controlPlaneIdempotencyKeys.get(scopedKey));
+        const cachedFingerprint = controlPlaneIdempotencyPayloads.get(keyHash) || (scopedKey && controlPlaneIdempotencyPayloads.get(scopedKey));
+
+        if (cachedJobId && cachedFingerprint && cachedFingerprint !== payloadFingerprint) {
+          return res.status(409).json({
+            error: `IDEMPOTENCY_CONFLICT: Idempotency key '${idempotencyKey}' was already used with conflicting request parameters.`,
+            errorCode: 'IDEMPOTENCY_CONFLICT',
+          });
+        }
+
         if (cachedJobId && controlPlaneJobs.has(cachedJobId)) {
           const j = controlPlaneJobs.get(cachedJobId)!;
           return res.status(200).json({
@@ -926,6 +1042,7 @@ export default async function handler(req: any, res: any) {
             })),
           });
         }
+
         for (const j of controlPlaneJobs.values()) {
           if (j.ownerId === auth.uid && j.propertyId === propertyId && j.idempotencyKey === idempotencyKey) {
             return res.status(200).json({
@@ -989,7 +1106,14 @@ export default async function handler(req: any, res: any) {
         const result = await adminDb.runTransaction(async (t) => {
           const idempSnap = await t.get(idempRef);
           if (idempSnap.exists) {
-            const existingJobId = idempSnap.data()?.jobId;
+            const data = idempSnap.data();
+            if (data?.fingerprint && data.fingerprint !== payloadFingerprint) {
+              const err: any = new Error(`IDEMPOTENCY_CONFLICT: Idempotency key '${idempotencyKey}' was already used with conflicting request parameters.`);
+              err.status = 409;
+              err.code = 'IDEMPOTENCY_CONFLICT';
+              throw err;
+            }
+            const existingJobId = data?.jobId;
             if (existingJobId) {
               const jobSnap = await t.get(adminDb.collection('reconstruction_jobs').doc(existingJobId));
               if (jobSnap.exists) {
@@ -1004,6 +1128,8 @@ export default async function handler(req: any, res: any) {
             jobId,
             propertyId,
             ownerId: auth.uid,
+            fingerprint: payloadFingerprint,
+            scopedKey,
             createdAt: newJob.createdAt,
           });
           return { isReplay: false, job: newJob };
@@ -1012,15 +1138,32 @@ export default async function handler(req: any, res: any) {
         resolvedJob = result.job;
         isReplay = result.isReplay;
         controlPlaneIdempotencyKeys.set(keyHash, resolvedJob.id);
+        controlPlaneIdempotencyPayloads.set(keyHash, payloadFingerprint!);
+        if (scopedKey) {
+          controlPlaneIdempotencyKeys.set(scopedKey, resolvedJob.id);
+          controlPlaneIdempotencyPayloads.set(scopedKey, payloadFingerprint!);
+        }
         controlPlaneJobs.set(resolvedJob.id, resolvedJob);
       } else {
         if (keyHash) {
-          const cachedJobId = controlPlaneIdempotencyKeys.get(keyHash);
+          const cachedJobId = controlPlaneIdempotencyKeys.get(keyHash) || (scopedKey && controlPlaneIdempotencyKeys.get(scopedKey));
+          const cachedFingerprint = controlPlaneIdempotencyPayloads.get(keyHash) || (scopedKey && controlPlaneIdempotencyPayloads.get(scopedKey));
+          if (cachedJobId && cachedFingerprint && cachedFingerprint !== payloadFingerprint) {
+            return res.status(409).json({
+              error: `IDEMPOTENCY_CONFLICT: Idempotency key '${idempotencyKey}' was already used with conflicting request parameters.`,
+              errorCode: 'IDEMPOTENCY_CONFLICT',
+            });
+          }
           if (cachedJobId && controlPlaneJobs.has(cachedJobId)) {
             resolvedJob = controlPlaneJobs.get(cachedJobId)!;
             isReplay = true;
           } else {
             controlPlaneIdempotencyKeys.set(keyHash, jobId);
+            controlPlaneIdempotencyPayloads.set(keyHash, payloadFingerprint!);
+            if (scopedKey) {
+              controlPlaneIdempotencyKeys.set(scopedKey, jobId);
+              controlPlaneIdempotencyPayloads.set(scopedKey, payloadFingerprint!);
+            }
             await persistJobToFirestore(newJob);
           }
         } else {

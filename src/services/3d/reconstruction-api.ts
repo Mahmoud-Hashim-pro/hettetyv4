@@ -75,12 +75,14 @@ export class ReconstructionApiClient {
         headers: {
           'Content-Type': 'application/json',
           Authorization: `Bearer ${authToken}`,
+          ...(idempotencyKey ? { 'idempotency-key': idempotencyKey } : {}),
         },
         body: JSON.stringify({
           propertyId,
           files: files.map((f) => ({ name: f.name, sizeBytes: f.size, mimeType: f.type })),
           type,
           scaleReferences: referenceAnchors,
+          idempotencyKey,
         }),
       });
       if (!res.ok) {
@@ -103,12 +105,17 @@ export class ReconstructionApiClient {
         await handler({
           method: 'POST',
           query: { action: 'create-job' },
-          headers: { authorization: `Bearer ${authToken}`, 'x-user-id': currentUid },
+          headers: {
+            authorization: `Bearer ${authToken}`,
+            'x-user-id': currentUid,
+            ...(idempotencyKey ? { 'idempotency-key': idempotencyKey } : {}),
+          },
           body: {
             propertyId,
             files: files.map((f) => ({ name: f.name, sizeBytes: f.size, mimeType: f.type })),
             type,
             scaleReferences: referenceAnchors,
+            idempotencyKey,
           },
         }, mockRes);
 

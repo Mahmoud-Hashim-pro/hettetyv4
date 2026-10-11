@@ -322,6 +322,7 @@ export class ReconstructionApiClient {
             status: cpJob.status,
             stage: cpJob.stage,
             progress: cpJob.progress,
+            sourceCount: cpJob.manifest?.length || 1,
             attemptId: cpJob.attemptId,
             retryCount: cpJob.retryCount,
             createdAt: cpJob.createdAt,

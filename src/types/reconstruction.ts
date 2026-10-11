@@ -36,6 +36,7 @@ export interface ReconstructionJob {
   errorMessage?: string;
   errorMessageAr?: string;
   retryCount?: number;
+  attemptId?: string;
   createdAt: string;
   startedAt?: string;
   completedAt?: string;

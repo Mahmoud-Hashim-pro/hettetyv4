@@ -341,6 +341,7 @@ describe('Tier 2 — Signed Upload & Property Ownership Authorization Integratio
         id: jobId,
         propertyId,
         ownerId: 'user_queue_owner',
+        type: 'photos',
         status: 'UPLOADING',
         attemptId: 'attempt_1',
         manifest: [

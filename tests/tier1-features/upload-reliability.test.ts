@@ -77,6 +77,7 @@ describe('Tier 1 — Phase 2: Upload Reliability, 1:1 Destination Integrity & Jo
       if (callIndex === 2) {
         throw new Error('ETIMEDOUT: Connection reset by storage peer');
       }
+      return 'https://storage/uploaded';
     });
 
     await expect(

@@ -212,14 +212,14 @@ describe('Tier 1 — Phase 1: Real Property Image -> Real 3D E2E Pipeline', () =
           representation: {
             gaussianSplat: {
               format: 'spz',
-              url: `https://cdn.hettety.com/properties/${propertyId}/tour/scene.spz`,
+              url: `https://cdn.hettety.com/properties/${propertyId}/3d/${jobId}/${attemptId}/scene.spz`,
               sizeBytes: 16904,
               splatCount: 520,
               sha256: spzSha256,
             },
             mesh: {
               format: 'glb',
-              url: `https://cdn.hettety.com/properties/${propertyId}/tour/mesh.glb`,
+              url: `https://cdn.hettety.com/properties/${propertyId}/3d/${jobId}/${attemptId}/mesh.glb`,
               sizeBytes: 31444,
               vertexCount: 520,
               faceCount: 1040,

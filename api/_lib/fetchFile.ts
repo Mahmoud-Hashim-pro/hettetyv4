@@ -48,17 +48,33 @@ function assertFetchable(raw: string, callerUid?: string, isAdmin?: boolean): UR
     throw new ProviderError('Invalid storage object namespace: only properties and user_documents are permitted', 400, false);
   }
 
-  // Ownership verification for private/confidential paths
-  if (callerUid && !isAdmin) {
+  // Explicit Namespace Policy & Ownership Verification for private/confidential paths
+  if (!isAdmin) {
     // 1. Private user documents: /v0/b/.../o/user_documents/{userId}/...
     const userDocMatch = decodedPath.match(/\/o\/user_documents\/([^/]+)/);
-    if (userDocMatch && userDocMatch[1] !== callerUid) {
-      throw new ProviderError('Unauthorized: You cannot attach another user\'s private documents', 403, false);
+    if (userDocMatch) {
+      if (!callerUid || userDocMatch[1] !== callerUid) {
+        throw new ProviderError('Unauthorized: You cannot attach another user\'s private documents', 403, false);
+      }
     }
-    // 2. Private legal property documents: /v0/b/.../o/properties/{ownerUid}/legal/...
-    const legalDocMatch = decodedPath.match(/\/o\/properties\/([^/]+)\/legal\//);
-    if (legalDocMatch && legalDocMatch[1] !== callerUid) {
-      throw new ProviderError('Unauthorized: You cannot attach another user\'s legal documents', 403, false);
+
+    // 2. Private 3D raw captures: /v0/b/.../o/properties/{propertyId}/3d/raw/...
+    const raw3dMatch = decodedPath.match(/\/o\/properties\/([^/]+)\/3d\/raw\//);
+    if (raw3dMatch) {
+      if (!callerUid || raw3dMatch[1] !== callerUid) {
+        throw new ProviderError('Unauthorized: You cannot attach private raw 3D capture assets', 403, false);
+      }
+    }
+
+    // 3. Confidential property namespaces: /v0/b/.../o/properties/{ownerUid}/(legal|private|confidential|contracts|deeds)/...
+    const confidentialDocMatch = decodedPath.match(/\/o\/properties\/([^/]+)\/(legal|private|confidential|contracts|deeds)\//);
+    if (confidentialDocMatch) {
+      if (!callerUid || confidentialDocMatch[1] !== callerUid) {
+        if (confidentialDocMatch[2] === 'legal') {
+          throw new ProviderError('Unauthorized: You cannot attach another user\'s legal documents', 403, false);
+        }
+        throw new ProviderError(`Unauthorized: You cannot attach confidential property documents (${confidentialDocMatch[2]})`, 403, false);
+      }
     }
   }
 

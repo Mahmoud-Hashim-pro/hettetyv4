@@ -870,8 +870,8 @@ NaN NaN NaN
             progress: 100,
             stage: 'PUBLISHED',
             representation: {
-              gaussianSplat: { format: 'spz', url: 'https://cdn.hettety.com/properties/prop-api-101/tour/scene.spz', splatCount: 350000, sha256: 'a'.repeat(64) },
-              mesh: { format: 'glb', url: 'https://cdn.hettety.com/properties/prop-api-101/tour/mesh.glb', faceCount: 15000, sha256: 'b'.repeat(64) },
+              gaussianSplat: { format: 'spz', url: `https://cdn.hettety.com/properties/prop-api-101/3d/${jobId}/attempt_1/scene.spz`, splatCount: 350000, sha256: 'a'.repeat(64) },
+              mesh: { format: 'glb', url: `https://cdn.hettety.com/properties/prop-api-101/3d/${jobId}/attempt_1/mesh.glb`, faceCount: 15000, sha256: 'b'.repeat(64) },
             },
             bounds: { min: [-2, -2, -1], max: [2, 2, 1] },
             qualityReport: { overallScore: 92 },
@@ -1693,8 +1693,8 @@ NaN NaN NaN
             workerId: 'worker_beta',
             status: 'READY',
             representation: {
-              gaussianSplat: { format: 'spz', url: `https://cdn.hettety.com/properties/${propId}/tour/legit.spz`, splatCount: 250000, sizeBytes: 10000000, sha256: 'b'.repeat(64) },
-              mesh: { format: 'glb', url: `https://cdn.hettety.com/properties/${propId}/tour/legit.glb`, faceCount: 8000, sizeBytes: 4000000, sha256: 'c'.repeat(64) },
+              gaussianSplat: { format: 'spz', url: `https://cdn.hettety.com/properties/${propId}/3d/${testJobId}/attempt_2/legit.spz`, splatCount: 250000, sizeBytes: 10000000, sha256: 'b'.repeat(64) },
+              mesh: { format: 'glb', url: `https://cdn.hettety.com/properties/${propId}/3d/${testJobId}/attempt_2/legit.glb`, faceCount: 8000, sizeBytes: 4000000, sha256: 'c'.repeat(64) },
             },
             bounds: { min: [-1, -1, -1], max: [1, 1, 1] },
           },
@@ -1871,8 +1871,8 @@ NaN NaN NaN
             workerId: 'worker_art_1',
             status: 'READY',
             representation: {
-              gaussianSplat: { format: 'spz', url: `https://cdn.hettety.com/properties/${propId}/tour/ghost_file.spz`, splatCount: 50000, sizeBytes: 1000000, sha256: 'a'.repeat(64) },
-              mesh: { format: 'glb', url: `https://cdn.hettety.com/properties/${propId}/tour/ghost_file.glb`, faceCount: 2000, sizeBytes: 500000, sha256: 'b'.repeat(64) },
+              gaussianSplat: { format: 'spz', url: `https://cdn.hettety.com/properties/${propId}/3d/${testJobId}/attempt_art_1/ghost_file.spz`, splatCount: 50000, sizeBytes: 1000000, sha256: 'a'.repeat(64) },
+              mesh: { format: 'glb', url: `https://cdn.hettety.com/properties/${propId}/3d/${testJobId}/attempt_art_1/ghost_file.glb`, faceCount: 2000, sizeBytes: 500000, sha256: 'b'.repeat(64) },
             },
             bounds: { min: [-1, -1, -1], max: [1, 1, 1] },
           },

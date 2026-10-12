@@ -151,12 +151,24 @@ export const recoverUploadSession = async (
       throw new Error(`UPLOAD_SESSION_RECOVERY_FAILED: ${err.error || res.statusText}`);
     }
     const data = await res.json();
-    if (data.jobId && data.jobId !== params.jobId) {
-      throw new Error(`UPLOAD_SESSION_JOB_MISMATCH: Expected jobId ${params.jobId} but received ${data.jobId}`);
+    if (!data.jobId || data.jobId !== params.jobId) {
+      throw new Error(`UPLOAD_SESSION_JOB_MISMATCH: Expected jobId ${params.jobId} but received ${data.jobId || 'none'}`);
+    }
+    if (!Array.isArray(data.signedUploadUrls) || data.signedUploadUrls.length === 0) {
+      throw new Error('UPLOAD_SESSION_RECOVERY_FAILED: Server returned no signed upload destinations.');
+    }
+    for (const item of data.signedUploadUrls) {
+      const u = typeof item === 'string' ? item : item?.uploadUrl || item?.url;
+      if (!u || typeof u !== 'string') {
+        throw new Error('UPLOAD_SESSION_RECOVERY_FAILED: Invalid signed upload destination returned from server.');
+      }
+      if (!u.startsWith('https://') && !u.startsWith('http://') && !u.startsWith('mock://')) {
+        throw new Error(`UPLOAD_SESSION_RECOVERY_FAILED: Insecure or invalid upload destination protocol: ${u}`);
+      }
     }
     return {
       sessionId: data.sessionId || `session_${params.jobId}`,
-      signedUploadUrls: data.signedUploadUrls || [],
+      signedUploadUrls: data.signedUploadUrls,
     };
   }
 
@@ -182,6 +194,21 @@ export const recoverUploadSession = async (
 
     if (statusCode >= 400 || !jsonRes || !jsonRes.signedUploadUrls) {
       throw new Error(`UPLOAD_SESSION_RECOVERY_FAILED: ${jsonRes?.error || 'Failed to recover upload session'}`);
+    }
+    if (!jsonRes.jobId || jsonRes.jobId !== params.jobId) {
+      throw new Error(`UPLOAD_SESSION_JOB_MISMATCH: Expected jobId ${params.jobId} but received ${jsonRes.jobId || 'none'}`);
+    }
+    if (!Array.isArray(jsonRes.signedUploadUrls) || jsonRes.signedUploadUrls.length === 0) {
+      throw new Error('UPLOAD_SESSION_RECOVERY_FAILED: Server returned no signed upload destinations.');
+    }
+    for (const item of jsonRes.signedUploadUrls) {
+      const u = typeof item === 'string' ? item : item?.uploadUrl || item?.url;
+      if (!u || typeof u !== 'string') {
+        throw new Error('UPLOAD_SESSION_RECOVERY_FAILED: Invalid signed upload destination returned from server.');
+      }
+      if (!u.startsWith('https://') && !u.startsWith('http://') && !u.startsWith('mock://')) {
+        throw new Error(`UPLOAD_SESSION_RECOVERY_FAILED: Insecure or invalid upload destination protocol: ${u}`);
+      }
     }
 
     return {

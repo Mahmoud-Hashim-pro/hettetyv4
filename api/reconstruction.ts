@@ -799,64 +799,120 @@ export function generateV4SignedUploadUrl(
   return { uploadUrl, expiresAt, storagePath };
 }
 
+let mockRedisClientInstance: any = null;
+
+export function setRedisClientForTesting(client: any) {
+  mockRedisClientInstance = client;
+}
+
+export function resetRedisClientForTesting() {
+  mockRedisClientInstance = null;
+}
+
 /**
  * Enqueues a verified reconstruction job to Redis stream exclusively
  */
-export async function enqueueToRedis(job: ReconstructionJobPayload, redisUrl?: string): Promise<boolean> {
+export async function enqueueToRedis(
+  job: ReconstructionJobPayload,
+  redisUrl?: string,
+  customClient?: any
+): Promise<boolean> {
+  const queueKey = `reconstruction:${job.id}:${job.attemptId || 'attempt_1'}`;
   const url = redisUrl || process.env.REDIS_URL;
-  if (!url || url.startsWith('mock://')) {
-    if (process.env.NODE_ENV === 'production') {
-      throw new Error('CONFIGURATION_ERROR: REDIS_URL is required in production to enqueue reconstruction jobs.');
-    }
-    const queueKey = `reconstruction:${job.id}:${job.attemptId || 'attempt_1'}`;
-    if (enqueuedWorkerJobs.has(queueKey)) {
+  const clientToUse = customClient || mockRedisClientInstance;
+
+  if (!clientToUse) {
+    if (!url || url.startsWith('mock://')) {
+      if (process.env.NODE_ENV === 'production') {
+        throw new Error('CONFIGURATION_ERROR: REDIS_URL is required in production to enqueue reconstruction jobs.');
+      }
+      if (enqueuedWorkerJobs.has(queueKey)) {
+        return true;
+      }
+      enqueuedWorkerJobs.add(queueKey);
       return true;
     }
-    enqueuedWorkerJobs.add(queueKey);
-    return true;
-  }
-  if (process.env.NODE_ENV === 'test' && !redisUrl && !process.env.REDIS_URL) {
-    return true;
+    if (process.env.NODE_ENV === 'test' && !redisUrl && !process.env.REDIS_URL) {
+      return true;
+    }
   }
 
-  const queueKey = `reconstruction:${job.id}:${job.attemptId || 'attempt_1'}`;
   if (process.env.NODE_ENV !== 'production' && enqueuedWorkerJobs.has(queueKey)) {
     return true;
   }
 
-  let client: any = null;
-  try {
-    const redisPkg = 're' + 'dis';
-    const redisModule = await import(/* @vite-ignore */ redisPkg);
-    client = redisModule.createClient({ url });
-    await client.connect();
+  let client: any = clientToUse;
+  let shouldQuit = false;
 
-    const acquired = await client.set(queueKey, '1', { NX: true, EX: 86400 });
-    if (!acquired) {
-      console.warn(`[ControlPlane] Worker queue key ${queueKey} already enqueued; skipping duplicate.`);
-      return true;
+  try {
+    if (!client) {
+      const redisPkg = 're' + 'dis';
+      const redisModule = await import(/* @vite-ignore */ redisPkg);
+      client = redisModule.createClient({ url });
+      await client.connect();
+      shouldQuit = true;
     }
 
     const jobStr = JSON.stringify(job);
-    // Add to Redis Stream ONLY for consumer groups with auto-claim durability
-    await client.xAdd('hettety_3d_jobs:stream', '*', {
-      jobId: job.id,
-      attemptId: job.attemptId,
-      payload: jobStr,
-      enqueuedAt: String(Date.now()),
-    });
+
+    // 1. Atomic Lua execution when supported by client
+    if (typeof client.eval === 'function') {
+      const luaScript = `
+        local acquired = redis.call('SET', KEYS[1], '1', 'NX', 'EX', ARGV[1])
+        if not acquired then
+          return 0
+        end
+        redis.call('XADD', KEYS[2], '*', 'jobId', ARGV[2], 'attemptId', ARGV[3], 'payload', ARGV[4], 'enqueuedAt', ARGV[5])
+        return 1
+      `;
+      const res = await client.eval(luaScript, {
+        keys: [queueKey, 'hettety_3d_jobs:stream'],
+        arguments: ['86400', job.id, job.attemptId || 'attempt_1', jobStr, String(Date.now())],
+      });
+      if (res === 0) {
+        console.warn(`[ControlPlane] Worker queue key ${queueKey} already enqueued; skipping duplicate.`);
+        return true;
+      }
+    } else {
+      // 2. Multi-step execution with guaranteed rollback of deduplication key on failure
+      const acquired = await client.set(queueKey, '1', { NX: true, EX: 86400 });
+      if (!acquired) {
+        console.warn(`[ControlPlane] Worker queue key ${queueKey} already enqueued; skipping duplicate.`);
+        return true;
+      }
+
+      try {
+        await client.xAdd('hettety_3d_jobs:stream', '*', {
+          jobId: job.id,
+          attemptId: job.attemptId || 'attempt_1',
+          payload: jobStr,
+          enqueuedAt: String(Date.now()),
+        });
+      } catch (xaddErr) {
+        // Rollback reservation key in Redis so retries are never locked out
+        try {
+          await client.del(queueKey);
+        } catch (_) {}
+        throw xaddErr;
+      }
+    }
 
     enqueuedWorkerJobs.add(queueKey);
     return true;
   } catch (err: any) {
     console.error('[ControlPlane] Redis enqueue error:', err);
     enqueuedWorkerJobs.delete(queueKey);
+    if (client) {
+      try {
+        await client.del(queueKey);
+      } catch (_) {}
+    }
     if (process.env.NODE_ENV === 'production') {
       throw err;
     }
     return false;
   } finally {
-    if (client) {
+    if (shouldQuit && client) {
       try {
         await client.quit();
       } catch (_) {}
@@ -1734,7 +1790,7 @@ export default async function handler(req: any, res: any) {
           });
         }
 
-        // Strict canonical scope verification: representation URLs must resolve to properties/${job.propertyId}/tour/
+        // Strict canonical scope verification: representation URLs must resolve to immutable attempt-scoped path prefix
         const extractNormalizedPath = (rawUrl: string): string => {
           try {
             if (rawUrl.startsWith('http://') || rawUrl.startsWith('https://')) {
@@ -1747,13 +1803,17 @@ export default async function handler(req: any, res: any) {
 
         const splatPath = extractNormalizedPath(representation.gaussianSplat.url || '');
         const meshPath = extractNormalizedPath(representation.mesh.url || '');
-        const isPrefixValid = (p: string) =>
-          (p.startsWith(`properties/${job.propertyId}/3d/${job.id}/`) || p.startsWith(`properties/${job.propertyId}/tour/`)) &&
-          !p.includes('..');
+        const currentAttempt = attemptId || job.attemptId || 'attempt_1';
+        const expectedAttemptPrefix = `properties/${job.propertyId}/3d/${job.id}/${currentAttempt}/`;
 
-        if (!isPrefixValid(splatPath) || !isPrefixValid(meshPath)) {
+        const isImmutableAttemptValid = (p: string) =>
+          p.startsWith(expectedAttemptPrefix) &&
+          !p.includes('..') &&
+          !p.includes('/tour/');
+
+        if (!isImmutableAttemptValid(splatPath) || !isImmutableAttemptValid(meshPath)) {
           return res.status(422).json({
-            error: `ARTIFACT_VALIDATION_FAILED: Representation URLs must strictly resolve to path prefix properties/${job.propertyId}/3d/${job.id}/ or properties/${job.propertyId}/tour/.`,
+            error: `ARTIFACT_VALIDATION_FAILED: Representation URLs must strictly resolve to immutable attempt-scoped path prefix ${expectedAttemptPrefix}. Shared mutable paths like properties/${job.propertyId}/tour/ are rejected and forbidden.`,
           });
         }
 
@@ -1793,11 +1853,11 @@ export default async function handler(req: any, res: any) {
             }
           }
 
-          const enforceStorageCheck = process.env.STORAGE_PROVIDER === 'local' ||
-            process.env.NODE_ENV === 'production' ||
-            req.headers?.['x-verify-storage-existence'] === 'true';
+          // In production with GCS provider, local disk copies do not exist; verification is performed on GCS
+          const enforceLocalStorageCheck = process.env.STORAGE_PROVIDER === 'local' ||
+            (process.env.STORAGE_PROVIDER !== 'gcs' && (process.env.NODE_ENV === 'production' || req.headers?.['x-verify-storage-existence'] === 'true'));
 
-          if (enforceStorageCheck && !found) {
+          if (enforceLocalStorageCheck && !found) {
             return {
               verified: false,
               error: `ARTIFACT_NOT_FOUND: Spatial asset ${relPath} was not found on storage disk.`
@@ -1823,10 +1883,16 @@ export default async function handler(req: any, res: any) {
             const storage = new Storage();
             const bucket = storage.bucket(process.env.GCS_BUCKET_NAME);
             
-            for (const [artType, artPath, artHash] of [
+            const gcsArtifactsToVerify: Array<[string, string, string]> = [
               ['SPZ', splatPath, splatSha],
-              ['GLB', meshPath, meshSha]
-            ]) {
+              ['GLB', meshPath, meshSha],
+            ];
+            if (manifestUrl && manifestSha256) {
+              const manifestPath = extractNormalizedPath(manifestUrl);
+              gcsArtifactsToVerify.push(['MANIFEST', manifestPath, manifestSha256]);
+            }
+
+            for (const [artType, artPath, artHash] of gcsArtifactsToVerify) {
               const [exists] = await bucket.file(artPath).exists();
               if (!exists) {
                 return res.status(422).json({
@@ -1835,8 +1901,12 @@ export default async function handler(req: any, res: any) {
               }
               const hash = crypto.createHash('sha256');
               const readStream = bucket.file(artPath).createReadStream();
+              const chunks: Buffer[] = [];
               await new Promise<void>((resolve, reject) => {
-                readStream.on('data', (chunk: Buffer) => hash.update(chunk));
+                readStream.on('data', (chunk: Buffer) => {
+                  hash.update(chunk);
+                  if (artType === 'MANIFEST') chunks.push(chunk);
+                });
                 readStream.on('end', () => resolve());
                 readStream.on('error', (err: any) => reject(err));
               });
@@ -1845,6 +1915,21 @@ export default async function handler(req: any, res: any) {
                 return res.status(422).json({
                   error: `ARTIFACT_CORRUPTED: Stored ${artType} SHA-256 mismatch (expected ${artHash}, computed ${computedHash}).`,
                 });
+              }
+              if (artType === 'MANIFEST') {
+                try {
+                  const rawManifest = Buffer.concat(chunks).toString('utf-8');
+                  const parsedManifest = JSON.parse(rawManifest);
+                  if (!parsedManifest || typeof parsedManifest !== 'object' || Array.isArray(parsedManifest)) {
+                    return res.status(422).json({
+                      error: 'ARTIFACT_VALIDATION_FAILED: Manifest in storage bucket must be a valid JSON object.',
+                    });
+                  }
+                } catch (jsonErr: any) {
+                  return res.status(422).json({
+                    error: `ARTIFACT_VALIDATION_FAILED: Malformed manifest JSON in storage bucket: ${jsonErr.message}`,
+                  });
+                }
               }
             }
           } catch (gcsErr: any) {
@@ -1893,9 +1978,9 @@ export default async function handler(req: any, res: any) {
         // Complete manifest verification if manifestUrl is supplied
         if (manifestUrl) {
           const manifestPath = extractNormalizedPath(manifestUrl);
-          if (!isPrefixValid(manifestPath)) {
+          if (!isImmutableAttemptValid(manifestPath)) {
             return res.status(422).json({
-              error: `ARTIFACT_VALIDATION_FAILED: Manifest URL must resolve to path prefix properties/${job.propertyId}/3d/${job.id}/ or properties/${job.propertyId}/tour/.`,
+              error: `ARTIFACT_VALIDATION_FAILED: Manifest URL must resolve to immutable attempt-scoped path prefix ${expectedAttemptPrefix}. Shared mutable paths like properties/${job.propertyId}/tour/ are rejected and forbidden.`,
             });
           }
           if (manifestSha256) {

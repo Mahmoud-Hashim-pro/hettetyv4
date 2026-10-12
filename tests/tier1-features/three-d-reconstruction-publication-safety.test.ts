@@ -555,4 +555,198 @@ describe('Tier 1 — Phase 1: 3D Reconstruction Publication Safety & Concurrency
       fs.rmSync(path.resolve(storageRoot, `properties/${propId}`), { recursive: true, force: true });
     } catch (_) {}
   });
+
+  it('Invariant 11: Rejects shared mutable /tour/ paths; enforces immutable attempt-scoped directory', async () => {
+    const { default: handler, controlPlaneJobs, mockPropertiesStore } = await import('../../api/reconstruction');
+    const propId = 'prop-immut-tour-test';
+    const jobId = 'job-immut-tour-test';
+    const attemptId = 'attempt_1';
+
+    mockPropertiesStore.set(propId, { authorUid: 'owner-immut' });
+    controlPlaneJobs.set(jobId, {
+      id: jobId,
+      propertyId: propId,
+      ownerId: 'owner-immut',
+      status: 'PUBLISHING',
+      attemptId,
+      workerId: 'worker-1',
+      stateVersion: 1,
+    } as any);
+
+    let statusRes = 0;
+    let jsonRes: any = null;
+    const mockRes = {
+      status: (s: number) => { statusRes = s; return mockRes; },
+      json: (j: any) => { jsonRes = j; return mockRes; },
+    };
+
+    // Callback attempts to publish to shared /tour/ path
+    await handler({
+      method: 'POST',
+      query: { action: 'worker-callback' },
+      headers: { authorization: 'Bearer hettety-worker-secret-internal' },
+      body: {
+        jobId,
+        attemptId,
+        workerId: 'worker-1',
+        propertyId: propId,
+        status: 'READY',
+        representation: {
+          gaussianSplat: {
+            format: 'spz',
+            url: `properties/${propId}/tour/scene.spz`,
+            splatCount: 50000,
+            sha256: 'a'.repeat(64),
+          },
+          mesh: {
+            format: 'glb',
+            url: `properties/${propId}/tour/mesh.glb`,
+            faceCount: 1500,
+            sha256: 'b'.repeat(64),
+          },
+        },
+        bounds: { min: [-1, -1, -1], max: [1, 1, 1] },
+        qualityReport: { passed: true },
+      },
+    }, mockRes);
+
+    expect(statusRes).toBe(422);
+    expect(jsonRes.error).toContain('ARTIFACT_VALIDATION_FAILED');
+    expect(jsonRes.error).toContain('immutable attempt-scoped path prefix');
+  });
+
+  it('Invariant 12: Production GCS provider verification does not reject missing local disk files', async () => {
+    const { default: handler, controlPlaneJobs, mockPropertiesStore } = await import('../../api/reconstruction');
+    const propId = 'prop-gcs-test-no-disk';
+    const jobId = 'job-gcs-test-no-disk';
+    const attemptId = 'attempt_gcs_1';
+
+    mockPropertiesStore.set(propId, { authorUid: 'owner-gcs' });
+    controlPlaneJobs.set(jobId, {
+      id: jobId,
+      propertyId: propId,
+      ownerId: 'owner-gcs',
+      status: 'PUBLISHING',
+      attemptId,
+      workerId: 'worker-gcs',
+      stateVersion: 1,
+    } as any);
+
+    const originalProvider = process.env.STORAGE_PROVIDER;
+    const originalNodeEnv = process.env.NODE_ENV;
+    process.env.STORAGE_PROVIDER = 'gcs';
+
+    let statusRes = 0;
+    let jsonRes: any = null;
+    const mockRes = {
+      status: (s: number) => { statusRes = s; return mockRes; },
+      json: (j: any) => { jsonRes = j; return mockRes; },
+    };
+
+    try {
+      // Artifact URLs in immutable attempt path that do NOT exist on local disk
+      await handler({
+        method: 'POST',
+        query: { action: 'worker-callback' },
+        headers: {
+          authorization: 'Bearer hettety-worker-secret-internal',
+        },
+        body: {
+          jobId,
+          attemptId,
+          workerId: 'worker-gcs',
+          propertyId: propId,
+          status: 'READY',
+          representation: {
+            gaussianSplat: {
+              format: 'spz',
+              url: `properties/${propId}/3d/${jobId}/${attemptId}/scene.spz`,
+              splatCount: 50000,
+              sha256: 'c'.repeat(64),
+            },
+            mesh: {
+              format: 'glb',
+              url: `properties/${propId}/3d/${jobId}/${attemptId}/mesh.glb`,
+              faceCount: 1500,
+              sha256: 'd'.repeat(64),
+            },
+          },
+          bounds: { min: [-1, -1, -1], max: [1, 1, 1] },
+          qualityReport: { passed: true },
+        },
+      }, mockRes);
+
+      // In test mode with GCS provider and no local files, local disk check should NOT fail with ARTIFACT_NOT_FOUND
+      expect(statusRes).toBe(200);
+      expect(controlPlaneJobs.get(jobId)?.status).toBe('READY');
+    } finally {
+      process.env.STORAGE_PROVIDER = originalProvider;
+      process.env.NODE_ENV = originalNodeEnv;
+    }
+  });
+
+  it('Invariant 13: Redis queue recovers from partial failure when SET NX succeeds but XADD fails', async () => {
+    const { enqueueToRedis, enqueuedWorkerJobs, setRedisClientForTesting, resetRedisClientForTesting } = await import('../../api/reconstruction');
+    const job = {
+      id: 'job-redis-partial-fail',
+      attemptId: 'attempt_1',
+      propertyId: 'prop-redis',
+      ownerId: 'owner-redis',
+      status: 'QUEUED',
+      createdAt: new Date().toISOString(),
+    } as any;
+
+    const redisData = new Map<string, string>();
+    let xAddShouldFail = true;
+    const streamEntries: any[] = [];
+
+    const mockRedisClient = {
+      set: vi.fn(async (key: string, val: string, opts?: any) => {
+        if (opts?.NX && redisData.has(key)) {
+          return null; // Key already acquired
+        }
+        redisData.set(key, val);
+        return 'OK';
+      }),
+      del: vi.fn(async (key: string) => {
+        redisData.delete(key);
+        return 1;
+      }),
+      xAdd: vi.fn(async (stream: string, id: string, payload: any) => {
+        if (xAddShouldFail) {
+          throw new Error('REDIS_STREAM_BUFFER_OVERFLOW: Stream insertion simulated failure');
+        }
+        streamEntries.push({ stream, id, payload });
+        return '1700000000-0';
+      }),
+      quit: vi.fn(async () => {}),
+    };
+
+    setRedisClientForTesting(mockRedisClient);
+
+    try {
+      enqueuedWorkerJobs.clear();
+
+      // First attempt: SET NX succeeds, but xAdd throws error
+      const firstResult = await enqueueToRedis(job, 'redis://localhost:6379');
+      expect(firstResult).toBe(false);
+
+      // Verify that the deduplication key was ROLLED BACK and not left locked in Redis
+      const queueKey = `reconstruction:${job.id}:${job.attemptId}`;
+      expect(redisData.has(queueKey)).toBe(false);
+      expect(enqueuedWorkerJobs.has(queueKey)).toBe(false);
+
+      // Now transient stream error resolves
+      xAddShouldFail = false;
+
+      // Second attempt (Retry): should successfully acquire and enqueue
+      const retryResult = await enqueueToRedis(job, 'redis://localhost:6379');
+      expect(retryResult).toBe(true);
+      expect(redisData.has(queueKey)).toBe(true);
+      expect(streamEntries.length).toBe(1);
+      expect(streamEntries[0].payload.jobId).toBe(job.id);
+    } finally {
+      resetRedisClientForTesting();
+    }
+  });
 });

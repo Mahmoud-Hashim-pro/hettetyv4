@@ -4,10 +4,96 @@
  * reservation deposit intents, and bank escrow settlements under CBE guidelines.
  */
 
+import crypto from 'crypto';
 import { TransactionRecord, PaymentMethod } from '../src/types';
 import { authenticateRequest, getAdminServices } from './reconstruction';
 
 export const mockTransactionsStore = new Map<string, TransactionRecord>();
+
+/**
+ * Retrieves a transaction record from Firestore Admin or the fallback in-memory store.
+ * Fails closed in production if Firestore is unavailable.
+ */
+async function getDurableTransaction(txId: string): Promise<{ tx: TransactionRecord | null; adminDbRef: any }> {
+  let adminDbRef: any = null;
+  try {
+    const { adminDb } = await getAdminServices();
+    adminDbRef = adminDb;
+  } catch (err: any) {
+    if (process.env.NODE_ENV === 'production') {
+      const dbErr: any = new Error(`DATABASE_PERSISTENCE_FAILED: Failed to connect to Firestore Admin: ${err.message}`);
+      dbErr.status = 503;
+      throw dbErr;
+    }
+  }
+
+  if (process.env.NODE_ENV === 'production' && !adminDbRef) {
+    const dbErr: any = new Error('DATABASE_PERSISTENCE_FAILED: Firestore Admin database unavailable in production.');
+    dbErr.status = 503;
+    throw dbErr;
+  }
+
+  if (adminDbRef) {
+    try {
+      const snap = await adminDbRef.collection('transactions').doc(txId).get();
+      if (snap.exists) {
+        const data = snap.data() as TransactionRecord;
+        mockTransactionsStore.set(txId, data);
+        return { tx: data, adminDbRef };
+      }
+      return { tx: null, adminDbRef };
+    } catch (err: any) {
+      if (process.env.NODE_ENV === 'production') {
+        const dbErr: any = new Error(`DATABASE_PERSISTENCE_FAILED: Error reading transaction ${txId}: ${err.message}`);
+        dbErr.status = 503;
+        throw dbErr;
+      }
+    }
+  }
+
+  return { tx: mockTransactionsStore.get(txId) || null, adminDbRef: null };
+}
+
+/**
+ * Persists a transaction record to Firestore Admin.
+ * In production, fails closed without modifying in-memory cache if the write fails.
+ */
+async function persistDurableTransaction(tx: TransactionRecord, isCreate: boolean = false): Promise<void> {
+  let adminDbRef: any = null;
+  try {
+    const { adminDb } = await getAdminServices();
+    adminDbRef = adminDb;
+  } catch (err: any) {
+    if (process.env.NODE_ENV === 'production') {
+      const dbErr: any = new Error(`DATABASE_PERSISTENCE_FAILED: Failed to connect to Firestore Admin: ${err.message}`);
+      dbErr.status = 503;
+      throw dbErr;
+    }
+  }
+
+  if (process.env.NODE_ENV === 'production' && !adminDbRef) {
+    const dbErr: any = new Error('DATABASE_PERSISTENCE_FAILED: Firestore Admin database unavailable in production.');
+    dbErr.status = 503;
+    throw dbErr;
+  }
+
+  if (adminDbRef) {
+    try {
+      if (isCreate) {
+        await adminDbRef.collection('transactions').doc(tx.id).set(tx);
+      } else {
+        await adminDbRef.collection('transactions').doc(tx.id).set(tx, { merge: true });
+      }
+    } catch (err: any) {
+      const dbErr: any = new Error(`DATABASE_PERSISTENCE_FAILED: Failed to durably persist transaction ${tx.id} to Firestore: ${err.message}`);
+      dbErr.status = 503;
+      throw dbErr;
+    }
+  }
+
+  // Cache updated only after durable persistence succeeds
+  mockTransactionsStore.set(tx.id, tx);
+}
 
 export default async function handler(req: any, res: any) {
   if (req.method !== 'POST' && req.method !== 'GET') {
@@ -25,19 +111,7 @@ export default async function handler(req: any, res: any) {
         return res.status(400).json({ error: 'INVALID_REQUEST: transactionId is required.' });
       }
 
-      let tx = mockTransactionsStore.get(txId);
-      if (!tx) {
-        try {
-          const { adminDb } = await getAdminServices();
-          if (adminDb) {
-            const snap = await adminDb.collection('transactions').doc(txId).get();
-            if (snap.exists) {
-              tx = snap.data() as TransactionRecord;
-            }
-          }
-        } catch (_) {}
-      }
-
+      const { tx } = await getDurableTransaction(txId);
       if (!tx) {
         return res.status(404).json({ error: `TRANSACTION_NOT_FOUND: Transaction ${txId} does not exist.` });
       }
@@ -110,14 +184,7 @@ export default async function handler(req: any, res: any) {
         updatedAt: now,
       };
 
-      mockTransactionsStore.set(txId, newTx);
-
-      try {
-        const { adminDb } = await getAdminServices();
-        if (adminDb) {
-          await adminDb.collection('transactions').doc(txId).set(newTx);
-        }
-      } catch (_) {}
+      await persistDurableTransaction(newTx, true);
 
       return res.status(200).json({ success: true, transaction: newTx });
     }
@@ -129,17 +196,7 @@ export default async function handler(req: any, res: any) {
         return res.status(400).json({ error: 'INVALID_REQUEST: transactionId is required.' });
       }
 
-      let tx = mockTransactionsStore.get(transactionId);
-      let adminDbRef: any = null;
-      try {
-        const { adminDb } = await getAdminServices();
-        if (adminDb) {
-          adminDbRef = adminDb;
-          const snap = await adminDb.collection('transactions').doc(transactionId).get();
-          if (snap.exists) tx = snap.data() as TransactionRecord;
-        }
-      } catch (_) {}
-
+      const { tx } = await getDurableTransaction(transactionId);
       if (!tx) {
         return res.status(404).json({ error: `TRANSACTION_NOT_FOUND: Transaction ${transactionId} not found.` });
       }
@@ -160,13 +217,7 @@ export default async function handler(req: any, res: any) {
         updatedAt: now,
       };
 
-      mockTransactionsStore.set(transactionId, updatedTx);
-      if (adminDbRef) {
-        await adminDbRef.collection('transactions').doc(transactionId).update({
-          status: 'offer_accepted',
-          updatedAt: now,
-        });
-      }
+      await persistDurableTransaction(updatedTx, false);
 
       return res.status(200).json({ success: true, transaction: updatedTx });
     }
@@ -178,17 +229,7 @@ export default async function handler(req: any, res: any) {
         return res.status(400).json({ error: 'INVALID_REQUEST: transactionId and paymentMethod are required.' });
       }
 
-      let tx = mockTransactionsStore.get(transactionId);
-      let adminDbRef: any = null;
-      try {
-        const { adminDb } = await getAdminServices();
-        if (adminDb) {
-          adminDbRef = adminDb;
-          const snap = await adminDb.collection('transactions').doc(transactionId).get();
-          if (snap.exists) tx = snap.data() as TransactionRecord;
-        }
-      } catch (_) {}
-
+      const { tx } = await getDurableTransaction(transactionId);
       if (!tx) {
         return res.status(404).json({ error: `TRANSACTION_NOT_FOUND: Transaction ${transactionId} not found.` });
       }
@@ -214,16 +255,7 @@ export default async function handler(req: any, res: any) {
         updatedAt: now,
       };
 
-      mockTransactionsStore.set(transactionId, updatedTx);
-      if (adminDbRef) {
-        await adminDbRef.collection('transactions').doc(transactionId).update({
-          status: 'deposit_pending',
-          depositStatus: 'payment_pending',
-          paymentMethod,
-          escrowReference: requestReference,
-          updatedAt: now,
-        });
-      }
+      await persistDurableTransaction(updatedTx, false);
 
       return res.status(200).json({
         success: true,
@@ -236,29 +268,81 @@ export default async function handler(req: any, res: any) {
 
     // 4. Action: CONFIRM ESCROW (Admin / Bank Webhook Authoritative Confirmation)
     if (action === 'confirm-escrow') {
-      const { transactionId, verifiedEscrowReference } = req.body || {};
+      const {
+        transactionId,
+        verifiedEscrowReference,
+        amount,
+        currency,
+        settlementStatus,
+      } = req.body || {};
+
       if (!transactionId || !verifiedEscrowReference) {
         return res.status(400).json({ error: 'INVALID_REQUEST: transactionId and verifiedEscrowReference are required.' });
       }
 
-      // Verification: Strictly admin or compliance admin
-      if (!auth.isAdmin && req.headers?.['x-compliance-token'] !== 'true') {
-        return res.status(403).json({ error: 'FORBIDDEN: Only compliance admin or authorized backend can confirm escrow funding.' });
+      // Cryptographic webhook verification (HMAC SHA-256)
+      const webhookSig = (req.headers?.['x-webhook-signature'] || req.headers?.['x-escrow-signature'] || '') as string;
+      const webhookSecret = process.env.ESCROW_WEBHOOK_SECRET || process.env.PAYMENT_WEBHOOK_SECRET;
+      let isVerifiedWebhook = false;
+
+      if (webhookSig && webhookSecret) {
+        try {
+          const bodyPayload = typeof req.body === 'string' ? req.body : JSON.stringify(req.body);
+          const expectedSig = crypto.createHmac('sha256', webhookSecret).update(bodyPayload).digest('hex');
+          if (webhookSig.length === expectedSig.length && crypto.timingSafeEqual(Buffer.from(webhookSig), Buffer.from(expectedSig))) {
+            isVerifiedWebhook = true;
+          }
+        } catch (_) {}
       }
 
-      let tx = mockTransactionsStore.get(transactionId);
-      let adminDbRef: any = null;
-      try {
-        const { adminDb } = await getAdminServices();
-        if (adminDb) {
-          adminDbRef = adminDb;
-          const snap = await adminDb.collection('transactions').doc(transactionId).get();
-          if (snap.exists) tx = snap.data() as TransactionRecord;
-        }
-      } catch (_) {}
+      // Verification: Strictly authenticated admin or cryptographically authenticated payment webhook
+      // NEVER allow forgeable client-controlled headers like x-compliance-token: true
+      if (!auth.isAdmin && !isVerifiedWebhook) {
+        return res.status(403).json({
+          error: 'FORBIDDEN: Only authorized compliance admin or cryptographically verified payment webhook can confirm escrow funding.',
+        });
+      }
 
+      const { tx, adminDbRef } = await getDurableTransaction(transactionId);
       if (!tx) {
         return res.status(404).json({ error: `TRANSACTION_NOT_FOUND: Transaction ${transactionId} not found.` });
+      }
+
+      // If provider reports settlementStatus, validate it represents completed settlement
+      if (settlementStatus && !['SETTLED', 'PAID', 'HELD_IN_ESCROW'].includes(String(settlementStatus).toUpperCase())) {
+        return res.status(422).json({
+          error: `PAYMENT_NOT_SETTLED: Payment provider reports non-settled status '${settlementStatus}'. Escrow cannot be confirmed.`,
+        });
+      }
+
+      // Validate payment amount against transaction agreed deposit amount
+      if (amount !== undefined && Number(amount) !== tx.depositAmount) {
+        return res.status(422).json({
+          error: `AMOUNT_MISMATCH: Provided settlement amount (${amount}) does not match agreed transaction deposit amount (${tx.depositAmount}).`,
+        });
+      }
+
+      // Validate payment currency against transaction currency
+      if (currency && String(currency).toUpperCase() !== tx.currency.toUpperCase()) {
+        return res.status(422).json({
+          error: `CURRENCY_MISMATCH: Provided currency (${currency}) does not match agreed transaction currency (${tx.currency}).`,
+        });
+      }
+
+      // Idempotency: If already confirmed with matching verifiedEscrowReference, return idempotent success
+      if (tx.status === 'deposit_escrowed') {
+        if (tx.escrowReference === verifiedEscrowReference) {
+          return res.status(200).json({
+            success: true,
+            transaction: tx,
+            escrowReference: verifiedEscrowReference,
+            idempotent: true,
+            message: 'IDEMPOTENT_ALREADY_CONFIRMED: Transaction escrow was already authoritatively confirmed.',
+          });
+        }
+        return res.status(409).json({
+          error: `CONFLICT: Transaction ${transactionId} is already held in escrow under reference ${tx.escrowReference}.`,
+        });
       }
 
       if (tx.status !== 'deposit_pending' && tx.status !== 'offer_accepted') {
@@ -274,14 +358,28 @@ export default async function handler(req: any, res: any) {
         updatedAt: now,
       };
 
-      mockTransactionsStore.set(transactionId, updatedTx);
+      await persistDurableTransaction(updatedTx, false);
+
+      // Record immutable audit trail
+      const auditLog = {
+        transactionId,
+        propertyId: tx.propertyId,
+        event: 'ESCROW_DEPOSIT_CONFIRMED',
+        actorId: auth.isAdmin ? auth.uid : 'payment_gateway_webhook',
+        actorRole: auth.isAdmin ? 'compliance_admin' : 'payment_provider',
+        escrowReference: verifiedEscrowReference,
+        agreedPrice: tx.agreedPrice,
+        depositAmount: tx.depositAmount,
+        currency: tx.currency,
+        timestamp: now,
+      };
+
       if (adminDbRef) {
-        await adminDbRef.collection('transactions').doc(transactionId).update({
-          status: 'deposit_escrowed',
-          depositStatus: 'held_in_escrow',
-          escrowReference: verifiedEscrowReference,
-          updatedAt: now,
-        });
+        try {
+          await adminDbRef.collection('transaction_audit_logs').add(auditLog);
+        } catch (auditErr) {
+          console.warn('[TransactionsAPI] Non-fatal audit log persistence warning:', auditErr);
+        }
       }
 
       return res.status(200).json({
@@ -299,17 +397,7 @@ export default async function handler(req: any, res: any) {
         return res.status(400).json({ error: 'INVALID_REQUEST: transactionId is required.' });
       }
 
-      let tx = mockTransactionsStore.get(transactionId);
-      let adminDbRef: any = null;
-      try {
-        const { adminDb } = await getAdminServices();
-        if (adminDb) {
-          adminDbRef = adminDb;
-          const snap = await adminDb.collection('transactions').doc(transactionId).get();
-          if (snap.exists) tx = snap.data() as TransactionRecord;
-        }
-      } catch (_) {}
-
+      const { tx } = await getDurableTransaction(transactionId);
       if (!tx) {
         return res.status(404).json({ error: `TRANSACTION_NOT_FOUND: Transaction ${transactionId} not found.` });
       }
@@ -331,13 +419,7 @@ export default async function handler(req: any, res: any) {
         updatedAt: now,
       };
 
-      mockTransactionsStore.set(transactionId, updatedTx);
-      if (adminDbRef) {
-        await adminDbRef.collection('transactions').doc(transactionId).update({
-          status: 'cancelled',
-          updatedAt: now,
-        });
-      }
+      await persistDurableTransaction(updatedTx, false);
 
       return res.status(200).json({ success: true, transaction: updatedTx, reason: reason || 'Cancelled by user' });
     }
@@ -348,6 +430,7 @@ export default async function handler(req: any, res: any) {
     if (err.message?.startsWith('AUTHENTICATION')) {
       return res.status(401).json({ error: err.message });
     }
-    return res.status(500).json({ error: err.message || 'Internal transaction control plane error.' });
+    const statusCode = err.status || 500;
+    return res.status(statusCode).json({ error: err.message || 'Internal transaction control plane error.' });
   }
 }

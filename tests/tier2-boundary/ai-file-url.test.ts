@@ -200,7 +200,18 @@ describe('Tier 2 — Fetching a staged file for the AI', () => {
     // 2. Trying to attach another user's legal document is rejected
     await expect(resolveFileUrls(msg(strangerLegalDoc), callerUid)).rejects.toThrow(/Unauthorized.*another user's legal documents/i);
 
-    // 3. Attaching own private document is permitted
+    // 3. Trying to attach another user's raw 3D capture is rejected
+    const stranger3dRaw = `https://firebasestorage.googleapis.com/v0/b/${BUCKET}/o/properties%2Fuser-bob-999%2F3d%2Fraw%2Fjob1%2Fframe.jpg?alt=media`;
+    await expect(resolveFileUrls(msg(stranger3dRaw), callerUid)).rejects.toThrow(/Unauthorized.*private raw 3D capture/i);
+
+    // 4. Trying to attach another user's confidential contracts is rejected
+    const strangerContract = `https://firebasestorage.googleapis.com/v0/b/${BUCKET}/o/properties%2Fuser-bob-999%2Fcontracts%2Fagreement.pdf?alt=media`;
+    await expect(resolveFileUrls(msg(strangerContract), callerUid)).rejects.toThrow(/Unauthorized.*confidential property documents/i);
+
+    // 5. Unauthenticated caller attempting to access private document is rejected
+    await expect(resolveFileUrls(msg(strangerUserDoc))).rejects.toThrow(/Unauthorized.*another user's private documents/i);
+
+    // 6. Attaching own private document is permitted
     globalThis.fetch = okFetch() as any;
     const res = await resolveFileUrls(msg(ownUserDoc), callerUid);
     expect(res[0].parts[1]).toHaveProperty('inlineData');

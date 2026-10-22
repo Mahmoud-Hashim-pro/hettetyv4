@@ -128,6 +128,21 @@ export interface ThreeDTourRepresentation {
   panorama?: PanoramaRepresentation;
 }
 
+export interface VirtualStagedObject {
+  id: string;
+  name: string;
+  nameAr?: string;
+  category: 'seating' | 'table' | 'bed' | 'lighting' | 'storage' | 'decor' | 'other';
+  glbUrl: string;
+  sourceImageUrl?: string;
+  roomId?: string;
+  position: [number, number, number]; // [x, y, z] in metric tour coordinates
+  rotation?: [number, number, number]; // Euler angles [x, y, z] in radians
+  scale?: [number, number, number];    // [sx, sy, sz] multiplier
+  isAnchored: boolean;
+  createdAt: string;
+}
+
 export interface ThreeDTour {
   id?: string;
   status: ThreeDTourStatus;
@@ -143,6 +158,19 @@ export interface ThreeDTour {
   processingJobId?: string;
   rooms?: Room[];
   waypoints?: Waypoint[];
+  virtualStagedObjects?: VirtualStagedObject[];
+  previewTrajectory?: {
+    trajectoryType: string;
+    frameCount: number;
+    target: [number, number, number];
+    keyframes: Array<{
+      frame: number;
+      timeSec: number;
+      position: [number, number, number];
+      target: [number, number, number];
+      fov?: number;
+    }>;
+  };
   qualityReport?: ThreeDTourQualityReport;
   preflightCaptureValidation?: {
     coverageScore?: number;

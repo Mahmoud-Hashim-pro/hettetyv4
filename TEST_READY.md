@@ -5,8 +5,9 @@
 Following the comprehensive audit and remediation plan across 6 pull requests, Hettety v4 has achieved production readiness across its frontend, backend control plane, 3D spatial reconstruction pipeline, financial escrow state machine, and AI endpoints.
 
 - **Status**: **PRODUCTION RELEASE READY**
-- **Automated Frontend & Control Plane Test Suite**: 45 Vitest test suites, **453 tests passing (100%)**
-- **Python 3D Reconstruction Worker Suite**: 3 Pytest suites, **57 tests passing (100%)**
+- **Automated Frontend & Control Plane Test Suite**: 46 Vitest test suites, **459 tests passing (100%)**
+- **Python 3D Reconstruction Worker Suite**: 4 Pytest suites, **63 tests passing (100%)**
+- **Total Automated Test Verification**: **522 tests passing (100%)**
 - **TypeScript Strict Analysis**: `tsc --noEmit` **0 errors**
 - **Production Build**: Vite production bundle compiled successfully
 - **Continuous Integration**: Multi-stage release verification pipeline template in `ci/ci.yml`
@@ -54,6 +55,12 @@ Following the comprehensive audit and remediation plan across 6 pull requests, H
   1. `frontend-and-api`: `npm run lint` -> `npm test` -> `npm run build`
   2. `python-3d-worker`: `pytest hettety-3d-worker/tests`
 
+### PR 7: PBR Mesh Post-Processing, UV Inpainting, Camera Trajectory & Virtual Staging (TRELLIS.2 Innovations)
+- **PBR Mesh & Topology Cleaning**: Integrated topology cleaning (eliminating duplicate/degenerate triangles and orphan vertices), normalized UV generation (`TEXCOORD_0`), and standard glTF 2.0 PBR metallic-roughness material serialization.
+- **Texture Gutter Inpainting**: OpenCV Telea inpainting bleeding colors into UV gutters to eliminate dark seam artifacts during mipmapping.
+- **Cinematic Orbit Trajectory**: Automated 360-degree orbit camera path generation grounded in real reconstructed spatial bounds, embedded directly in `manifest.json`.
+- **Virtual Staging Service**: Frontend and spatial anchor service enabling single-image 3D furniture models to be placed, scaled, rotated, and anchored inside 3D property tours.
+
 ---
 
 ## 3. Automated Test Verification Summary
@@ -62,16 +69,17 @@ Following the comprehensive audit and remediation plan across 6 pull requests, H
 ```bash
 npx vitest run
 ```
-- **Total Test Files**: 45
-- **Total Tests**: 453
-- **Results**: 453 passed (100%)
+- **Total Test Files**: 46
+- **Total Tests**: 459
+- **Results**: 459 passed (100%)
 
 ### Python 3D Worker Suite (Pytest)
 ```bash
 python -m pytest hettety-3d-worker/tests
 ```
-- **Total Tests**: 57
-- **Results**: 57 passed (100%)
+- **Total Test Files**: 4
+- **Total Tests**: 63
+- **Results**: 63 passed (100%)
 
 ### Static Type Analysis
 ```bash

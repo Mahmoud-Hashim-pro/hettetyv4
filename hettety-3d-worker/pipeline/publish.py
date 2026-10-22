@@ -257,6 +257,12 @@ def publish_tour_assets(
         }
     }
 
+    try:
+        from pipeline.preview_path import generate_orbit_camera_trajectory
+        manifest_content["previewTrajectory"] = generate_orbit_camera_trajectory(bounds)
+    except Exception as traj_err:
+        logger.warning(f"Could not compute preview camera trajectory: {traj_err}")
+
     remote_manifest_path = f"{version_dir}/manifest.json"
     manifest_url = f"{cdn_base_url}/{remote_manifest_path}"
     with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as mf:

@@ -1042,158 +1042,48 @@ def generate_metric_mesh_glb(
         else:
             oriented_triangles.append((i0, i1, i2))
 
-    # Map referenced vertices
-    used_indices = sorted(list(set(idx for t in oriented_triangles for idx in t)))
-    old_to_new = {old_idx: new_idx for new_idx, old_idx in enumerate(used_indices)}
-    mesh_vertices = [tuple(float(x) for x in unique_pts[idx]) for idx in used_indices]
-    mesh_indices = [old_to_new[idx] for t in oriented_triangles for idx in t]
+    from pipeline.mesh_pbr import clean_mesh_topology, compute_mesh_uvs, build_pbr_glb_container
 
-    # Compute smoothed vertex normals
-    vertex_normals = np.zeros((len(mesh_vertices), 3), dtype=np.float32)
-    for i in range(0, len(mesh_indices), 3):
-        i0, i1, i2 = mesh_indices[i], mesh_indices[i+1], mesh_indices[i+2]
-        v0 = np.array(mesh_vertices[i0])
-        v1 = np.array(mesh_vertices[i1])
-        v2 = np.array(mesh_vertices[i2])
-        fn = np.cross(v1 - v0, v2 - v0)
-        vertex_normals[i0] += fn
-        vertex_normals[i1] += fn
-        vertex_normals[i2] += fn
+    raw_vertices = np.array(unique_pts, dtype=np.float32)
+    raw_faces = np.array(oriented_triangles, dtype=np.int32)
 
-    norm_lengths = np.linalg.norm(vertex_normals, axis=1, keepdims=True)
-    norm_lengths[norm_lengths < 1e-6] = 1.0
-    vertex_normals = vertex_normals / norm_lengths
-    normals_list = [tuple(float(x) for x in n) for n in vertex_normals]
+    # Topology cleanup & Manifold normalization (inspired by Microsoft TRELLIS.2)
+    clean_v, clean_f, clean_norm = clean_mesh_topology(raw_vertices, raw_faces)
+    if len(clean_v) < 4 or len(clean_f) < 2:
+        # Fallback to direct mapping if extreme sparse condition occurs
+        used_indices = sorted(list(set(idx for t in oriented_triangles for idx in t)))
+        old_to_new = {old_idx: new_idx for new_idx, old_idx in enumerate(used_indices)}
+        clean_v = np.array([unique_pts[idx] for idx in used_indices], dtype=np.float32)
+        clean_f = np.array([[old_to_new[idx] for idx in t] for t in oriented_triangles], dtype=np.int32)
+        clean_norm = np.zeros((len(clean_v), 3), dtype=np.float32)
+        for i0, i1, i2 in clean_f:
+            fn = np.cross(clean_v[i1] - clean_v[i0], clean_v[i2] - clean_v[i0])
+            clean_norm[i0] += fn
+            clean_norm[i1] += fn
+            clean_norm[i2] += fn
+        n_len = np.linalg.norm(clean_norm, axis=1, keepdims=True)
+        n_len[n_len < 1e-6] = 1.0
+        clean_norm = clean_norm / n_len
 
-    # 3. Serialize into glTF 2.0 Binary Buffer
-    pos_bytes = bytearray()
-    for vx, vy, vz in mesh_vertices:
-        pos_bytes.extend(struct.pack("<fff", vx, vy, vz))
+    # Normalized UV parameterization [0, 1] for PBR textures
+    uvs = compute_mesh_uvs(clean_v, method="box")
 
-    norm_bytes = bytearray()
-    for nx, ny, nz in normals_list:
-        norm_bytes.extend(struct.pack("<fff", nx, ny, nz))
-
-    use_short_indices = len(mesh_vertices) < 65535
-    idx_bytes = bytearray()
-    if use_short_indices:
-        for idx in mesh_indices:
-            idx_bytes.extend(struct.pack("<H", idx))
-    else:
-        for idx in mesh_indices:
-            idx_bytes.extend(struct.pack("<I", idx))
-
-    # Pad each buffer to 4 bytes boundary
-    def pad4(b: bytearray, pad_byte: int = 0) -> bytearray:
-        rem = len(b) % 4
-        if rem != 0:
-            b.extend(bytes([pad_byte] * (4 - rem)))
-        return b
-
-    pos_bytes = pad4(pos_bytes)
-    norm_bytes = pad4(norm_bytes)
-    idx_bytes = pad4(idx_bytes)
-
-    bin_buffer = bytearray()
-    pos_offset = 0
-    pos_len = len(pos_bytes)
-    bin_buffer.extend(pos_bytes)
-
-    norm_offset = len(bin_buffer)
-    norm_len = len(norm_bytes)
-    bin_buffer.extend(norm_bytes)
-
-    idx_offset = len(bin_buffer)
-    idx_len = len(idx_bytes)
-    bin_buffer.extend(idx_bytes)
-
-    total_bin_len = len(bin_buffer)
-
-    gltf_dict = {
-        "asset": {
-            "version": "2.0",
-            "generator": "Hettety Metric Surface Reconstruction Engine 2.0"
-        },
-        "scene": 0,
-        "scenes": [{"nodes": [0]}],
-        "nodes": [{"mesh": 0, "name": "ReconstructedSurfaceGeometry"}],
-        "meshes": [{
-            "name": "ArchitecturalMetricMesh",
-            "primitives": [{
-                "attributes": {
-                    "POSITION": 0,
-                    "NORMAL": 1
-                },
-                "indices": 2,
-                "mode": 4 # TRIANGLES
-            }]
-        }],
-        "accessors": [
-            {
-                "bufferView": 0,
-                "componentType": 5126, # FLOAT
-                "count": len(mesh_vertices),
-                "type": "VEC3",
-                "min": [min(v[0] for v in mesh_vertices), min(v[1] for v in mesh_vertices), min(v[2] for v in mesh_vertices)],
-                "max": [max(v[0] for v in mesh_vertices), max(v[1] for v in mesh_vertices), max(v[2] for v in mesh_vertices)]
-            },
-            {
-                "bufferView": 1,
-                "componentType": 5126, # FLOAT
-                "count": len(normals_list),
-                "type": "VEC3"
-            },
-            {
-                "bufferView": 2,
-                "componentType": 5123 if use_short_indices else 5125, # UNSIGNED_SHORT or UNSIGNED_INT
-                "count": len(mesh_indices),
-                "type": "SCALAR"
-            }
-        ],
-        "bufferViews": [
-            {
-                "buffer": 0,
-                "byteOffset": pos_offset,
-                "byteLength": pos_len,
-                "target": 34962 # ARRAY_BUFFER
-            },
-            {
-                "buffer": 0,
-                "byteOffset": norm_offset,
-                "byteLength": norm_len,
-                "target": 34962 # ARRAY_BUFFER
-            },
-            {
-                "buffer": 0,
-                "byteOffset": idx_offset,
-                "byteLength": idx_len,
-                "target": 34963 # ELEMENT_ARRAY_BUFFER
-            }
-        ],
-        "buffers": [{
-            "byteLength": total_bin_len
-        }]
-    }
-
-    json_str = json.dumps(gltf_dict, separators=(',', ':'))
-    json_bytes = bytearray(json_str.encode("utf-8"))
-    json_bytes = pad4(json_bytes, pad_byte=0x20) # space-padded
-
-    # 4. Assemble standard binary GLB container
-    total_glb_length = 12 + 8 + len(json_bytes) + 8 + len(bin_buffer)
-
-    glb_container = bytearray()
-    # Header: magic(4) + version(4) + length(4)
-    glb_container.extend(struct.pack("<4sII", b"glTF", 2, total_glb_length))
-    # Chunk 0: JSON
-    glb_container.extend(struct.pack("<II", len(json_bytes), 0x4E4F534A))
-    glb_container.extend(json_bytes)
-    # Chunk 1: BIN
-    glb_container.extend(struct.pack("<II", len(bin_buffer), 0x004E4942))
-    glb_container.extend(bin_buffer)
+    # Assemble GLB with PBR Material (baseColor, metallic, roughness, doubleSided)
+    glb_container = build_pbr_glb_container(
+        vertices=clean_v,
+        normals=clean_norm,
+        uvs=uvs,
+        faces=clean_f,
+        base_color_factor=(0.85, 0.85, 0.83, 1.0),
+        metallic_factor=0.05,
+        roughness_factor=0.70,
+        generator_name="Hettety PBR Metric Surface Reconstruction Engine 2.1"
+    )
 
     with open(output_glb, "wb") as f:
         f.write(glb_container)
+
+    mesh_vertices = [tuple(float(x) for x in v) for v in clean_v]
 
     # 5. Strict verification of written GLB
     is_valid, msg, v_count, f_count = validate_glb_file(output_glb)

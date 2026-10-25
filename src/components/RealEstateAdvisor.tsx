@@ -600,7 +600,7 @@ Disclaimer: Provided by HETTETY Smart Real Estate Advisor for property selection
           </div>
 
           {/* Real Estate Indicators Capsule */}
-          <div className="flex items-center gap-2 sm:gap-3 overflow-x-auto w-full md:w-auto pb-1 md:pb-0 text-xs">
+          <div className="flex items-center gap-2 sm:gap-3 overflow-x-auto no-scrollbar scrollbar-none [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden w-full md:w-auto pb-1 md:pb-0 text-xs">
             <div className="bg-slate-100 dark:bg-slate-800/70 px-3 py-1.5 rounded-xl border border-slate-200/60 dark:border-slate-700 flex items-center gap-2 shrink-0">
               <Compass size={14} className="text-brand-500" />
               <div>
@@ -710,128 +710,6 @@ Disclaimer: Provided by HETTETY Smart Real Estate Advisor for property selection
               >
                 <RefreshCw size={13} /> {isRtl ? 'إعادة ضبط' : 'Reset'}
               </button>
-            </div>
-
-            {/* Interactive Financial & Investment Sliders Deck */}
-            <div className="bg-slate-50 dark:bg-slate-900/60 p-5 rounded-2xl border border-slate-200/80 dark:border-slate-800 space-y-5">
-              <div className="flex items-center justify-between border-b border-slate-200/60 dark:border-slate-800/80 pb-3">
-                <div className="flex items-center gap-2">
-                  <Sliders size={18} className="text-brand-600 dark:text-brand-400" />
-                  <span className="text-sm font-black text-slate-900 dark:text-white">
-                    {isRtl ? 'المحددات المالية والقدرة الاستثمارية المباشرة' : 'Financial Budget & Investment Sliders'}
-                  </span>
-                </div>
-                <span className="text-[11px] font-bold text-slate-500 dark:text-slate-400">
-                  {profile.currency || 'EGP'}
-                </span>
-              </div>
-
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-                {/* 1. Target Budget Slider */}
-                <div className="space-y-2">
-                  <div className="flex justify-between items-center text-xs font-bold">
-                    <label className="text-slate-700 dark:text-slate-300 flex items-center gap-1.5">
-                      <Landmark size={14} className="text-emerald-500" />
-                      {t.advisor_budget_label || (isRtl ? 'الميزانية الإجمالية المستهدفة' : 'Target Budget')}
-                    </label>
-                    <span className="text-emerald-600 dark:text-emerald-400 font-black">
-                      {profile.budget > 0 ? `${profile.budget.toLocaleString()} ${profile.currency || 'EGP'}` : (isRtl ? 'مرن / غير محدد' : 'Flexible')}
-                    </span>
-                  </div>
-                  <input
-                    type="range"
-                    min={0}
-                    max={40000000}
-                    step={250000}
-                    value={profile.budget}
-                    onChange={(e) => setProfile(prev => ({ ...prev, budget: Number(e.target.value) }))}
-                    className="w-full accent-emerald-500 cursor-pointer h-2 bg-slate-200 dark:bg-slate-700 rounded-lg appearance-none"
-                    aria-label={t.advisor_budget_label || 'Target Budget'}
-                  />
-                  <div className="flex gap-1.5 flex-wrap pt-1">
-                    {[3000000, 6000000, 10000000, 18000000, 30000000].map(val => (
-                      <button
-                        key={val}
-                        type="button"
-                        onClick={() => setProfile(prev => ({ ...prev, budget: val }))}
-                        className={`px-2 py-0.5 text-[10px] font-bold rounded-md transition-all cursor-pointer ${profile.budget === val ? 'bg-emerald-600 text-white' : 'bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-300 border border-slate-200 dark:border-slate-700 hover:border-emerald-400'}`}
-                      >
-                        {val >= 1000000 ? `${val / 1000000}M` : `${val / 1000}k`}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-
-                {/* 2. Available Cash / Down Payment Slider */}
-                <div className="space-y-2">
-                  <div className="flex justify-between items-center text-xs font-bold">
-                    <label className="text-slate-700 dark:text-slate-300 flex items-center gap-1.5">
-                      <KeyRound size={14} className="text-brand-500" />
-                      {t.advisor_down_payment_label || (isRtl ? 'السيولة المتاحة (المقدم)' : 'Available Cash (Down Payment)')}
-                    </label>
-                    <span className="text-brand-600 dark:text-brand-400 font-black">
-                      {profile.downPayment > 0 ? `${profile.downPayment.toLocaleString()} ${profile.currency || 'EGP'}` : (isRtl ? 'مرن / غير محدد' : 'Flexible')}
-                    </span>
-                  </div>
-                  <input
-                    type="range"
-                    min={0}
-                    max={10000000}
-                    step={100000}
-                    value={profile.downPayment}
-                    onChange={(e) => setProfile(prev => ({ ...prev, downPayment: Number(e.target.value) }))}
-                    className="w-full accent-brand-500 cursor-pointer h-2 bg-slate-200 dark:bg-slate-700 rounded-lg appearance-none"
-                    aria-label={t.advisor_down_payment_label || 'Available Cash (Down Payment)'}
-                  />
-                  <div className="flex gap-1.5 flex-wrap pt-1">
-                    {[500000, 1000000, 2000000, 3500000, 6000000].map(val => (
-                      <button
-                        key={val}
-                        type="button"
-                        onClick={() => setProfile(prev => ({ ...prev, downPayment: val }))}
-                        className={`px-2 py-0.5 text-[10px] font-bold rounded-md transition-all cursor-pointer ${profile.downPayment === val ? 'bg-brand-600 text-white' : 'bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-300 border border-slate-200 dark:border-slate-700 hover:border-brand-400'}`}
-                      >
-                        {val >= 1000000 ? `${val / 1000000}M` : `${val / 1000}k`}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-
-                {/* 3. Monthly Capacity Slider */}
-                <div className="space-y-2">
-                  <div className="flex justify-between items-center text-xs font-bold">
-                    <label className="text-slate-700 dark:text-slate-300 flex items-center gap-1.5">
-                      <Clock size={14} className="text-purple-500" />
-                      {t.advisor_monthly_capacity_label || (isRtl ? 'القدرة على القسط الشهري' : 'Max Monthly Installment Capacity')}
-                    </label>
-                    <span className="text-purple-600 dark:text-purple-400 font-black">
-                      {profile.monthlyCapacity > 0 ? `${profile.monthlyCapacity.toLocaleString()} ${profile.currency || 'EGP'}/ش` : (isRtl ? 'مرن / غير محدد' : 'Flexible')}
-                    </span>
-                  </div>
-                  <input
-                    type="range"
-                    min={0}
-                    max={250000}
-                    step={10000}
-                    value={profile.monthlyCapacity}
-                    onChange={(e) => setProfile(prev => ({ ...prev, monthlyCapacity: Number(e.target.value) }))}
-                    className="w-full accent-purple-500 cursor-pointer h-2 bg-slate-200 dark:bg-slate-700 rounded-lg appearance-none"
-                    aria-label={t.advisor_monthly_capacity_label || 'Max Monthly Installment Capacity'}
-                  />
-                  <div className="flex gap-1.5 flex-wrap pt-1">
-                    {[25000, 50000, 80000, 120000, 200000].map(val => (
-                      <button
-                        key={val}
-                        type="button"
-                        onClick={() => setProfile(prev => ({ ...prev, monthlyCapacity: val }))}
-                        className={`px-2 py-0.5 text-[10px] font-bold rounded-md transition-all cursor-pointer ${profile.monthlyCapacity === val ? 'bg-purple-600 text-white' : 'bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-300 border border-slate-200 dark:border-slate-700 hover:border-purple-400'}`}
-                      >
-                        {val >= 1000 ? `${val / 1000}k` : val}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              </div>
             </div>
 
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-5">

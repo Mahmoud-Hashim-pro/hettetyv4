@@ -1,13 +1,8 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
-import { 
-  Sparkles, Building2, MapPin, Sliders, RefreshCw, Send, User, Layers,
-  Check, Landmark, PieChart, MessageSquare, Box, Download,
-  Compass, ShieldCheck, KeyRound, Clock, Bed, CheckCircle2, AlertTriangle, XCircle, FileText
-} from 'lucide-react';
+import { Sparkles, RefreshCw, Send, User, Download } from 'lucide-react';
 import { Property, ChatMessage, ChatSession, AdvisorFinancialProfile, AdvisorPropertyFit, InvestmentPurpose } from '../types';
 import { createChat, extract3DMarker, extractAdvisorState, withRetry, isOverloadedError, aiErrorMessage } from '../ai';
 import { auth, db, doc, updateDoc, addDoc, collection, query, where, onSnapshot } from '../firebase';
-import { api } from '../mockApi';
 
 interface RealEstateAdvisorProps {
   t: any;
@@ -242,10 +237,6 @@ export const RealEstateAdvisor: React.FC<RealEstateAdvisorProps> = ({
   onShow3D,
   onOpenProperty,
 }) => {
-  // Navigation tabs within the Advisor
-  const [activeView, setActiveView] = useState<'split' | 'dashboard' | 'chat'>('split');
-  const [fitCategoryFilter, setFitCategoryFilter] = useState<'all' | 'perfect' | 'stretch' | 'mismatch'>('all');
-
   // Real estate search & consultation profile (zero hardcoded numbers)
   const [profile, setProfile] = useState<AdvisorFinancialProfile>({
     budget: 0,
@@ -276,11 +267,6 @@ export const RealEstateAdvisor: React.FC<RealEstateAdvisorProps> = ({
       .map(p => calculatePropertyFit(p, profile, isRtl))
       .sort((a, b) => b.matchScore - a.matchScore);
   }, [properties, profile, isRtl]);
-
-  const filteredProperties = useMemo(() => {
-    if (fitCategoryFilter === 'all') return evaluatedProperties;
-    return evaluatedProperties.filter(item => item.category === fitCategoryFilter);
-  }, [evaluatedProperties, fitCategoryFilter]);
 
   const stats = useMemo(() => {
     const perfectCount = evaluatedProperties.filter(p => p.category === 'perfect').length;
@@ -508,17 +494,6 @@ ${JSON.stringify(properties.map(p => ({
     }
   };
 
-  const handleAskAboutUnit = (propFit: AdvisorPropertyFit) => {
-    const prompt = isRtl
-      ? `أريد استشارتك العقارية بخصوص وحدة "${propFit.property.title}" في ${propFit.property.location}. ما هو تقييمك لموقعها، سابقة أعمال المطور، ومطابقتها لمتطلباتي؟`
-      : `I need your real estate consultation regarding "${propFit.property.title}" in ${propFit.property.location}. What is your assessment of its location, developer credibility, and fit for my needs?`;
-    
-    if (activeView === 'dashboard') {
-      setActiveView(window.innerWidth >= 1024 ? 'split' : 'chat');
-    }
-    handleSend(prompt);
-  };
-
   const handleExportReport = () => {
     const reportDate = new Date().toLocaleDateString();
     const content = `HETTETY Real Estate Advisory & Project Guide
@@ -577,11 +552,11 @@ Disclaimer: Provided by HETTETY Smart Real Estate Advisor for property selection
 
   return (
     <div className={`flex flex-col h-[calc(100dvh-75px)] w-full bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-white transition-colors duration-500 overflow-hidden ${isRtl ? 'font-cairo' : ''}`}>
-      {/* Top Advisory Bar */}
-      <div className="bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 px-4 py-3 shrink-0 shadow-sm z-30">
-        <div className="max-w-7xl mx-auto flex flex-col md:flex-row items-center justify-between gap-3">
-          <div className="flex items-center gap-3 w-full md:w-auto">
-            <div className="w-10 h-10 rounded-2xl bg-gradient-to-tr from-brand-600 to-accent-500 flex items-center justify-center text-white shadow-md shadow-brand-500/20">
+      {/* Top Advisor Header */}
+      <header className="bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 px-4 sm:px-6 py-3.5 shrink-0 shadow-xs z-30">
+        <div className="max-w-4xl mx-auto flex items-center justify-between gap-4">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded-2xl bg-gradient-to-tr from-brand-600 to-accent-500 flex items-center justify-center text-white shadow-md shadow-brand-500/20 shrink-0">
               <Sparkles size={20} className="animate-pulse" />
             </div>
             <div>
@@ -593,74 +568,38 @@ Disclaimer: Provided by HETTETY Smart Real Estate Advisor for property selection
                   {isRtl ? 'مستشار حِتّتي المعتمد' : 'Hettety Advisor'}
                 </span>
               </div>
-              <p className="text-xs text-slate-500 dark:text-slate-400 font-medium line-clamp-1">
-                {t.advisor_subtitle || (isRtl ? 'مستشارك العقاري الموثوق لاختيار أفضل العقارات، مقارنة المشروعات، وفحص خطط السداد وتاريخ المطورين.' : 'Your dedicated real estate consultant for choosing ideal properties, comparing projects, and evaluating payment plans.')}
-              </p>
+              <div className="flex items-center gap-2 mt-0.5">
+                <span className="text-[11px] text-emerald-600 dark:text-emerald-400 font-bold flex items-center gap-1">
+                  <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
+                  {isRtl ? 'متصل وجاهز للاستشارة' : 'Online & Ready'}
+                </span>
+                <span className="text-slate-300 dark:text-slate-700 text-xs hidden sm:inline">•</span>
+                <p className="text-xs text-slate-500 dark:text-slate-400 font-medium hidden sm:inline line-clamp-1">
+                  {t.advisor_subtitle || (isRtl ? 'استشارات عقارية محايدة، مقارنة المشروعات، وفحص سابقة أعمال المطورين والخطط الاستثمارية.' : 'Unbiased property guidance, project comparisons, and developer due diligence.')}
+                </p>
+              </div>
             </div>
           </div>
 
-          {/* Real Estate Indicators Capsule */}
-          <div className="flex items-center gap-2 sm:gap-3 overflow-x-auto no-scrollbar scrollbar-none [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden w-full md:w-auto pb-1 md:pb-0 text-xs">
-            <div className="bg-slate-100 dark:bg-slate-800/70 px-3 py-1.5 rounded-xl border border-slate-200/60 dark:border-slate-700 flex items-center gap-2 shrink-0">
-              <Compass size={14} className="text-brand-500" />
-              <div>
-                <span className="text-slate-400 block text-[9px] font-bold">{isRtl ? 'المنطقة المستهدفة' : 'Target District'}</span>
-                <span className="font-black text-brand-600 dark:text-brand-400">
-                  {profile.preferredLocation === 'all' ? (isRtl ? 'كافة المناطق' : 'All Districts') : profile.preferredLocation}
-                </span>
-              </div>
-            </div>
+          {/* Action Buttons: New Session & Export Report */}
+          <div className="flex items-center gap-2 shrink-0">
+            <button
+              type="button"
+              onClick={() => {
+                setMessages([]);
+                setCurrentSessionId(null);
+              }}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold text-slate-600 dark:text-slate-300 hover:text-brand-600 hover:bg-slate-100 dark:hover:bg-slate-800 border border-slate-200 dark:border-slate-700 transition-colors cursor-pointer"
+              title={isRtl ? 'محادثة جديدة' : 'New Session'}
+            >
+              <RefreshCw size={13} />
+              <span className="hidden sm:inline">{isRtl ? 'محادثة جديدة' : 'New Session'}</span>
+            </button>
 
-            <div className="bg-slate-100 dark:bg-slate-800/70 px-3 py-1.5 rounded-xl border border-slate-200/60 dark:border-slate-700 flex items-center gap-2 shrink-0">
-              <Building2 size={14} className="text-blue-500" />
-              <div>
-                <span className="text-slate-400 block text-[9px] font-bold">{isRtl ? 'نوع العقار' : 'Property Type'}</span>
-                <span className="font-black text-blue-600 dark:text-blue-400">
-                  {profile.propertyType === 'All' ? (isRtl ? 'كافة الأنواع' : 'All Types') : profile.propertyType}
-                </span>
-              </div>
-            </div>
-
-            <div className="bg-slate-100 dark:bg-slate-800/70 px-3 py-1.5 rounded-xl border border-slate-200/60 dark:border-slate-700 flex items-center gap-2 shrink-0">
-              <CheckCircle2 size={14} className="text-emerald-500" />
-              <div>
-                <span className="text-slate-400 block text-[9px] font-bold">{isRtl ? 'عقارات مطابقة' : 'Matching Units'}</span>
-                <span className="font-black text-emerald-600 dark:text-emerald-400">
-                  {filteredProperties.length} {isRtl ? 'عقار متاح' : 'units'}
-                </span>
-              </div>
-            </div>
-
-            {/* View Mode Switcher */}
-            <div className="bg-slate-200 dark:bg-slate-800 p-1 rounded-xl flex items-center gap-1 shrink-0 ms-auto md:ms-0">
-              <button
-                type="button"
-                onClick={() => setActiveView('split')}
-                className={`hidden lg:flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${activeView === 'split' ? 'bg-white dark:bg-slate-900 text-brand-600 dark:text-brand-400 shadow-sm' : 'text-slate-600 dark:text-slate-400 hover:text-slate-900'}`}
-              >
-                <Layers size={13} /> {t.advisor_tab_split || (isRtl ? 'عرض منقسم' : 'Split View')}
-              </button>
-              <button
-                type="button"
-                onClick={() => setActiveView('dashboard')}
-                className={`flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${activeView === 'dashboard' ? 'bg-white dark:bg-slate-900 text-brand-600 dark:text-brand-400 shadow-sm' : 'text-slate-600 dark:text-slate-400 hover:text-slate-900'}`}
-              >
-                <PieChart size={13} /> {t.advisor_tab_dashboard || (isRtl ? 'دليل العقارات' : 'Projects Guide')}
-              </button>
-              <button
-                type="button"
-                onClick={() => setActiveView('chat')}
-                className={`flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${activeView === 'chat' ? 'bg-white dark:bg-slate-900 text-brand-600 dark:text-brand-400 shadow-sm' : 'text-slate-600 dark:text-slate-400 hover:text-slate-900'}`}
-              >
-                <MessageSquare size={13} /> {t.advisor_tab_chat || (isRtl ? 'المحادثة' : 'Chat')}
-              </button>
-            </div>
-
-            {/* Export Report Button */}
             <button
               type="button"
               onClick={handleExportReport}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer bg-brand-50 hover:bg-brand-100 dark:bg-brand-900/30 text-brand-700 dark:text-brand-300 border border-brand-200 dark:border-brand-800 shrink-0"
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer bg-brand-50 hover:bg-brand-100 dark:bg-brand-900/30 text-brand-700 dark:text-brand-300 border border-brand-200 dark:border-brand-800"
               title={isRtl ? 'تحميل تقرير الاستشارة العقارية' : 'Export Real Estate Report'}
             >
               <Download size={13} />
@@ -668,703 +607,31 @@ Disclaimer: Provided by HETTETY Smart Real Estate Advisor for property selection
             </button>
           </div>
         </div>
-      </div>
+      </header>
 
-      {/* Main Container */}
-      <div className="flex-1 flex overflow-hidden relative">
-        {/* LEFT / MAIN: Real Estate Advisory Dashboard */}
-        <div className={`flex-1 flex-col overflow-y-auto custom-scrollbar p-4 sm:p-6 lg:p-8 space-y-8 ${activeView === 'chat' ? 'hidden' : 'flex'} ${activeView === 'split' ? 'lg:w-[55%] xl:w-[60%]' : 'w-full'}`}>
-          {/* Section 1: Real Estate Search & Advisory Criteria */}
-          <div className="bg-white dark:bg-slate-900 rounded-3xl p-6 border border-slate-200 dark:border-slate-800 shadow-sm space-y-6">
-            <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-4">
-              <div className="flex items-center gap-2.5">
-                <div className="p-2 rounded-xl bg-brand-50 dark:bg-brand-900/30 text-brand-600 dark:text-brand-400">
-                  <Compass size={18} />
-                </div>
-                <div>
-                  <h2 className="font-heading font-bold text-base text-slate-900 dark:text-white">
-                    {isRtl ? 'محددات البحث والاستشارة العقارية' : 'Real Estate Search & Advisory Criteria'}
-                  </h2>
-                  <p className="text-xs text-slate-500 dark:text-slate-400">
-                    {isRtl ? 'حدد متطلباتك العقارية لتحليل ومقارنة أفضل المشروعات والمطورين المتاحين' : 'Specify your property preferences to evaluate and compare top projects and developers'}
-                  </p>
-                </div>
-              </div>
-
-              <button
-                type="button"
-                onClick={() => setProfile({
-                  budget: 0,
-                  downPayment: 0,
-                  monthlyCapacity: 0,
-                  currency: 'EGP',
-                  purpose: 'all',
-                  preferredLocation: 'all',
-                  propertyType: 'All',
-                  deliveryTimeline: 'all',
-                  preferredPaymentPlan: 'all',
-                  bedrooms: 'all',
-                })}
-                className="text-xs font-bold text-slate-400 hover:text-brand-600 flex items-center gap-1 cursor-pointer transition-colors"
-                title={isRtl ? 'إعادة ضبط' : 'Reset'}
-              >
-                <RefreshCw size={13} /> {isRtl ? 'إعادة ضبط' : 'Reset'}
-              </button>
-            </div>
-
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-5">
-              {/* Target District */}
-              <div>
-                <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1.5 flex items-center gap-1.5">
-                  <MapPin size={13} className="text-brand-500" />
-                  {isRtl ? 'المنطقة المستهدفة' : 'Target District'}
-                </label>
-                <select
-                  value={profile.preferredLocation}
-                  onChange={(e) => setProfile(prev => ({ ...prev, preferredLocation: e.target.value }))}
-                  className="w-full px-3 py-2.5 rounded-xl text-xs font-bold border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white outline-none focus:ring-2 focus:ring-brand-500 transition-all cursor-pointer"
-                >
-                  <option value="all">{isRtl ? 'كافة المناطق' : 'All Districts'}</option>
-                  <option value="New Cairo">{isRtl ? 'التجمع الخامس والقاهرة الجديدة' : 'New Cairo'}</option>
-                  <option value="Sheikh Zayed">{isRtl ? 'الشيخ زايد و6 أكتوبر' : 'Sheikh Zayed & 6th Oct'}</option>
-                  <option value="North Coast">{isRtl ? 'الساحل الشمالي' : 'North Coast (Sahel)'}</option>
-                  <option value="New Capital">{isRtl ? 'العاصمة الإدارية الجديدة' : 'New Administrative Capital'}</option>
-                  <option value="Maadi">{isRtl ? 'المعادي' : 'Maadi'}</option>
-                  <option value="Shorouk">{isRtl ? 'الشروق ومدينتي والمستقبل' : 'Shorouk & Madinaty'}</option>
-                </select>
-              </div>
-
-              {/* Property Type */}
-              <div>
-                <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1.5 flex items-center gap-1.5">
-                  <Building2 size={13} className="text-blue-500" />
-                  {isRtl ? 'نوع العقار' : 'Property Type'}
-                </label>
-                <select
-                  value={profile.propertyType}
-                  onChange={(e) => setProfile(prev => ({ ...prev, propertyType: e.target.value }))}
-                  className="w-full px-3 py-2.5 rounded-xl text-xs font-bold border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white outline-none focus:ring-2 focus:ring-brand-500 transition-all cursor-pointer"
-                >
-                  <option value="All">{isRtl ? 'كافة الأنواع' : 'All Types'}</option>
-                  <option value="Apartment">{isRtl ? 'شقق سكنية' : 'Apartments'}</option>
-                  <option value="Penthouse">{isRtl ? 'بنتهاوس ودوبلكس' : 'Penthouses & Duplexes'}</option>
-                  <option value="Villa">{isRtl ? 'فيلات وتاون هاوس' : 'Villas & Townhouses'}</option>
-                  <option value="Commercial">{isRtl ? 'تجاري وإداري وعيادات' : 'Commercial & Administrative'}</option>
-                  <option value="Chalet">{isRtl ? 'شاليهات ساحلية' : 'Coastal Chalets'}</option>
-                </select>
-              </div>
-
-              {/* Purchase Objective */}
-              <div>
-                <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1.5 flex items-center gap-1.5">
-                  <ShieldCheck size={13} className="text-emerald-500" />
-                  {t.advisor_purpose_label || (isRtl ? 'الهدف العقاري' : 'Purchase Objective')}
-                </label>
-                <select
-                  value={profile.purpose}
-                  onChange={(e) => setProfile(prev => ({ ...prev, purpose: e.target.value as InvestmentPurpose }))}
-                  className="w-full px-3 py-2.5 rounded-xl text-xs font-bold border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white outline-none focus:ring-2 focus:ring-brand-500 transition-all cursor-pointer"
-                >
-                  <option value="all">{t.advisor_purpose_all || (isRtl ? 'كافة الأهداف' : 'All Objectives')}</option>
-                  <option value="residential">{t.advisor_purpose_residential || (isRtl ? 'سكن عائلي واستقرار' : 'Family Home / Residence')}</option>
-                  <option value="investment">{t.advisor_purpose_investment || (isRtl ? 'استثمار وتأجير سنوي' : 'Rental Income Investment')}</option>
-                  <option value="resale">{t.advisor_purpose_resale || (isRtl ? 'إعادة بيع ونمو رأسمالي' : 'Capital Appreciation / Resale')}</option>
-                  <option value="coastal">{t.advisor_purpose_coastal || (isRtl ? 'مصيف وتأجير سياحي' : 'Summer / Coastal Vacation')}</option>
-                </select>
-              </div>
-
-              {/* Delivery Timeline */}
-              <div>
-                <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1.5 flex items-center gap-1.5">
-                  <Clock size={13} className="text-amber-500" />
-                  {t.advisor_timeline_label || (isRtl ? 'موعد وجاهزية الاستلام' : 'Delivery Status')}
-                </label>
-                <select
-                  value={profile.deliveryTimeline}
-                  onChange={(e) => setProfile(prev => ({ ...prev, deliveryTimeline: e.target.value as any }))}
-                  className="w-full px-3 py-2.5 rounded-xl text-xs font-bold border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white outline-none focus:ring-2 focus:ring-brand-500 transition-all cursor-pointer"
-                >
-                  <option value="all">{t.advisor_timeline_all || (isRtl ? 'أي موعد استلام' : 'Any Delivery Date')}</option>
-                  <option value="ready">{t.advisor_timeline_ready || (isRtl ? 'استلام فوري جاهز' : 'Immediate Delivery (Ready to Move)')}</option>
-                  <option value="1-2years">{t.advisor_timeline_1_2 || (isRtl ? 'خلال 1 - 2 سنة' : 'Within 1 - 2 Years')}</option>
-                  <option value="3+years">{t.advisor_timeline_3_plus || (isRtl ? 'تحت الإنشاء (3 سنوات فأكثر)' : 'Under Construction (3+ Years)')}</option>
-                </select>
-              </div>
-
-              {/* Preferred Payment Strategy */}
-              <div>
-                <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1.5 flex items-center gap-1.5">
-                  <KeyRound size={13} className="text-purple-500" />
-                  {isRtl ? 'خطة ونظام السداد المفضل' : 'Preferred Payment Strategy'}
-                </label>
-                <select
-                  value={profile.preferredPaymentPlan || 'all'}
-                  onChange={(e) => setProfile(prev => ({ ...prev, preferredPaymentPlan: e.target.value }))}
-                  className="w-full px-3 py-2.5 rounded-xl text-xs font-bold border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white outline-none focus:ring-2 focus:ring-brand-500 transition-all cursor-pointer"
-                >
-                  <option value="all">{isRtl ? 'كافة خطط السداد' : 'All Payment Plans'}</option>
-                  <option value="cash">{isRtl ? 'كاش مع خصم فوري' : 'Cash (With Immediate Discount)'}</option>
-                  <option value="installments">{isRtl ? 'أقساط مريحة طويلة الأجل' : 'Long-Term Installments'}</option>
-                  <option value="lowDown">{isRtl ? 'أقل مقدم حجز ممكن' : 'Low Down Payment'}</option>
-                  <option value="readyInstallments">{isRtl ? 'استلام فوري مع تقسيط' : 'Ready to Move with Installments'}</option>
-                </select>
-              </div>
-
-              {/* Bedrooms & Space */}
-              <div>
-                <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1.5 flex items-center gap-1.5">
-                  <Bed size={13} className="text-cyan-500" />
-                  {isRtl ? 'عدد الغرف والمساحة' : 'Bedrooms & Space'}
-                </label>
-                <select
-                  value={profile.bedrooms || 'all'}
-                  onChange={(e) => setProfile(prev => ({ ...prev, bedrooms: e.target.value }))}
-                  className="w-full px-3 py-2.5 rounded-xl text-xs font-bold border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white outline-none focus:ring-2 focus:ring-brand-500 transition-all cursor-pointer"
-                >
-                  <option value="all">{isRtl ? 'أي عدد غرف' : 'Any Bedrooms'}</option>
-                  <option value="1">{isRtl ? 'استوديو / غرفة واحدة' : '1 Bedroom / Studio'}</option>
-                  <option value="2">{isRtl ? 'غرفتين نوم' : '2 Bedrooms'}</option>
-                  <option value="3">{isRtl ? '3 غرف نوم' : '3 Bedrooms'}</option>
-                  <option value="4+">{isRtl ? '4 غرف فأكثر / فيلا' : '4+ Bedrooms / Villa'}</option>
-                </select>
-              </div>
-            </div>
-
-            {/* Real Estate Advisory Guidance & Quality Pillars Banner */}
-            <div className="bg-gradient-to-r from-slate-900 via-brand-950 to-slate-900 text-white p-5 rounded-2xl border border-brand-800/40 shadow-md">
-              <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 border-b border-white/10 pb-3 mb-4">
-                <div className="flex items-center gap-2.5">
-                  <div className="p-2 rounded-xl bg-brand-500/20 text-brand-300">
-                    <ShieldCheck size={20} />
-                  </div>
-                  <div>
-                    <h3 className="font-heading font-black text-sm sm:text-base text-white">
-                      {isRtl ? 'دعائم الاستشارة والتقييم العقاري الشامل' : 'Comprehensive Real Estate Advisory & Due Diligence'}
-                    </h3>
-                    <p className="text-[11px] text-slate-300">
-                      {isRtl ? 'منهجية حِتّتي لمساعدتك في اختيار أنسب قرار عقاري بأعلى معايير الأمان والشفافية' : 'HETTETY advisory methodology for informed, secure real estate acquisition'}
-                    </p>
-                  </div>
-                </div>
-                <span className="px-2.5 py-1 rounded-full text-[10px] font-black uppercase tracking-wider bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
-                  {isRtl ? 'استشارة مستقلة 100%' : '100% Unbiased Advisory'}
-                </span>
-              </div>
-
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs">
-                <div className="bg-white/5 p-3 rounded-xl border border-white/5 space-y-1">
-                  <div className="flex items-center gap-1.5 font-bold text-white text-xs">
-                    <Building2 size={14} className="text-brand-400" />
-                    <span>{isRtl ? 'سابقة أعمال المطور' : 'Developer Track Record'}</span>
-                  </div>
-                  <p className="text-[11px] text-slate-300 leading-relaxed">
-                    {isRtl ? 'فحص تاريخ المشروعات المسلمة ومعدل إنجاز الأعمال الإنشائية بالموقع الفعلي.' : 'Review of delivered projects, construction pace, and verified on-site milestones.'}
-                  </p>
-                </div>
-
-                <div className="bg-white/5 p-3 rounded-xl border border-white/5 space-y-1">
-                  <div className="flex items-center gap-1.5 font-bold text-white text-xs">
-                    <MapPin size={14} className="text-emerald-400" />
-                    <span>{isRtl ? 'الموقع والمحاور الحيوية' : 'Strategic Location'}</span>
-                  </div>
-                  <p className="text-[11px] text-slate-300 leading-relaxed">
-                    {isRtl ? 'تقييم سهولة الوصول، القرب من المدارس والجامعات، ومحاور الطرق الرئيسية.' : 'Proximity to primary transit corridors, lifestyle hubs, and essential infrastructure.'}
-                  </p>
-                </div>
-
-                <div className="bg-white/5 p-3 rounded-xl border border-white/5 space-y-1">
-                  <div className="flex items-center gap-1.5 font-bold text-white text-xs">
-                    <FileText size={14} className="text-cyan-400" />
-                    <span>{isRtl ? 'فحص العقود والشهر العقاري' : 'Legal & Contract Audit'}</span>
-                  </div>
-                  <p className="text-[11px] text-slate-300 leading-relaxed">
-                    {isRtl ? 'التأكد من سلامة التراخيص وتوافق بنود السداد دون أي أعباء خفية.' : 'Verification of land licenses, title validity, and payment terms without hidden clauses.'}
-                  </p>
-                </div>
-              </div>
-            </div>
-          </div>
-
-          {/* Section 2: Strategic Real Estate Advisory Indicators */}
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
-            <div className="bg-gradient-to-br from-emerald-50 to-emerald-100/50 dark:from-emerald-950/40 dark:to-emerald-900/20 border border-emerald-200/80 dark:border-emerald-800/60 p-4 rounded-2xl flex flex-col justify-between">
-              <span className="text-[11px] font-bold text-emerald-800 dark:text-emerald-300 flex items-center gap-1.5">
-                <MapPin size={14} /> {t.advisor_metric_yield || (isRtl ? 'الموقع والوصول الاستراتيجي' : 'Location & Strategic Advantage')}
-              </span>
-              <div className="mt-2">
-                <div className="text-lg sm:text-xl font-black text-emerald-600 dark:text-emerald-400 truncate">
-                  {profile.preferredLocation === 'all' ? (isRtl ? 'كافة المناطق' : 'All Hubs') : profile.preferredLocation}
-                </div>
-                <span className="text-[10px] text-emerald-700/80 dark:text-emerald-400/80 font-medium">
-                  {isRtl ? 'قرب مباشر من المحاور الرئيسية' : 'Direct access to main corridors'}
-                </span>
-              </div>
-            </div>
-
-            <div className="bg-gradient-to-br from-blue-50 to-blue-100/50 dark:from-blue-950/40 dark:to-blue-900/20 border border-blue-200/80 dark:border-blue-800/60 p-4 rounded-2xl flex flex-col justify-between">
-              <span className="text-[11px] font-bold text-blue-800 dark:text-blue-300 flex items-center gap-1.5">
-                <Building2 size={14} /> {t.advisor_metric_growth || (isRtl ? 'جودة التشطيب وجاهزية الاستلام' : 'Finishing & Delivery Quality')}
-              </span>
-              <div className="mt-2">
-                <div className="text-lg sm:text-xl font-black text-blue-600 dark:text-blue-400 truncate">
-                  {profile.deliveryTimeline === 'ready' 
-                    ? (isRtl ? 'استلام فوري جاهز' : 'Ready to Move') 
-                    : profile.deliveryTimeline === '1-2years' 
-                    ? (isRtl ? 'تسليم 1 - 2 سنة' : '1 - 2 Years')
-                    : profile.deliveryTimeline === '3+years'
-                    ? (isRtl ? 'تحت الإنشاء' : 'Under Construction')
-                    : (isRtl ? 'خيارات متعددة' : 'Diverse Options')}
-                </div>
-                <span className="text-[10px] text-blue-700/80 dark:text-blue-400/80 font-medium">
-                  {isRtl ? 'فحص دقيق لمواصفات التسليم' : 'Verified handover specs'}
-                </span>
-              </div>
-            </div>
-
-            <div className="bg-gradient-to-br from-brand-50 to-brand-100/50 dark:from-brand-950/40 dark:to-brand-900/20 border border-brand-200/80 dark:border-brand-800/60 p-4 rounded-2xl flex flex-col justify-between">
-              <span className="text-[11px] font-bold text-brand-800 dark:text-brand-300 flex items-center gap-1.5">
-                <ShieldCheck size={14} /> {t.advisor_metric_total_return || (isRtl ? 'سمعة المطور وسابقة الأعمال' : 'Developer Track Record')}
-              </span>
-              <div className="mt-2">
-                <div className="text-lg sm:text-xl font-black text-brand-600 dark:text-brand-400 truncate">
-                  {isRtl ? 'مطورون معتمدون' : 'Verified Developers'}
-                </div>
-                <span className="text-[10px] text-brand-700/80 dark:text-brand-400/80 font-medium">
-                  {isRtl ? 'فحص التراخيص وسجل الإنجاز' : 'Licensed with proven completion'}
-                </span>
-              </div>
-            </div>
-
-            <div className="bg-gradient-to-br from-purple-50 to-purple-100/50 dark:from-purple-950/40 dark:to-purple-900/20 border border-purple-200/80 dark:border-purple-800/60 p-4 rounded-2xl flex flex-col justify-between">
-              <span className="text-[11px] font-bold text-purple-800 dark:text-purple-300 flex items-center gap-1.5">
-                <KeyRound size={14} /> {t.advisor_metric_payback || (isRtl ? 'مرونة خطط وأقساط السداد' : 'Payment Plan Flexibility')}
-              </span>
-              <div className="mt-2">
-                <div className="text-lg sm:text-xl font-black text-purple-600 dark:text-purple-400 truncate">
-                  {profile.preferredPaymentPlan === 'cash' 
-                    ? (isRtl ? 'كاش مع خصم' : 'Cash Discount')
-                    : profile.preferredPaymentPlan === 'installments'
-                    ? (isRtl ? 'أقساط ممتدة' : 'Extended Years')
-                    : (isRtl ? 'أنظمة متعددة' : 'Multiple Plans')}
-                </div>
-                <span className="text-[10px] text-purple-700/80 dark:text-purple-400/80 font-medium">
-                  {isRtl ? 'خطط دفع مريحة بدون فوائد' : 'Interest-free flexible plans'}
-                </span>
-              </div>
-            </div>
-          </div>
-
-          {/* Section 2.5: Dedicated User Budget, ROI & Annual Yield Dashboard */}
-          <div className="bg-gradient-to-br from-slate-900 via-brand-950 to-slate-900 text-white rounded-2xl p-6 border border-brand-800/40 shadow-xl space-y-6">
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-white/10 pb-4">
-              <div>
-                <div className="flex items-center gap-2">
-                  <span className="p-1.5 rounded-lg bg-emerald-500/20 text-emerald-400">
-                    <PieChart size={18} />
-                  </span>
-                  <h3 className="font-heading font-black text-base sm:text-lg">
-                    {isRtl ? 'لوحة التقييم المالي والعائد الاستثماري لميزانيتك' : 'Personalized Budget & Investment Yield Dashboard'}
-                  </h3>
-                </div>
-                <p className="text-xs text-slate-300 mt-1">
-                  {isRtl ? 'تحليل مباشر لمدى توافق قدرتك الشرائية وحساب العائد السنوي المتوقع' : 'Live analysis of your financial capacity, projected annual yield, and portfolio fit'}
-                </p>
-              </div>
-
-              <div className="flex items-center gap-2">
-                <span className="px-3 py-1 rounded-full text-xs font-black bg-brand-500/20 text-brand-300 border border-brand-500/30">
-                  {profile.preferredLocation === 'all' ? (isRtl ? 'عموم السوق المصري' : 'Market-wide') : profile.preferredLocation}
-                </span>
-              </div>
-            </div>
-
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-              {/* Metric 1: Budget Allocation */}
-              <div className="bg-white/5 rounded-xl p-4 border border-white/5">
-                <span className="text-[11px] font-bold text-slate-400 block mb-1 flex items-center gap-1.5">
-                  <Landmark size={13} className="text-emerald-400" />
-                  {isRtl ? 'الميزانية المعتمدة' : 'Allocated Budget'}
-                </span>
-                <div className="text-xl font-black text-emerald-400">
-                  {profile.budget > 0 ? `${profile.budget.toLocaleString()} ${profile.currency || 'EGP'}` : (isRtl ? 'مرن / غير محدد' : 'Flexible')}
-                </div>
-                <div className="text-[10px] text-slate-300 mt-1.5 space-y-0.5">
-                  <div>{isRtl ? 'المقدم المتاح:' : 'Down payment:'} <span className="font-bold text-white">{profile.downPayment > 0 ? `${profile.downPayment.toLocaleString()} ${profile.currency || 'EGP'}` : (isRtl ? 'مرن' : 'Flexible')}</span></div>
-                  <div>{isRtl ? 'القسط الشهري:' : 'Monthly:'} <span className="font-bold text-white">{profile.monthlyCapacity > 0 ? `${profile.monthlyCapacity.toLocaleString()} ${profile.currency || 'EGP'}` : (isRtl ? 'مرن' : 'Flexible')}</span></div>
-                </div>
-              </div>
-
-              {/* Metric 2: Annual Rental Yield */}
-              <div className="bg-white/5 rounded-xl p-4 border border-white/5">
-                <span className="text-[11px] font-bold text-slate-400 block mb-1 flex items-center gap-1.5">
-                  <PieChart size={13} className="text-cyan-400" />
-                  {isRtl ? 'العائد الإيجاري السنوي' : 'Annual Rental Yield'}
-                </span>
-                <div className="text-xl font-black text-cyan-400">
-                  {getDistrictBenchmark(profile.preferredLocation, profile.propertyType).rentalYield}%
-                </div>
-                <p className="text-[10px] text-slate-300 mt-1.5">
-                  {profile.budget > 0 
-                    ? (isRtl 
-                        ? `دخل إيجاري تقديري ~${Math.round((profile.budget * getDistrictBenchmark(profile.preferredLocation, profile.propertyType).rentalYield) / 100).toLocaleString()} ${profile.currency || 'EGP'} سنوياً`
-                        : `Estimated ~${Math.round((profile.budget * getDistrictBenchmark(profile.preferredLocation, profile.propertyType).rentalYield) / 100).toLocaleString()} ${profile.currency || 'EGP'}/year`)
-                    : (isRtl ? 'متوسط العائد الإيجاري بالمنطقة' : 'Average area rental return')}
-                </p>
-              </div>
-
-              {/* Metric 3: Capital Appreciation */}
-              <div className="bg-white/5 rounded-xl p-4 border border-white/5">
-                <span className="text-[11px] font-bold text-slate-400 block mb-1 flex items-center gap-1.5">
-                  <Sparkles size={13} className="text-amber-400" />
-                  {isRtl ? 'النمو الرأسمالي السنوي' : 'Annual Capital Growth'}
-                </span>
-                <div className="text-xl font-black text-amber-400">
-                  +{getDistrictBenchmark(profile.preferredLocation, profile.propertyType).capitalGrowth}%
-                </div>
-                <p className="text-[10px] text-slate-300 mt-1.5">
-                  {isRtl 
-                    ? `إجمالي العائد المركب: ${(getDistrictBenchmark(profile.preferredLocation, profile.propertyType).rentalYield + getDistrictBenchmark(profile.preferredLocation, profile.propertyType).capitalGrowth)}% سنوياً`
-                    : `Total combined return: ${(getDistrictBenchmark(profile.preferredLocation, profile.propertyType).rentalYield + getDistrictBenchmark(profile.preferredLocation, profile.propertyType).capitalGrowth)}%/year`}
-                </p>
-              </div>
-
-              {/* Metric 4: Fit Breakdown */}
-              <div className="bg-white/5 rounded-xl p-4 border border-white/5">
-                <span className="text-[11px] font-bold text-slate-400 block mb-1 flex items-center gap-1.5">
-                  <CheckCircle2 size={13} className="text-emerald-400" />
-                  {isRtl ? 'تطابق العقارات مع ميزانيتك' : 'Property Budget Fit'}
-                </span>
-                <div className="text-xl font-black text-emerald-400 flex items-center gap-2">
-                  <span>{stats.perfectCount}</span>
-                  <span className="text-xs font-normal text-slate-400">
-                    {isRtl ? `من أصل ${evaluatedProperties.length}` : `of ${evaluatedProperties.length}`}
-                  </span>
-                </div>
-                <div className="text-[10px] text-slate-300 mt-1.5 flex items-center gap-2 flex-wrap">
-                  <span className="text-emerald-400 font-bold">{stats.perfectCount} {isRtl ? 'مناسب' : 'Perfect'}</span>
-                  <span>•</span>
-                  <span className="text-amber-400 font-bold">{stats.stretchCount} {isRtl ? 'فرص قريبة' : 'Stretch'}</span>
-                  <span>•</span>
-                  <span className="text-red-400 font-bold">{stats.mismatchCount} {isRtl ? 'أعلى من الميزانية' : 'Mismatch'}</span>
-                </div>
-              </div>
-            </div>
-
-            {/* Top Developers Matching */}
-            <div className="pt-2 border-t border-white/10 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs">
-              <span className="text-slate-400 font-bold flex items-center gap-1.5">
-                <Building2 size={13} className="text-brand-400" />
-                {isRtl ? 'أبرز المطورين المتوافقين مع معاييرك:' : 'Top Compatible Developers:'}
-              </span>
-              <div className="flex items-center gap-2 flex-wrap">
-                {['Hyde Park Developments', 'Mountain View', 'SODIC', 'Emaar Misr'].map(dev => (
-                  <span key={dev} className="px-2.5 py-1 rounded-lg bg-white/10 text-white font-bold text-[11px] border border-white/10">
-                    {dev}
-                  </span>
-                ))}
-              </div>
-            </div>
-          </div>
-
-          {/* Section 3: Property Matching & Due Diligence Review */}
-          <div className="space-y-4">
-            <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
-              <div>
-                <h2 className="font-heading font-black text-lg text-slate-900 dark:text-white flex items-center gap-2">
-                  <Building2 className="text-brand-500" size={20} />
-                  {isRtl ? 'العقارات والمشروعات المفحوصة' : 'Properties Evaluated for You'}
-                  <span className="text-xs bg-slate-200 dark:bg-slate-800 px-2 py-0.5 rounded-full font-bold">
-                    {filteredProperties.length}
-                  </span>
-                </h2>
-                <p className="text-xs text-slate-500 dark:text-slate-400">
-                  {isRtl ? 'فحص شامل لمواصفات كل عقار، موقعه، جاهزية الاستلام، ومطابقته لمتطلباتك' : 'Comprehensive analysis of each property, location, delivery timeline, and feature fit'}
-                </p>
-              </div>
-
-              {/* Match Category Filters */}
-              <div className="flex items-center gap-1.5 bg-white dark:bg-slate-900 p-1 rounded-xl border border-slate-200 dark:border-slate-800 text-xs font-bold shrink-0">
-                <button
-                  type="button"
-                  onClick={() => setFitCategoryFilter('all')}
-                  className={`px-3 py-1.5 rounded-lg transition-all cursor-pointer ${fitCategoryFilter === 'all' ? 'bg-brand-600 text-white shadow-sm' : 'text-slate-600 dark:text-slate-400 hover:text-slate-900'}`}
-                >
-                  {isRtl ? 'الكل' : 'All'} ({stats.totalCount})
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setFitCategoryFilter('perfect')}
-                  className={`px-3 py-1.5 rounded-lg transition-all cursor-pointer flex items-center gap-1 ${fitCategoryFilter === 'perfect' ? 'bg-green-600 text-white shadow-sm' : 'text-green-700 dark:text-green-400 hover:bg-green-50 dark:hover:bg-green-950/40'}`}
-                >
-                  <CheckCircle2 size={13} /> {t.advisor_perfect_title || (isRtl ? 'مناسب تماماً' : 'Perfect Match')} ({stats.perfectCount})
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setFitCategoryFilter('stretch')}
-                  className={`px-3 py-1.5 rounded-lg transition-all cursor-pointer flex items-center gap-1 ${fitCategoryFilter === 'stretch' ? 'bg-amber-600 text-white shadow-sm' : 'text-amber-700 dark:text-amber-400 hover:bg-amber-50 dark:hover:bg-amber-950/40'}`}
-                >
-                  <AlertTriangle size={13} /> {t.advisor_stretch_title || (isRtl ? 'فرص مميزة' : 'Recommended Opportunities')} ({stats.stretchCount})
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setFitCategoryFilter('mismatch')}
-                  className={`px-3 py-1.5 rounded-lg transition-all cursor-pointer flex items-center gap-1 ${fitCategoryFilter === 'mismatch' ? 'bg-red-600 text-white shadow-sm' : 'text-red-700 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/40'}`}
-                >
-                  <XCircle size={13} /> {t.advisor_mismatch_title || (isRtl ? 'خيارات بديلة' : 'Alternative Options')} ({stats.mismatchCount})
-                </button>
-              </div>
-            </div>
-
-            {/* Property Cards Grid */}
-            {filteredProperties.length === 0 ? (
-              <div className="bg-white dark:bg-slate-900 rounded-3xl p-12 text-center border border-slate-200 dark:border-slate-800 space-y-3">
-                <Building2 size={40} className="mx-auto text-slate-300 dark:text-slate-700" />
-                <h3 className="font-bold text-slate-700 dark:text-slate-300">
-                  {isRtl ? 'لا توجد عقارات تطابق هذا الفلتر حالياً' : 'No properties match this filter currently'}
-                </h3>
-                <p className="text-xs text-slate-400 max-w-md mx-auto">
-                  {isRtl ? 'يمكنك اختيار مناطق أو أنواع عقارات إضافية في محددات البحث بالأعلى.' : 'Try selecting additional districts or property types in the search criteria above.'}
-                </p>
-              </div>
-            ) : (
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                {filteredProperties.map(fit => {
-                  const { property, matchScore, category, reasons } = fit;
-                  const hasReal3D = !!(property.threeDTour?.assetUrl || property.digitalTwinUrl);
-                  const has360 = !!(property.panoramas && property.panoramas.length > 0);
-                  const hasPhotoRelief = !!(property.images && property.images.length > 1);
-                  const canOpenSpatialViewer = hasReal3D || has360 || hasPhotoRelief;
-
-                  return (
-                    <div
-                      key={property.id}
-                      className={`bg-white dark:bg-slate-900 rounded-2xl border p-5 transition-all hover:shadow-lg flex flex-col justify-between space-y-4 ${
-                        category === 'perfect'
-                          ? 'border-green-300 dark:border-green-800/60 shadow-green-500/5'
-                          : category === 'stretch'
-                          ? 'border-amber-300 dark:border-amber-800/60 shadow-amber-500/5'
-                          : 'border-slate-200 dark:border-slate-800 opacity-80'
-                      }`}
-                    >
-                      {/* Header with status badge */}
-                      <div>
-                        <div className="flex items-start justify-between gap-3 mb-2">
-                          <div className="flex-1 min-w-0">
-                            <div className="flex items-center gap-2 mb-1 flex-wrap">
-                              {category === 'perfect' && (
-                                <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-black bg-green-100 dark:bg-green-900/40 text-green-700 dark:text-green-300 border border-green-200 dark:border-green-800">
-                                  <CheckCircle2 size={12} /> {t.advisor_perfect_title || (isRtl ? 'مناسب تماماً' : 'Perfect Match')} ({matchScore}%)
-                                </span>
-                              )}
-                              {category === 'stretch' && (
-                                <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-black bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-300 border border-amber-200 dark:border-amber-800">
-                                  <AlertTriangle size={12} /> {t.advisor_stretch_title || (isRtl ? 'فرصة مميزة' : 'Recommended')} ({matchScore}%)
-                                </span>
-                              )}
-                              {category === 'mismatch' && (
-                                <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-black bg-red-100 dark:bg-red-900/40 text-red-700 dark:text-red-300 border border-red-200 dark:border-red-800">
-                                  <XCircle size={12} /> {t.advisor_mismatch_title || (isRtl ? 'خيار بديل' : 'Alternative')} ({matchScore}%)
-                                </span>
-                              )}
-
-                              {property.yallaSahel && (
-                                <span className="text-[10px] font-bold bg-cyan-50 dark:bg-cyan-900/30 text-cyan-700 dark:text-cyan-300 px-2 py-0.5 rounded">
-                                  🌊 {isRtl ? 'ساحل حِتّتي' : 'Sahel'}
-                                </span>
-                              )}
-
-                              {hasReal3D ? (
-                                <span className="text-[10px] font-bold bg-emerald-50 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-300 px-2 py-0.5 rounded flex items-center gap-1">
-                                  <Box size={10} /> 3D Tour
-                                </span>
-                              ) : has360 ? (
-                                <span className="text-[10px] font-bold bg-blue-50 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300 px-2 py-0.5 rounded flex items-center gap-1">
-                                  <Box size={10} /> 360°
-                                </span>
-                              ) : hasPhotoRelief ? (
-                                <span className="text-[10px] font-bold bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400 px-2 py-0.5 rounded flex items-center gap-1">
-                                  <Box size={10} /> {isRtl ? 'مجسم' : 'Relief'}
-                                </span>
-                              ) : null}
-                            </div>
-
-                            <h3 
-                              onClick={() => onOpenProperty && onOpenProperty(property.id)}
-                              className="font-heading font-bold text-base text-slate-900 dark:text-white line-clamp-1 hover:text-brand-600 transition-colors cursor-pointer"
-                            >
-                              {property.title}
-                            </h3>
-                            <div className="flex items-center text-xs text-slate-500 dark:text-slate-400 gap-1 mt-0.5">
-                              <MapPin size={12} />
-                              <span className="truncate">{property.location}</span>
-                            </div>
-                          </div>
-
-                          <div className="text-end shrink-0">
-                            <div className="text-base font-black text-brand-600 dark:text-brand-400">
-                              {property.price ? `${property.price.toLocaleString()} ${property.currency || 'EGP'}` : (isRtl ? 'عند الطلب' : 'On Request')}
-                            </div>
-                            <span className="text-[10px] font-bold text-slate-500 dark:text-slate-400 block">
-                              {property.propertyType || (isRtl ? 'وحدة سكنية' : 'Property')}
-                            </span>
-                          </div>
-                        </div>
-
-                        {/* Real Estate Specifications Grid */}
-                        <div className="grid grid-cols-3 gap-2 bg-slate-50 dark:bg-slate-800/50 p-2.5 rounded-xl text-center border border-slate-100 dark:border-slate-800 my-3">
-                          <div>
-                            <span className="block text-[9px] text-slate-400 font-bold">{isRtl ? 'نوع العقار' : 'Type'}</span>
-                            <span className="text-xs font-black text-slate-800 dark:text-slate-200 truncate block">
-                              {property.propertyType || (isRtl ? 'سكني' : 'Residential')}
-                            </span>
-                          </div>
-                          <div>
-                            <span className="block text-[9px] text-slate-400 font-bold">{isRtl ? 'الغرف والمساحة' : 'Bedrooms & Area'}</span>
-                            <span className="text-xs font-black text-slate-800 dark:text-slate-200 block">
-                              {property.bedrooms ? `${property.bedrooms} ${isRtl ? 'غرف' : 'beds'}` : '-'} • {property.area ? `${property.area} م²` : '-'}
-                            </span>
-                          </div>
-                          <div>
-                            <span className="block text-[9px] text-slate-400 font-bold">{isRtl ? 'جاهزية الاستلام' : 'Handover'}</span>
-                            <span className="text-xs font-black text-emerald-600 dark:text-emerald-400 block truncate">
-                              {property.deliveryDate || property.deliveryTimeline || (isRtl ? 'غير محدد' : 'Not stated')}
-                            </span>
-                          </div>
-                        </div>
-
-                        {/* Payment Plan & Features Line */}
-                        <div className="flex items-center justify-between text-[11px] text-slate-600 dark:text-slate-300 px-1 font-semibold mb-2">
-                          <span className="flex items-center gap-1">
-                            <KeyRound size={12} className="text-purple-500" />
-                            {property.paymentPlans && property.paymentPlans.length > 0 ? (
-                              <span>{property.paymentPlans[0].downPayment}% {isRtl ? 'مقدم' : 'down'} • {property.paymentPlans[0].years} {isRtl ? 'سنوات تقسيط' : 'yrs'}</span>
-                            ) : (
-                              <span>{isRtl ? 'أنظمة سداد مرنة متاحة' : 'Flexible Payment Plans'}</span>
-                            )}
-                          </span>
-                          {hasReal3D ? (
-                            <span className="text-emerald-600 dark:text-emerald-400 flex items-center gap-1 text-[10px] font-bold">
-                              <Box size={12} /> {isRtl ? 'جولة 3D تفاعلية' : '3D Walkthrough'}
-                            </span>
-                          ) : has360 ? (
-                            <span className="text-blue-600 dark:text-blue-400 flex items-center gap-1 text-[10px] font-semibold">
-                              <Box size={12} /> {isRtl ? 'بانوراما 360°' : '360° Tour'}
-                            </span>
-                          ) : hasPhotoRelief ? (
-                            <span className="text-slate-500 dark:text-slate-400 flex items-center gap-1 text-[10px]">
-                              <Box size={12} /> {isRtl ? 'معاينة مجسمة للصورة' : 'Photo Relief'}
-                            </span>
-                          ) : null}
-                        </div>
-
-                        {/* Evaluation Reasons Checklist */}
-                        <div className="space-y-1 my-2">
-                          {reasons.slice(0, 3).map((r, rIdx) => (
-                            <div key={rIdx} className="flex items-start gap-1.5 text-xs text-slate-600 dark:text-slate-300">
-                              {category === 'mismatch' ? (
-                                <XCircle size={13} className="text-red-500 shrink-0 mt-0.5" />
-                              ) : category === 'stretch' ? (
-                                <AlertTriangle size={13} className="text-amber-500 shrink-0 mt-0.5" />
-                              ) : (
-                                <Check size={13} className="text-green-500 shrink-0 mt-0.5" />
-                              )}
-                              <span className="leading-tight">{r}</span>
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-
-                      {/* Action buttons */}
-                      <div className="flex items-center gap-2 pt-3 border-t border-slate-100 dark:border-slate-800">
-                        <button
-                          type="button"
-                          onClick={() => handleAskAboutUnit(fit)}
-                          className="flex-1 py-2 px-3 rounded-xl bg-brand-50 hover:bg-brand-100 dark:bg-brand-900/30 dark:hover:bg-brand-900/50 text-brand-700 dark:text-brand-300 text-xs font-bold transition-all flex items-center justify-center gap-1.5 cursor-pointer"
-                        >
-                          <Sparkles size={14} />
-                          {t.advisor_ask_ai_unit || (isRtl ? 'استشر المستشار العقاري' : 'Ask Advisor')}
-                        </button>
-
-                        {onShow3D && canOpenSpatialViewer && (
-                          <button
-                            type="button"
-                            onClick={() => onShow3D(property.id)}
-                            className="p-2 rounded-xl bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 transition-colors cursor-pointer shrink-0"
-                            title="3D Tour"
-                          >
-                            <Box size={16} />
-                          </button>
-                        )}
-
-                        {onOpenProperty && (
-                          <button
-                            type="button"
-                            onClick={() => onOpenProperty(property.id)}
-                            className="py-2 px-3 rounded-xl bg-slate-900 hover:bg-black dark:bg-slate-100 dark:hover:bg-white text-white dark:text-slate-900 text-xs font-bold transition-all shrink-0 cursor-pointer"
-                          >
-                            {isRtl ? 'التفاصيل' : 'Details'}
-                          </button>
-                        )}
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-          </div>
-        </div>
-
-        {/* RIGHT / CHAT: Conversational Real Estate Advisor */}
-        <div className={`flex-col h-full bg-white dark:bg-slate-900 border-s border-slate-200 dark:border-slate-800 z-20 ${activeView === 'dashboard' ? 'hidden' : 'flex'} ${activeView === 'split' ? 'lg:w-[45%] xl:w-[40%]' : 'w-full'}`}>
-          {/* Chat Header */}
-          <div className="p-4 border-b border-slate-100 dark:border-slate-800 flex items-center justify-between shrink-0">
-            <div className="flex items-center gap-2.5">
-              <div className="w-8 h-8 rounded-xl bg-brand-600 flex items-center justify-center text-white shadow-sm">
-                <Sparkles size={16} />
-              </div>
-              <div>
-                <h3 className="font-heading font-bold text-sm text-slate-900 dark:text-white">
-                  {isRtl ? 'محادثة المستشار العقاري' : 'Real Estate Consultation Chat'}
-                </h3>
-                <span className="text-[10px] text-emerald-500 font-bold flex items-center gap-1">
-                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
-                  {isRtl ? 'متصل وجاهز للاستشارة' : 'Online & Ready'}
-                </span>
-              </div>
-            </div>
-
-            <button
-              type="button"
-              onClick={() => {
-                setMessages([]);
-                setCurrentSessionId(null);
-              }}
-              className="text-xs text-slate-400 hover:text-brand-600 font-bold cursor-pointer transition-colors"
-            >
-              {isRtl ? 'محادثة جديدة' : 'New Session'}
-            </button>
-          </div>
-
-          {/* Messages Container */}
-          <div ref={scrollRef} className="flex-1 overflow-y-auto p-4 space-y-4 custom-scrollbar bg-slate-50/50 dark:bg-slate-950/50">
+      {/* Main Full-Width Chat Container */}
+      <main className="flex-1 flex flex-col overflow-hidden relative">
+        {/* Messages Stream */}
+        <div ref={scrollRef} className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-4 custom-scrollbar bg-slate-50/50 dark:bg-slate-950/50">
+          <div className="max-w-4xl mx-auto w-full flex flex-col space-y-4">
             {messages.length === 0 && (
-              <div className="flex flex-col items-center justify-center h-full text-center p-4 space-y-4">
-                <div className="w-14 h-14 rounded-2xl bg-brand-100 dark:bg-brand-900/30 text-brand-600 dark:text-brand-400 flex items-center justify-center shadow-inner">
-                  <Sparkles size={28} />
+              <div className="flex flex-col items-center justify-center py-8 sm:py-12 text-center space-y-6">
+                <div className="w-16 h-16 rounded-3xl bg-gradient-to-tr from-brand-600 to-accent-500 text-white flex items-center justify-center shadow-lg shadow-brand-500/20">
+                  <Sparkles size={32} />
                 </div>
-                <div>
-                  <h4 className="font-heading font-black text-base text-slate-900 dark:text-white">
+                <div className="max-w-md">
+                  <h2 className="font-heading font-black text-lg sm:text-xl text-slate-900 dark:text-white">
                     {isRtl ? 'مستشارك العقاري الموثوق في خدمتك' : 'Your Trusted Real Estate Advisor'}
-                  </h4>
-                  <p className="text-xs text-slate-500 dark:text-slate-400 mt-1 max-w-xs leading-relaxed">
+                  </h2>
+                  <p className="text-xs sm:text-sm text-slate-500 dark:text-slate-400 mt-2 leading-relaxed">
                     {isRtl
-                      ? 'شاركني منطقتك المفضلة، نوع العقار، وموعد الاستلام المناسب، وسأقدم لك استشارة عقارية شاملة ومقارنة بين أفضل المشروعات والمطورين.'
-                      : 'Share your preferred district, property type, and delivery timeline, and I will guide you with comprehensive real estate advice and project comparisons.'}
+                      ? 'شاركني منطقتك المفضلة، نوع العقار، وميزانيتك، وسأقدم لك استشارة عقارية شاملة ومقارنة بين أفضل المشروعات والمطورين في السوق المصري.'
+                      : 'Share your preferred district, property type, or budget, and I will guide you with comprehensive real estate advice and project comparisons across Egypt.'}
                   </p>
                 </div>
 
-                {/* Quick Consultation Chips (No Hardcoded Numbers) */}
-                <div className="w-full space-y-2 pt-2">
+                {/* Quick Consultation Chips */}
+                <div className="w-full max-w-2xl grid grid-cols-1 sm:grid-cols-2 gap-2.5 pt-2">
                   {[
                     isRtl ? 'قارن لي بين أفضل كمبوندات التجمع الخامس والشيخ زايد من حيث سابقة أعمال المطورين والخدمات.' : 'Compare top compounds in New Cairo and Sheikh Zayed regarding developer track record and amenities.',
                     isRtl ? 'عايز شقة استلام فوري في القاهرة الجديدة متوفر فيها جولة افتراضية 3D.' : 'I want a ready-to-move apartment in New Cairo with an interactive 3D virtual tour.',
@@ -1375,7 +642,7 @@ Disclaimer: Provided by HETTETY Smart Real Estate Advisor for property selection
                       key={idx}
                       type="button"
                       onClick={() => handleSend(chip)}
-                      className={`w-full text-start p-2.5 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 hover:border-brand-500 hover:text-brand-600 text-xs font-bold text-slate-700 dark:text-slate-300 transition-all shadow-2xs cursor-pointer ${isRtl ? 'text-right' : 'text-left'}`}
+                      className={`text-start p-3 rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 hover:border-brand-500 hover:text-brand-600 hover:shadow-xs text-xs font-bold text-slate-700 dark:text-slate-300 transition-all cursor-pointer ${isRtl ? 'text-right' : 'text-left'}`}
                     >
                       {chip}
                     </button>
@@ -1389,11 +656,11 @@ Disclaimer: Provided by HETTETY Smart Real Estate Advisor for property selection
                 <div className={`w-8 h-8 rounded-xl shrink-0 flex items-center justify-center text-xs font-bold shadow-sm ${m.role === 'user' ? 'bg-brand-600 text-white' : 'bg-slate-200 dark:bg-slate-800 text-brand-600 dark:text-brand-400'}`}>
                   {m.role === 'user' ? <User size={14} /> : <Sparkles size={14} />}
                 </div>
-                <div className={`flex flex-col max-w-[85%] ${m.role === 'user' ? 'items-end' : 'items-start'}`}>
-                  <div className={`p-3.5 rounded-2xl text-xs sm:text-sm font-medium leading-relaxed ${m.role === 'user' ? 'bg-brand-600 text-white rounded-tr-none' : 'bg-white dark:bg-slate-800 border border-slate-100 dark:border-slate-700 text-slate-800 dark:text-slate-200 rounded-tl-none shadow-sm'}`}>
+                <div className={`flex flex-col max-w-[85%] sm:max-w-[75%] ${m.role === 'user' ? 'items-end' : 'items-start'}`}>
+                  <div className={`p-4 rounded-2xl text-xs sm:text-sm font-medium leading-relaxed ${m.role === 'user' ? 'bg-brand-600 text-white rounded-tr-none' : 'bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-slate-800 dark:text-slate-200 rounded-tl-none shadow-xs'}`}>
                     <p className="whitespace-pre-wrap">{m.text}</p>
                   </div>
-                  <span className="text-[9px] text-slate-400 mt-1 px-1">
+                  <span className="text-[10px] text-slate-400 mt-1 px-1">
                     {m.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                   </span>
                 </div>
@@ -1405,17 +672,19 @@ Disclaimer: Provided by HETTETY Smart Real Estate Advisor for property selection
                 <div className="w-8 h-8 rounded-xl bg-slate-200 dark:bg-slate-800 flex items-center justify-center shrink-0">
                   <Sparkles size={14} className="text-slate-400" />
                 </div>
-                <div className="bg-white dark:bg-slate-800 p-3.5 rounded-2xl rounded-tl-none border border-slate-100 dark:border-slate-700 space-y-2 w-2/3">
-                  <div className="h-3 bg-slate-200 dark:bg-slate-700 rounded-full w-full"></div>
-                  <div className="h-3 bg-slate-200 dark:bg-slate-700 rounded-full w-4/5"></div>
+                <div className="bg-white dark:bg-slate-900 p-4 rounded-2xl rounded-tl-none border border-slate-200 dark:border-slate-800 space-y-2 w-2/3 max-w-md">
+                  <div className="h-3 bg-slate-200 dark:bg-slate-800 rounded-full w-full"></div>
+                  <div className="h-3 bg-slate-200 dark:bg-slate-800 rounded-full w-4/5"></div>
                 </div>
               </div>
             )}
           </div>
+        </div>
 
-          {/* Chat Input Bar */}
-          <div className="p-3 sm:p-4 bg-white dark:bg-slate-900 border-t border-slate-100 dark:border-slate-800 shrink-0">
-            <div className={`flex items-end gap-2 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-2xl p-2 focus-within:ring-2 focus-within:ring-brand-500 transition-all ${isRtl ? 'flex-row-reverse' : ''}`}>
+        {/* Chat Input Bar */}
+        <div className="p-4 bg-white dark:bg-slate-900 border-t border-slate-200 dark:border-slate-800 shrink-0">
+          <div className="max-w-4xl mx-auto w-full">
+            <div className={`flex items-end gap-2 bg-slate-50 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700 rounded-2xl p-2.5 focus-within:ring-2 focus-within:ring-brand-500 transition-all ${isRtl ? 'flex-row-reverse' : ''}`}>
               <textarea
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
@@ -1427,7 +696,7 @@ Disclaimer: Provided by HETTETY Smart Real Estate Advisor for property selection
                 }}
                 placeholder={t.advisor_chat_placeholder || (isRtl ? 'اسأل مستشارك العقاري (مثال: قارن بين أفضل كمبوندات زايد، أو شقق 3 غرف استلام فوري)...' : 'Ask your real estate advisor (e.g. compare top compounds in Zayed, or find 3-bedroom ready to move)...')}
                 rows={2}
-                className="w-full bg-transparent border-none outline-none text-xs sm:text-sm text-slate-900 dark:text-white resize-none p-1"
+                className="w-full bg-transparent border-none outline-none text-xs sm:text-sm text-slate-900 dark:text-white resize-none p-1 placeholder:text-slate-400"
               />
               <button
                 type="button"
@@ -1436,12 +705,12 @@ Disclaimer: Provided by HETTETY Smart Real Estate Advisor for property selection
                 className="p-2.5 rounded-xl bg-brand-600 hover:bg-brand-700 disabled:opacity-40 text-white transition-all cursor-pointer shrink-0 shadow-sm"
                 aria-label={isRtl ? 'إرسال' : 'Send'}
               >
-                <Send size={15} className={isRtl ? 'rotate-180' : ''} />
+                <Send size={16} className={isRtl ? 'rotate-180' : ''} />
               </button>
             </div>
           </div>
         </div>
-      </div>
+      </main>
     </div>
   );
 };

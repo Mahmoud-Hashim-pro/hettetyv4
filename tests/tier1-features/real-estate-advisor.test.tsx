@@ -136,7 +136,7 @@ describe('Real Estate Advisor & Financial Intelligence Engine', () => {
   });
 
   describe('3. RealEstateAdvisor Component UI & Real Estate Advisory Guide', () => {
-    it('renders real estate criteria selectors and strategic advisory indicators', () => {
+    it('renders real estate advisor header, status indicator and export action', () => {
       render(
         <RealEstateAdvisor
           t={TRANSLATIONS.en}
@@ -149,23 +149,13 @@ describe('Real Estate Advisor & Financial Intelligence Engine', () => {
       // Verify title & badges
       expect(screen.getByText(TRANSLATIONS.en.advisor_title)).toBeInTheDocument();
       expect(screen.getByText(TRANSLATIONS.en.advisor_subtitle)).toBeInTheDocument();
-
-      // Verify real estate criteria selectors
-      expect(screen.getAllByText('Target District').length).toBeGreaterThanOrEqual(1);
-      expect(screen.getAllByText('Property Type').length).toBeGreaterThanOrEqual(1);
-      expect(screen.getByText(TRANSLATIONS.en.advisor_purpose_label)).toBeInTheDocument();
-      expect(screen.getByText(TRANSLATIONS.en.advisor_timeline_label)).toBeInTheDocument();
-      expect(screen.getByText('Preferred Payment Strategy')).toBeInTheDocument();
-      expect(screen.getByText('Bedrooms & Space')).toBeInTheDocument();
-
-      // Verify strategic advisory indicators
-      expect(screen.getByText(TRANSLATIONS.en.advisor_metric_yield)).toBeInTheDocument();
-      expect(screen.getByText(TRANSLATIONS.en.advisor_metric_growth)).toBeInTheDocument();
-      expect(screen.getAllByText(TRANSLATIONS.en.advisor_metric_total_return).length).toBeGreaterThanOrEqual(1);
-      expect(screen.getByText(TRANSLATIONS.en.advisor_metric_payback)).toBeInTheDocument();
+      expect(screen.getByText('Hettety Advisor')).toBeInTheDocument();
+      expect(screen.getByText('Online & Ready')).toBeInTheDocument();
+      expect(screen.getByText('New Session')).toBeInTheDocument();
+      expect(screen.getByText('Export Report')).toBeInTheDocument();
     });
 
-    it('filters properties by category tabs and allows asking advisor about a unit', async () => {
+    it('renders suggested consultation prompt chips and allows sending inquiries', async () => {
       render(
         <RealEstateAdvisor
           t={TRANSLATIONS.en}
@@ -175,54 +165,21 @@ describe('Real Estate Advisor & Financial Intelligence Engine', () => {
         />
       );
 
-      // Category filter buttons
-      const perfectTabs = screen.getAllByRole('button', { name: new RegExp(TRANSLATIONS.en.advisor_perfect_title, 'i') });
-      expect(perfectTabs.length).toBeGreaterThan(0);
+      // Check welcome title
+      expect(screen.getByText('Your Trusted Real Estate Advisor')).toBeInTheDocument();
 
-      const allTabs = screen.getAllByRole('button', { name: /All/i });
-      expect(allTabs.length).toBeGreaterThan(0);
+      // Find consultation prompt chips
+      const chip = screen.getByText(/Compare top compounds in New Cairo and Sheikh Zayed/i);
+      expect(chip).toBeInTheDocument();
 
-      // Switch to perfect tab
-      fireEvent.click(perfectTabs[0]);
+      // Click prompt chip
+      fireEvent.click(chip);
 
-      // Verify chat interaction with "Ask Advisor"
-      const askUnitBtns = screen.queryAllByRole('button', { name: /Ask Advisor/i });
-      if (askUnitBtns.length > 0) {
-        fireEvent.click(askUnitBtns[0]);
-        // The chat conversation will have the dispatched advisory inquiry message
-        expect(await screen.findByText(/I need your real estate consultation/i)).toBeInTheDocument();
-      }
+      // The chat conversation will have the user inquiry
+      expect(screen.getByText(/Compare top compounds in New Cairo and Sheikh Zayed/i)).toBeInTheDocument();
     });
 
-    it('triggers onShow3D and onOpenProperty when property action buttons are clicked', () => {
-      const mockShow3D = vi.fn();
-      const mockOpenProperty = vi.fn();
-
-      render(
-        <RealEstateAdvisor
-          t={TRANSLATIONS.en}
-          isRtl={false}
-          properties={MOCK_TEST_PROPERTIES}
-          userName="Tarek"
-          onShow3D={mockShow3D}
-          onOpenProperty={mockOpenProperty}
-        />
-      );
-
-      // Click unit title to trigger onOpenProperty
-      const unitHeading = screen.getByText('Modern New Cairo Penthouse');
-      fireEvent.click(unitHeading);
-      expect(mockOpenProperty).toHaveBeenCalledWith('prop-2');
-
-      // Click 3D tour button to trigger onShow3D
-      const tourButtons = screen.getAllByTitle('3D Tour');
-      expect(tourButtons.length).toBeGreaterThan(0);
-      fireEvent.click(tourButtons[0]);
-      expect(mockShow3D).toHaveBeenCalled();
-    });
-
-    it('renders real estate advisory guidance banner and exports advisory report', () => {
-      // Mock URL methods for file download
+    it('exports advisory report when export button is clicked', () => {
       const mockCreateObjectURL = vi.fn().mockReturnValue('blob:mock-url');
       const mockRevokeObjectURL = vi.fn();
       window.URL.createObjectURL = mockCreateObjectURL;
@@ -237,19 +194,30 @@ describe('Real Estate Advisor & Financial Intelligence Engine', () => {
         />
       );
 
-      // Verify Real Estate Advisory Guidance Banner exists
-      expect(screen.getByText('Comprehensive Real Estate Advisory & Due Diligence')).toBeInTheDocument();
-      expect(screen.getAllByText('Developer Track Record').length).toBeGreaterThanOrEqual(1);
-      expect(screen.getAllByText('Strategic Location').length).toBeGreaterThanOrEqual(1);
-      expect(screen.getByText('Legal & Contract Audit')).toBeInTheDocument();
-
-      // Click Export Report button
       const exportBtn = screen.getByRole('button', { name: /Export Report/i });
       expect(exportBtn).toBeInTheDocument();
       fireEvent.click(exportBtn);
 
       expect(mockCreateObjectURL).toHaveBeenCalled();
       expect(mockRevokeObjectURL).toHaveBeenCalled();
+    });
+
+    it('handles user typing and sending messages in the chat input', () => {
+      render(
+        <RealEstateAdvisor
+          t={TRANSLATIONS.en}
+          isRtl={false}
+          properties={MOCK_TEST_PROPERTIES}
+          userName="Tarek"
+        />
+      );
+
+      const input = screen.getByPlaceholderText(/Ask your real estate advisor/i);
+      fireEvent.change(input, { target: { value: 'Show me apartments in New Cairo' } });
+      const sendBtn = screen.getByLabelText('Send');
+      fireEvent.click(sendBtn);
+
+      expect(screen.getByText('Show me apartments in New Cairo')).toBeInTheDocument();
     });
   });
 

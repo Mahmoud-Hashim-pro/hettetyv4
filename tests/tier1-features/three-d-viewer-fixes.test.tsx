@@ -1,6 +1,6 @@
 import React from 'react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { render, screen, fireEvent } from '@testing-library/react';
 import {
   isGaussianSplatUrl,
   isMeshAssetUrl,
@@ -9,6 +9,7 @@ import {
 } from '../../src/lib/3d/spz-parser';
 import { computeSplatSortOrder, cameraMovedSignificantly } from '../../src/lib/3d/splat-sort';
 import Property3DViewer from '../../src/components/Property3DViewer';
+import { MeasurementTool } from '../../src/components/3d/MeasurementTool';
 
 describe('Tier 1 — 3D Viewer & Pipeline Bug Fixes (BUG-01 to BUG-04)', () => {
   describe('BUG-02: URL Classification & Mode Conflation Prevention', () => {
@@ -207,6 +208,118 @@ describe('Tier 1 — 3D Viewer & Pipeline Bug Fixes (BUG-01 to BUG-04)', () => {
       expect(screen.getByTestId('level-tag-3dgs')).toBeDefined();
       // Must NOT display the waypoint-only preview notice
       expect(screen.queryByTestId('waypoint-preview-notice')).toBeNull();
+    });
+  });
+
+  describe('Phase 14: Point-to-Point 3D Metric Measurement Tool & Confidence Rating', () => {
+    it('calculates Euclidean metric distance and displays distance in meters with confidence rating for calibrated models', () => {
+      // Points (0, 0, 0) and (3, 4, 0) -> distance is 5.00 meters
+      const { container } = render(
+        <MeasurementTool
+          isCalibrated={true}
+          calibrationConfidence={0.96}
+          selectedPoints={[[0, 0, 0], [3, 4, 0]]}
+          isRtl={false}
+        />
+      );
+
+      // Distance readout
+      expect(container.textContent).toContain('5.00 m');
+      expect(screen.getByText('Point A')).toBeDefined();
+      expect(screen.getByText('Point B')).toBeDefined();
+
+      // Confidence rating display
+      const confidenceBadge = screen.getByTestId('measurement-confidence-badge');
+      expect(confidenceBadge.textContent).toContain('High Confidence (96%)');
+
+      const confidenceRating = screen.getByTestId('measurement-confidence-rating');
+      expect(confidenceRating.textContent).toContain('Confidence:');
+      expect(confidenceRating.textContent).toContain('High Confidence (96%)');
+
+      // Calibration status
+      expect(screen.getByText(/calibrated from the verified metric reconstructed geometry/i)).toBeDefined();
+      expect(screen.queryByText(/not metric-calibrated/i)).toBeNull();
+    });
+
+    it('displays prominent warning and approximate flag when 3D model is uncalibrated', () => {
+      const { container } = render(
+        <MeasurementTool
+          isCalibrated={false}
+          selectedPoints={[[0, 0, 0], [1, 2, 2]]}
+          isRtl={false}
+        />
+      );
+
+      // Distance readout: 3.00 m (sqrt(1+4+4) = 3)
+      expect(container.textContent).toContain('3.00 m');
+      expect(screen.getByText(/\(approx\.\)/i)).toBeDefined();
+      expect(screen.getByText(/Notice: Model geometry is not metric-calibrated/i)).toBeDefined();
+      expect(screen.getByText(/Approximate \(Uncalibrated\)/i)).toBeDefined();
+    });
+
+    it('resets measurement points and triggers onReset callback', () => {
+      let resetTriggered = false;
+      render(
+        <MeasurementTool
+          isCalibrated={true}
+          selectedPoints={[[1, 1, 1], [4, 5, 1]]}
+          onReset={() => {
+            resetTriggered = true;
+          }}
+          isRtl={false}
+        />
+      );
+
+      const resetBtn = screen.getByTitle('Reset');
+      fireEvent.click(resetBtn);
+      expect(resetTriggered).toBe(true);
+    });
+
+    it('renders localized Arabic labels and metric units in RTL mode', () => {
+      const { container } = render(
+        <MeasurementTool
+          isCalibrated={true}
+          calibrationConfidence={0.95}
+          selectedPoints={[[0, 0, 0], [2, 0, 0]]}
+          isRtl={true}
+        />
+      );
+
+      expect(container.textContent).toContain('2.00 متر');
+      expect(screen.getByText('نقطة أ')).toBeDefined();
+      expect(screen.getByText('نقطة ب')).toBeDefined();
+      expect(screen.getByText('أداة القياس الفراغي الهندسي')).toBeDefined();
+      expect(container.textContent).toContain('ثقة عالية (95%)');
+    });
+  });
+
+  describe('Phase 15: Spatial Waypoint Navigation & Mobile Touch Controls', () => {
+    it('provides accessible min-height touch targets for navigation and close controls on mobile', () => {
+      const waypointOnlyTour = {
+        id: 'tour-touch-test',
+        rooms: [
+          { id: 'r1', name: 'Master Bedroom', position: [0, 0, 0] as [number, number, number] },
+          { id: 'r2', name: 'Living Room', position: [4, 0, 0] as [number, number, number] },
+        ],
+      };
+
+      const onClose = vi.fn();
+      render(
+        <Property3DViewer
+          propertyId="prop-touch-test"
+          threeDTour={waypointOnlyTour as any}
+          title="Beach Villa"
+          onClose={onClose}
+        />
+      );
+
+      // Close button must satisfy accessible touch target
+      const closeBtn = screen.getByLabelText(/Close 3D viewer/i);
+      expect(closeBtn.className).toContain('min-w-[48px]');
+      expect(closeBtn.className).toContain('min-h-[48px]');
+
+      fireEvent.click(closeBtn);
+      expect(onClose).toHaveBeenCalled();
     });
   });
 });

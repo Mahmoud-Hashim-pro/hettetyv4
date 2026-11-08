@@ -782,6 +782,11 @@ const Property3DViewer: React.FC<Property3DViewerProps> = ({ images = [], depthM
                    threeDTour?.representation?.mesh?.isCalibratedMetric ??
                    threeDTour?.representation?.gaussianSplat?.isCalibratedMetric)
             )}
+            calibrationConfidence={
+              threeDTour?.qualityReport?.overallScore
+                ? threeDTour.qualityReport.overallScore / 100
+                : undefined
+            }
             isRtl={isRtl}
             onClose={() => setShowMeasure(false)}
           />

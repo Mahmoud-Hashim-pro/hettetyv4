@@ -1,5 +1,5 @@
-import React, { useState } from 'react';
-import { Ruler, RotateCcw, Info, AlertTriangle, Crosshair, MapPin, X } from 'lucide-react';
+import React, { useState, useMemo } from 'react';
+import { Ruler, RotateCcw, Info, AlertTriangle, Crosshair, MapPin, X, CheckCircle2 } from 'lucide-react';
 import { Vec3, calculateDistanceMeters, formatDistance } from '../../lib/3d/coordinates';
 
 interface MeasurementToolProps {
@@ -10,6 +10,8 @@ interface MeasurementToolProps {
   selectedPoints?: [Vec3 | null, Vec3 | null];
   onPointSelect?: (point: Vec3) => void;
   onReset?: () => void;
+  calibrationConfidence?: number;
+  confidenceRating?: string;
 }
 
 export const MeasurementTool: React.FC<MeasurementToolProps> = ({
@@ -20,6 +22,8 @@ export const MeasurementTool: React.FC<MeasurementToolProps> = ({
   selectedPoints: controlledPoints,
   onPointSelect,
   onReset,
+  calibrationConfidence,
+  confidenceRating,
 }) => {
   const [internalPointA, setInternalPointA] = useState<Vec3 | null>(null);
   const [internalPointB, setInternalPointB] = useState<Vec3 | null>(null);
@@ -28,6 +32,20 @@ export const MeasurementTool: React.FC<MeasurementToolProps> = ({
   const pointB = controlledPoints ? controlledPoints[1] : internalPointB;
 
   const distanceMeters = pointA && pointB ? calculateDistanceMeters(pointA, pointB) : null;
+
+  const resolvedConfidenceRating = useMemo(() => {
+    if (confidenceRating) return confidenceRating;
+    if (calibrationConfidence !== undefined) {
+      const pct = Math.round(calibrationConfidence * 100);
+      if (pct >= 90) return isRtl ? `ثقة عالية (${pct}%)` : `High Confidence (${pct}%)`;
+      if (pct >= 70) return isRtl ? `ثقة متوسطة (${pct}%)` : `Moderate Confidence (${pct}%)`;
+      return isRtl ? `ثقة منخفضة (${pct}%)` : `Low Confidence (${pct}%)`;
+    }
+    if (isCalibrated) {
+      return isRtl ? 'ثقة عالية (معاير 1:1)' : 'High Confidence (1:1 Calibrated)';
+    }
+    return isRtl ? 'تقريبي (غير معاير)' : 'Approximate (Uncalibrated)';
+  }, [confidenceRating, calibrationConfidence, isCalibrated, isRtl]);
 
   const handleReset = () => {
     setInternalPointA(null);
@@ -140,15 +158,33 @@ export const MeasurementTool: React.FC<MeasurementToolProps> = ({
       <div className="p-3 bg-brand-50 dark:bg-brand-950/40 border border-brand-200 dark:border-brand-800/60 rounded-xl mb-3 text-center">
         <span className="text-[10px] text-brand-600 dark:text-brand-400 font-bold block mb-0.5">
           {isRtl ? 'المسافة المحسوبة' : 'Calculated Distance'}
-          {!isCalibrated && (
+          {!isCalibrated ? (
             <span className="ms-1 text-[9px] text-amber-500 font-normal">
               {isRtl ? '(تقريبي)' : '(approx.)'}
+            </span>
+          ) : (
+            <span className="ms-1 text-[9px] text-emerald-600 dark:text-emerald-400 font-medium" data-testid="measurement-confidence-badge">
+              ({resolvedConfidenceRating})
             </span>
           )}
         </span>
         <span className="text-xl font-black text-brand-700 dark:text-brand-300">
           {distanceMeters !== null ? formatDistance(distanceMeters, isRtl) : '--'}
         </span>
+        {distanceMeters !== null && (
+          <div className="mt-1 flex items-center justify-center gap-1 text-[10px]" data-testid="measurement-confidence-rating">
+            <span className="text-slate-500 dark:text-slate-400">{isRtl ? 'مستوى الثقة:' : 'Confidence:'}</span>
+            <span
+              className={`font-semibold ${
+                isCalibrated
+                  ? 'text-emerald-600 dark:text-emerald-400'
+                  : 'text-amber-500'
+              }`}
+            >
+              {resolvedConfidenceRating}
+            </span>
+          </div>
+        )}
         {distanceMeters === null && (
           <span className="text-[10px] text-slate-400 dark:text-slate-500 block mt-1">
             {isRtl ? 'انقر على النموذج لتحديد نقطتي البداية والنهاية' : 'Click 3D model to select start and end points'}

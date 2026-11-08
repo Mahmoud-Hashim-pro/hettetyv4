@@ -202,6 +202,11 @@ export const TourViewer: React.FC<TourViewerProps> = ({
                     tour?.representation?.mesh?.isCalibratedMetric ??
                     tour?.representation?.gaussianSplat?.isCalibratedMetric)
               )}
+              calibrationConfidence={
+                tour?.qualityReport?.overallScore
+                  ? tour.qualityReport.overallScore / 100
+                  : undefined
+              }
               isRtl={isRtl}
               selectedPoints={measurementPoints}
               onPointSelect={handlePointPicked}

@@ -21,6 +21,7 @@ const ALLOWED_MIME_TYPES = new Set([
   'image/png',
   'image/webp',
   'image/gif',
+  'video/mp4',
 ]);
 
 function assertFetchable(raw: string, callerUid?: string, isAdmin?: boolean): URL {
@@ -44,6 +45,9 @@ function assertFetchable(raw: string, callerUid?: string, isAdmin?: boolean): UR
 
   // Verify storage object namespace: only /properties/ and /user_documents/ are allowed
   const decodedPath = decodeURIComponent(url.pathname);
+  if (decodedPath.includes('..') || url.pathname.includes('..') || decodedPath.includes('\\')) {
+    throw new ProviderError('Path traversal detected in fileUrl: ".." and "\\" are not permitted', 400, false);
+  }
   if (!/\/o\/(properties|user_documents)\//.test(decodedPath)) {
     throw new ProviderError('Invalid storage object namespace: only properties and user_documents are permitted', 400, false);
   }
@@ -100,6 +104,10 @@ function verifyFileSignature(buf: Buffer, mimeType: string) {
   } else if (mimeType === 'image/webp') {
     if (buf.length < 12 || buf.toString('ascii', 0, 4) !== 'RIFF' || buf.toString('ascii', 8, 12) !== 'WEBP') {
       throw new ProviderError('File content does not match WebP signature', 400, false);
+    }
+  } else if (mimeType === 'video/mp4') {
+    if (buf.length < 8 || buf.toString('ascii', 4, 8) !== 'ftyp') {
+      throw new ProviderError('File content does not match MP4 signature (ftyp)', 400, false);
     }
   } else if (mimeType === 'image/gif') {
     if (buf.length < 6 || !buf.toString('ascii', 0, 6).startsWith('GIF8')) {

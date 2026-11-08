@@ -3,6 +3,13 @@ import { useFrame, useThree } from '@react-three/fiber';
 import * as THREE from 'three';
 import { Room } from '../../types';
 import { ParsedGaussianCloud } from '../../lib/3d/spz-parser';
+import {
+  SYNC_SORT_THRESHOLD,
+  applySplatOrder,
+  cameraMovedSignificantly,
+  computeSplatSortOrder,
+  createSplatSortBuffers,
+} from '../../lib/3d/splat-sort';
 
 export const SPLAT_VERTEX_SHADER = `
   attribute vec3 instancePosition;
@@ -105,6 +112,13 @@ export const GaussianRenderer: React.FC<GaussianRendererProps> = ({
   const meshRef = useRef<THREE.Mesh>(null);
   const { camera } = useThree();
   const lastSortTime = useRef(0);
+  const lastSortPos = useRef<[number, number, number] | null>(null);
+  const lastSortDir = useRef<[number, number, number] | null>(null);
+  const tmpDir = useRef(new THREE.Vector3());
+  const sortBuffers = useRef<ReturnType<typeof createSplatSortBuffers> | null>(null);
+  const sortWorkerRef = useRef<Worker | null>(null);
+  const sortInFlight = useRef(false);
+  const sortRequestId = useRef(0);
 
   // Instanced billboard geometry setup (quad: 4 vertices, 6 indices)
   const { geometry, material, posAttr, colorAttr, opacityAttr, scaleAttr, rotAttr } = useMemo(() => {
@@ -128,11 +142,16 @@ export const GaussianRenderer: React.FC<GaussianRendererProps> = ({
     baseGeo.setAttribute('uv', new THREE.BufferAttribute(uvs, 2));
     baseGeo.setIndex(new THREE.BufferAttribute(indices, 1));
 
-    const posAttr = new THREE.InstancedBufferAttribute(cloud.positions, 3);
-    const colorAttr = new THREE.InstancedBufferAttribute(cloud.colors, 3);
-    const opacityAttr = new THREE.InstancedBufferAttribute(cloud.opacities, 1);
-    const scaleAttr = new THREE.InstancedBufferAttribute(cloud.scales, 3);
-    const rotAttr = new THREE.InstancedBufferAttribute(cloud.rotations, 4);
+    const posAttr = new THREE.InstancedBufferAttribute(new Float32Array(cloud.positions), 3);
+    const colorAttr = new THREE.InstancedBufferAttribute(new Float32Array(cloud.colors), 3);
+    const opacityAttr = new THREE.InstancedBufferAttribute(new Float32Array(cloud.opacities), 1);
+    const scaleAttr = new THREE.InstancedBufferAttribute(new Float32Array(cloud.scales), 3);
+    const rotAttr = new THREE.InstancedBufferAttribute(new Float32Array(cloud.rotations), 4);
+    posAttr.setUsage(THREE.DynamicDrawUsage);
+    colorAttr.setUsage(THREE.DynamicDrawUsage);
+    opacityAttr.setUsage(THREE.DynamicDrawUsage);
+    scaleAttr.setUsage(THREE.DynamicDrawUsage);
+    rotAttr.setUsage(THREE.DynamicDrawUsage);
 
     baseGeo.setAttribute('instancePosition', posAttr);
     baseGeo.setAttribute('instanceColor', colorAttr);
@@ -169,6 +188,61 @@ export const GaussianRenderer: React.FC<GaussianRendererProps> = ({
     };
   }, [geometry, material]);
 
+  const applyOrder = (order: ArrayLike<number>) => {
+    applySplatOrder(
+      order,
+      cloud,
+      {
+        positions: posAttr.array as Float32Array,
+        colors: colorAttr.array as Float32Array,
+        opacities: opacityAttr.array as Float32Array,
+        scales: scaleAttr.array as Float32Array,
+        rotations: rotAttr.array as Float32Array,
+      }
+    );
+    posAttr.needsUpdate = true;
+    colorAttr.needsUpdate = true;
+    opacityAttr.needsUpdate = true;
+    scaleAttr.needsUpdate = true;
+    rotAttr.needsUpdate = true;
+  };
+
+  // Large scenes sort in a Web Worker so the render loop never stalls.
+  useEffect(() => {
+    lastSortPos.current = null;
+    lastSortDir.current = null;
+    sortInFlight.current = false;
+    if (cloud.count <= SYNC_SORT_THRESHOLD || typeof Worker === 'undefined') {
+      sortWorkerRef.current = null;
+      return;
+    }
+    let worker: Worker | null = null;
+    try {
+      worker = new Worker(new URL('../../lib/3d/splat-sort.worker.ts', import.meta.url), { type: 'module' });
+    } catch {
+      sortWorkerRef.current = null;
+      return;
+    }
+    worker.onmessage = (event: MessageEvent<{ type: string; requestId: number; order: Uint32Array }>) => {
+      if (event.data?.type !== 'sorted') return;
+      sortInFlight.current = false;
+      if (event.data.requestId !== sortRequestId.current) return;
+      applyOrder(event.data.order);
+    };
+    worker.onerror = () => {
+      // Fall back to inline sorting rather than rendering unsorted.
+      sortInFlight.current = false;
+      sortWorkerRef.current = null;
+    };
+    worker.postMessage({ type: 'init', positions: new Float32Array(cloud.positions), count: cloud.count });
+    sortWorkerRef.current = worker;
+    return () => {
+      worker?.terminate();
+      if (sortWorkerRef.current === worker) sortWorkerRef.current = null;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cloud, posAttr]);
+
   useFrame((state) => {
     // Room camera interpolation
     if (activeRoom?.camera?.position) {
@@ -176,74 +250,50 @@ export const GaussianRenderer: React.FC<GaussianRendererProps> = ({
       state.camera.position.lerp(new THREE.Vector3(tx, ty, tz), 0.05);
     }
 
-    // Depth sorting trigger every 200ms: back-to-front ordering for proper alpha composition
     const now = performance.now();
-    if (now - lastSortTime.current > 200 && cloud.count <= 100000) {
-      lastSortTime.current = now;
-      const camPos = camera.position;
-      const count = cloud.count;
-      const indices = new Int32Array(count);
-      const distances = new Float32Array(count);
+    const minInterval = cloud.count <= SYNC_SORT_THRESHOLD ? 120 : 250;
+    if (now - lastSortTime.current < minInterval) return;
 
-      for (let i = 0; i < count; i++) {
-        indices[i] = i;
-        const dx = cloud.positions[i * 3] - camPos.x;
-        const dy = cloud.positions[i * 3 + 1] - camPos.y;
-        const dz = cloud.positions[i * 3 + 2] - camPos.z;
-        distances[i] = dx * dx + dy * dy + dz * dz;
-      }
+    const camPos: [number, number, number] = [camera.position.x, camera.position.y, camera.position.z];
+    camera.getWorldDirection(tmpDir.current);
+    const camDir: [number, number, number] = [tmpDir.current.x, tmpDir.current.y, tmpDir.current.z];
+    if (!cameraMovedSignificantly(lastSortPos.current, lastSortDir.current, camPos, camDir)) return;
 
-      // Sort descending: largest distance first (back to front)
-      indices.sort((a, b) => distances[b] - distances[a]);
+    lastSortTime.current = now;
+    lastSortPos.current = camPos;
+    lastSortDir.current = camDir;
 
-      const curPos = posAttr.array as Float32Array;
-      const curCol = colorAttr.array as Float32Array;
-      const curOp = opacityAttr.array as Float32Array;
-      const curSc = scaleAttr.array as Float32Array;
-      const curRot = rotAttr.array as Float32Array;
-
-      const srcPos = cloud.positions;
-      const srcCol = cloud.colors;
-      const srcOp = cloud.opacities;
-      const srcSc = cloud.scales;
-      const srcRot = cloud.rotations;
-
-      for (let i = 0; i < count; i++) {
-        const orig = indices[i];
-        curPos[i * 3] = srcPos[orig * 3];
-        curPos[i * 3 + 1] = srcPos[orig * 3 + 1];
-        curPos[i * 3 + 2] = srcPos[orig * 3 + 2];
-
-        curCol[i * 3] = srcCol[orig * 3];
-        curCol[i * 3 + 1] = srcCol[orig * 3 + 1];
-        curCol[i * 3 + 2] = srcCol[orig * 3 + 2];
-
-        curOp[i] = srcOp[orig];
-
-        curSc[i * 3] = srcSc[orig * 3];
-        curSc[i * 3 + 1] = srcSc[orig * 3 + 1];
-        curSc[i * 3 + 2] = srcSc[orig * 3 + 2];
-
-        curRot[i * 4] = srcRot[orig * 4];
-        curRot[i * 4 + 1] = srcRot[orig * 4 + 1];
-        curRot[i * 4 + 2] = srcRot[orig * 4 + 2];
-        curRot[i * 4 + 3] = srcRot[orig * 4 + 3];
-      }
-
-      posAttr.needsUpdate = true;
-      colorAttr.needsUpdate = true;
-      opacityAttr.needsUpdate = true;
-      scaleAttr.needsUpdate = true;
-      rotAttr.needsUpdate = true;
+    const worker = sortWorkerRef.current;
+    if (worker) {
+      // Large scene: sort off the main thread; at most one request in flight.
+      if (sortInFlight.current) return;
+      sortInFlight.current = true;
+      worker.postMessage({ type: 'sort', requestId: ++sortRequestId.current, camPos, camDir });
+      return;
     }
+
+    // Small scene (or no Worker support): O(n) counting sort inline.
+    if (!sortBuffers.current || sortBuffers.current.order.length < cloud.count) {
+      sortBuffers.current = createSplatSortBuffers(cloud.count);
+    }
+    const order = computeSplatSortOrder(cloud.positions, cloud.count, camPos, camDir, sortBuffers.current);
+    applyOrder(order);
   });
 
   const groundY = cloud.bounds?.min?.[1] !== undefined ? cloud.bounds.min[1] : 0;
 
+  // One stable mesh per geometry. Instanced splats extend far beyond the base
+  // quad's bounds, so frustum culling against that quad would drop the scene.
+  const splatMesh = useMemo(() => {
+    const m = new THREE.Mesh(geometry, material);
+    m.frustumCulled = false;
+    return m;
+  }, [geometry, material]);
+
   return (
     <>
       <ambientLight intensity={1.0} />
-      <primitive object={new THREE.Mesh(geometry, material)} ref={meshRef} />
+      <primitive object={splatMesh} ref={meshRef} />
 
       {/* Ground plane for spatial grounding */}
       <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, groundY - 0.02, 0]}>

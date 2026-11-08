@@ -196,8 +196,11 @@ class ObjectStorageClient:
         os.makedirs(dest_dir, exist_ok=True)
         local_files = []
 
+        video_exts = (".mp4", ".mov", ".webm", ".avi", ".mkv")
         for i, url in enumerate(capture_urls):
-            filename = f"frame_{i:04d}.jpg"
+            clean_url = url.split("?")[0].lower()
+            matched_ext = next((ext for ext in video_exts if clean_url.endswith(ext)), None)
+            filename = f"capture_{i:04d}{matched_ext}" if matched_ext else f"frame_{i:04d}.jpg"
             dest_path = os.path.join(dest_dir, filename)
             if self.download_object(url, dest_path):
                 local_files.append(dest_path)

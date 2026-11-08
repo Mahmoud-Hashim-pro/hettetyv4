@@ -21,6 +21,7 @@ import { MeasurementTool } from './3d/MeasurementTool';
 import { SpatialAiAssistant } from './3d/SpatialAiAssistant';
 import { RoomNavigation } from './3d/RoomNavigation';
 import { TourViewer } from './3d/TourViewer';
+import { isExternalTourUrl, isGaussianSplatUrl, isMeshAssetUrl } from '../lib/3d/spz-parser';
 
 export {
   TourViewer,
@@ -514,11 +515,32 @@ export interface Property3DViewerProps {
   isRtl?: boolean;
 }
 
-const Property3DViewer: React.FC<Property3DViewerProps> = ({ images, depthMaps, panoramas, tourUrl, threeDTour, title, onClose, isRtl }) => {
-  const validImages = useMemo(() => images.filter(Boolean), [images]);
+const Property3DViewer: React.FC<Property3DViewerProps> = ({ images = [], depthMaps = [], panoramas = [], tourUrl, threeDTour, title, onClose, isRtl }) => {
+  const validImages = useMemo(() => (images || []).filter(Boolean), [images]);
   const validPanoramas = useMemo(() => (panoramas || []).filter(Boolean), [panoramas]);
   const rooms = useMemo(() => threeDTour?.rooms || [], [threeDTour]);
-  const hasTourAsset = Boolean(threeDTour?.assetUrl || rooms.length > 0);
+
+  // A real reconstructed 3D asset is a Gaussian splat, a mesh, or an external
+  // digital twin. Room waypoints alone are navigation metadata, not a model of
+  // the property, and must never be presented as a 3DGS reconstruction.
+  const isExternalTwin = Boolean(
+    threeDTour?.assetUrl && isExternalTourUrl(threeDTour.assetUrl, threeDTour.source)
+  );
+  const hasGaussianAsset = Boolean(
+    threeDTour?.representation?.gaussianSplat?.url ||
+      (!isExternalTwin && isGaussianSplatUrl(threeDTour?.assetUrl))
+  );
+  const hasMeshAsset = Boolean(
+    threeDTour?.representation?.mesh?.url ||
+      (!isExternalTwin && isMeshAssetUrl(threeDTour?.assetUrl))
+  );
+  const hasReal3DAsset = hasGaussianAsset || hasMeshAsset || isExternalTwin;
+  const hasSpatialWaypoints = rooms.length > 0;
+  const isReconstructionPending = Boolean(
+    threeDTour && ['failed', 'cancelled', 'processing', 'uploading', 'queued', 'optimizing'].includes(threeDTour.status)
+  );
+  const hasTourAsset = hasReal3DAsset || hasSpatialWaypoints || isReconstructionPending;
+  const isWaypointPreviewOnly = !hasReal3DAsset && !isReconstructionPending && hasSpatialWaypoints;
 
   const [mode, setMode] = useState<'tour' | 'pano' | 'depth'>(
     hasTourAsset ? 'tour' : validPanoramas.length ? 'pano' : 'depth'
@@ -601,16 +623,33 @@ const Property3DViewer: React.FC<Property3DViewerProps> = ({ images, depthMaps, 
           <h3 className="font-bold text-base sm:text-lg flex items-center gap-2">
             <Box size={20} className="text-accent-500" aria-hidden="true" />
             {mode === 'tour'
-              ? (isRtl ? 'جولة 3D تفاعلية (Waypoints)' : '3D Spatial Walkthrough')
+              ? isWaypointPreviewOnly
+                ? (isRtl ? 'معاينة نقاط الغرف (ليست نموذجاً ثلاثي الأبعاد)' : 'Spatial Waypoints Preview')
+                : (isRtl ? 'جولة 3D تفاعلية' : '3D Spatial Walkthrough')
               : mode === 'pano'
               ? (isRtl ? 'جولة 360°' : '360° Tour')
               : (isRtl ? 'معاينة مجسّمة للصورة' : 'Photo relief view')}
           </h3>
           {/* Spatial Representation Level Tag */}
           <div className="flex items-center gap-2 mt-1">
-            {mode === 'tour' && (
-              <span className="px-2 py-0.5 rounded-full bg-brand-500/20 text-brand-300 border border-brand-500/30 text-[10px] font-bold">
+            {mode === 'tour' && hasGaussianAsset && (
+              <span data-testid="level-tag-3dgs" className="px-2 py-0.5 rounded-full bg-brand-500/20 text-brand-300 border border-brand-500/30 text-[10px] font-bold">
                 {isRtl ? 'المستوى 2: تجسيم فراغي 3DGS' : 'Level 2: 3DGS Spatial Scene'}
+              </span>
+            )}
+            {mode === 'tour' && !hasGaussianAsset && hasMeshAsset && (
+              <span data-testid="level-tag-mesh" className="px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 text-[10px] font-bold">
+                {isRtl ? 'المستوى 2: مجسم شبكي معاد بناؤه' : 'Level 2: Reconstructed Mesh'}
+              </span>
+            )}
+            {mode === 'tour' && !hasGaussianAsset && !hasMeshAsset && isExternalTwin && (
+              <span data-testid="level-tag-external" className="px-2 py-0.5 rounded-full bg-indigo-500/20 text-indigo-300 border border-indigo-500/30 text-[10px] font-bold">
+                {isRtl ? 'توأم رقمي خارجي (Matterport / Polycam)' : 'External Digital Twin'}
+              </span>
+            )}
+            {mode === 'tour' && isWaypointPreviewOnly && (
+              <span data-testid="level-tag-waypoints" className="px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/30 text-[10px] font-bold">
+                {isRtl ? 'معاينة إرشادية — لم يُنشأ نموذج 3D بعد' : 'Preview only — no 3D reconstruction yet'}
               </span>
             )}
             {mode === 'pano' && (
@@ -665,7 +704,10 @@ const Property3DViewer: React.FC<Property3DViewerProps> = ({ images, depthMaps, 
                 mode === 'tour' ? 'bg-brand-600 text-white' : 'text-white/80 hover:text-white'
               }`}
             >
-              <Compass size={14} aria-hidden="true" /> {isRtl ? 'جولة الغرف 3D' : '3D Spatial'}
+              <Compass size={14} aria-hidden="true" />{' '}
+              {isWaypointPreviewOnly
+                ? (isRtl ? 'نقاط الغرف' : 'Room Waypoints')
+                : (isRtl ? 'جولة الغرف 3D' : '3D Spatial')}
             </button>
           )}
           {validPanoramas.length > 0 && (
@@ -753,7 +795,7 @@ const Property3DViewer: React.FC<Property3DViewerProps> = ({ images, depthMaps, 
       />
 
       {mode === 'tour' ? (
-        threeDTour && (threeDTour.representation?.gaussianSplat?.url || threeDTour.representation?.mesh?.url || threeDTour.source === 'matterport' || threeDTour.source === 'polycam') ? (
+        threeDTour && hasReal3DAsset ? (
           <div className="flex-1 w-full h-full relative">
             <TourViewer
               tour={threeDTour as any}
@@ -823,10 +865,21 @@ const Property3DViewer: React.FC<Property3DViewerProps> = ({ images, depthMaps, 
             )}
           </div>
         ) : rooms && rooms.length > 0 ? (
-          <Canvas camera={{ position: [0, 2, 5], fov: 60 }} className="flex-1" gl={{ antialias: true }}>
-            <color attach="background" args={['#05080f']} />
-            <SpatialTourScene rooms={rooms} activeRoomId={activeRoomId} onSelectRoom={setActiveRoomId} />
-          </Canvas>
+          <div className="flex-1 w-full h-full relative">
+            <Canvas camera={{ position: [0, 2, 5], fov: 60 }} className="flex-1" gl={{ antialias: true }}>
+              <color attach="background" args={['#05080f']} />
+              <SpatialTourScene rooms={rooms} activeRoomId={activeRoomId} onSelectRoom={setActiveRoomId} />
+            </Canvas>
+            <div
+              data-testid="waypoint-preview-notice"
+              role="note"
+              className="absolute bottom-24 left-1/2 -translate-x-1/2 z-20 max-w-md w-[90%] px-4 py-3 rounded-xl bg-amber-500/10 border border-amber-500/40 backdrop-blur text-amber-100 text-xs text-center pointer-events-none"
+            >
+              {isRtl
+                ? 'هذا مخطط إرشادي لمواقع الغرف فقط، وليس نموذجاً ثلاثي الأبعاد معاد بناؤه من صور العقار. سيظهر النموذج الحقيقي بعد اكتمال المعالجة.'
+                : 'This is a schematic of room positions only — not a 3D model reconstructed from the property photos. The real model appears once reconstruction is published.'}
+            </div>
+          </div>
         ) : (
           <div className="flex-1 w-full h-full flex flex-col items-center justify-center p-6 text-center bg-slate-950 text-white z-20">
             <div className="max-w-md p-6 bg-slate-900 border border-slate-800 rounded-2xl shadow-xl flex flex-col items-center">
@@ -937,4 +990,5 @@ const Property3DViewer: React.FC<Property3DViewerProps> = ({ images, depthMaps, 
   );
 };
 
+export { Property3DViewer };
 export default Property3DViewer;

@@ -109,6 +109,25 @@ def resolve_landmark_pid(
                     runner_count = len(runner_dists)
                     runner_mean_res = sum(runner_dists) / max(1, runner_count)
                     if runner_count == best_count and abs(runner_mean_res - best_mean_res) < 0.25:
+                        explicit_pid = landmark.get("colmap_point3d_id") or landmark.get("point3d_id")
+                        if explicit_pid is not None:
+                            try:
+                                exp_int = int(explicit_pid)
+                                if exp_int in (best_pid, runner_pid):
+                                    return exp_int
+                            except (ValueError, TypeError):
+                                pass
+
+                        # Spatial proximity check: if both candidates lie in the same 3D cluster (<0.08m),
+                        # they represent the same surveyed physical feature.
+                        if point3d_map:
+                            p1 = point3d_map.get(best_pid)
+                            p2 = point3d_map.get(runner_pid)
+                            if p1 and p2:
+                                dist_3d = math.hypot(p1[0] - p2[0], p1[1] - p2[1], p1[2] - p2[2])
+                                if dist_3d < 0.08:
+                                    return best_pid
+
                         logger.warning(
                             f"Landmark {landmark.get('id', 'unnamed')}: ambiguous candidate tie between "
                             f"{best_pid} ({best_mean_res:.2f}px) and {runner_pid} ({runner_mean_res:.2f}px). Failing closed."

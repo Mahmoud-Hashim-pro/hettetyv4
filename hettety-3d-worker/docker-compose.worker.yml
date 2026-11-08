@@ -1,0 +1,30 @@
+version: '3.8'
+
+services:
+  hettety-3d-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: hettety-gpu-worker-1
+    restart: unless-stopped
+    env_file:
+      - .env.worker
+    volumes:
+      - worker-workspace:/tmp/hettety_3d
+      - ./credentials:/app/credentials:ro
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    networks:
+      - hettety-network
+
+networks:
+  hettety-network:
+    external: true
+
+volumes:
+  worker-workspace:

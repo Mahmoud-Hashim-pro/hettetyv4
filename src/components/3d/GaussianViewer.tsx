@@ -4,8 +4,15 @@ import { OrbitControls } from '@react-three/drei';
 import * as THREE from 'three';
 import { Sparkles, AlertCircle, Loader2 } from 'lucide-react';
 import { ThreeDTour, Room } from '../../types';
-import { loadGaussianSplatAsset, ParsedGaussianCloud } from '../../lib/3d/spz-parser';
+import {
+  loadGaussianSplatAsset,
+  ParsedGaussianCloud,
+  GaussianLoadStage,
+  isExternalTourUrl,
+  isGaussianSplatUrl,
+} from '../../lib/3d/spz-parser';
 import { GaussianRenderer } from './GaussianRenderer';
+import { MAX_RENDERABLE_SPLATS } from '../../lib/3d/splat-sort';
 
 export { GaussianRenderer } from './GaussianRenderer';
 
@@ -24,34 +31,64 @@ export const GaussianViewer: React.FC<GaussianViewerProps> = ({
   isMeasuring = false,
   onPointPicked,
 }) => {
-  const splatUrl = tour?.representation?.gaussianSplat?.url || tour?.assetUrl;
+  const isExternal = isExternalTourUrl(tour?.assetUrl, tour?.source);
+  const splatUrl =
+    tour?.representation?.gaussianSplat?.url ||
+    (!isExternal && isGaussianSplatUrl(tour?.assetUrl) ? tour?.assetUrl : undefined);
+
   const [cloud, setCloud] = useState<ParsedGaussianCloud | null>(null);
   const [loading, setLoading] = useState(Boolean(splatUrl));
-  const [loadProgress, setLoadProgress] = useState(0);
+  const [loadProgress, setLoadProgress] = useState<number | null>(null);
+  const [loadStage, setLoadStage] = useState<GaussianLoadStage>('downloading');
+  const [loadedBytes, setLoadedBytes] = useState<number>(0);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   useEffect(() => {
     let active = true;
+    const abortController = new AbortController();
 
     if (!splatUrl) {
+      setCloud(null);
       setLoading(false);
       setErrorMessage(
-        isRtl
+        isExternal
+          ? isRtl
+            ? 'هذا الرابط يخص جولة خارجية (Matterport / Polycam) وليس ملف 3D Gaussian Splatting (.spz / .ply). يرجى استخدام وضع العرض الخارجي.'
+            : 'This tour uses an external walkthrough URL (Matterport / Polycam) rather than a binary 3D Gaussian Splatting (.spz / .ply) asset.'
+          : isRtl
           ? 'لا يتوفر ملف 3D Gaussian Splatting (.spz / .ply) لهذا العقار حتى الآن.'
           : 'No 3D Gaussian Splatting asset (.spz / .ply) is attached to this tour.'
       );
-      return;
+      return () => {
+        active = false;
+        abortController.abort();
+      };
     }
 
+    setCloud(null);
     setLoading(true);
     setErrorMessage(null);
-    setLoadProgress(15);
+    setLoadProgress(null);
+    setLoadStage('downloading');
+    setLoadedBytes(0);
 
-    loadGaussianSplatAsset(splatUrl, (percent) => {
-      if (active) setLoadProgress(percent);
-    })
+    loadGaussianSplatAsset(
+      splatUrl,
+      (percent) => {
+        if (active) setLoadProgress(percent);
+      },
+      {
+        signal: abortController.signal,
+        onStageChange: (detail) => {
+          if (!active) return;
+          setLoadStage(detail.stage);
+          setLoadedBytes(detail.loadedBytes);
+          setLoadProgress(detail.percent);
+        },
+      }
+    )
       .then((parsedCloud) => {
-        if (!active) return;
+        if (!active || abortController.signal.aborted) return;
         if (!parsedCloud || parsedCloud.count === 0) {
           setErrorMessage(
             isRtl
@@ -61,11 +98,20 @@ export const GaussianViewer: React.FC<GaussianViewerProps> = ({
           setLoading(false);
           return;
         }
+        if (parsedCloud.count > MAX_RENDERABLE_SPLATS) {
+          setErrorMessage(
+            isRtl
+              ? `المشهد كبير جداً للعرض في المتصفح (${parsedCloud.count.toLocaleString()} مجسم). الحد الأقصى ${MAX_RENDERABLE_SPLATS.toLocaleString()}. يرجى استخدام نسخة LOD أقل.`
+              : `Scene too large to render in the browser (${parsedCloud.count.toLocaleString()} Gaussians; limit ${MAX_RENDERABLE_SPLATS.toLocaleString()}). Publish a lower LOD.`
+          );
+          setLoading(false);
+          return;
+        }
         setCloud(parsedCloud);
         setLoading(false);
       })
       .catch((err) => {
-        if (!active) return;
+        if (!active || abortController.signal.aborted || err?.name === 'AbortError') return;
         setErrorMessage(
           isRtl
             ? `تعذر تحميل ومعالجة نموذج الـ3DGS: ${err.message}`
@@ -76,8 +122,22 @@ export const GaussianViewer: React.FC<GaussianViewerProps> = ({
 
     return () => {
       active = false;
+      abortController.abort();
     };
-  }, [splatUrl, isRtl]);
+  }, [splatUrl, isExternal, isRtl]);
+
+  const stageLabel = useMemo(() => {
+    switch (loadStage) {
+      case 'downloading':
+        return isRtl ? 'Downloading — جاري تنزيل ملف الـ3DGS...' : 'Downloading 3D Gaussian Splat asset...';
+      case 'decoding':
+        return isRtl ? 'Decoding — جاري فك ضغط ومعالجة مجسمات الـSPZ...' : 'Decoding SPZ / PLY Gaussian primitives...';
+      case 'uploading':
+        return isRtl ? 'Uploading to GPU — جاري رفع البيانات لمعالج الرسوميات...' : 'Uploading Gaussian buffers to GPU...';
+      case 'ready':
+        return isRtl ? 'Ready — جاهز للعرض' : 'Ready';
+    }
+  }, [loadStage, isRtl]);
 
   const centerTarget = useMemo(() => {
     if (!cloud) return [0, 1.2, 0] as [number, number, number];
@@ -106,16 +166,24 @@ export const GaussianViewer: React.FC<GaussianViewerProps> = ({
       {loading && (
         <div className="absolute inset-0 z-30 flex flex-col items-center justify-center bg-slate-950/85 backdrop-blur-md text-center p-6">
           <Loader2 className="w-10 h-10 text-brand-500 animate-spin mb-4" />
-          <p className="text-white text-sm font-semibold mb-2">
-            {isRtl ? 'جاري فك ضغط وتحميل مجسمات 3DGS الفراغية...' : 'Streaming & Decoding 3D Gaussian Splats...'}
+          <p className="text-white text-sm font-semibold mb-2" data-testid="gaussian-load-stage">
+            {stageLabel}
           </p>
           <div className="w-48 h-1.5 bg-slate-800 rounded-full overflow-hidden">
-            <div
-              className="h-full bg-brand-500 transition-all duration-300 rounded-full"
-              style={{ width: `${Math.max(15, loadProgress)}%` }}
-            />
+            {loadProgress !== null ? (
+              <div
+                className="h-full bg-brand-500 transition-all duration-300 rounded-full"
+                style={{ width: `${Math.max(0, Math.min(100, loadProgress))}%` }}
+              />
+            ) : (
+              <div className="h-full w-1/3 bg-brand-500 rounded-full animate-pulse" />
+            )}
           </div>
-          <span className="text-[11px] text-slate-400 mt-2 font-mono">{loadProgress}%</span>
+          <span className="text-[11px] text-slate-400 mt-2 font-mono" data-testid="gaussian-load-progress">
+            {loadProgress !== null
+              ? `${loadProgress}%`
+              : `${(loadedBytes / (1024 * 1024)).toFixed(1)} MB`}
+          </span>
         </div>
       )}
 

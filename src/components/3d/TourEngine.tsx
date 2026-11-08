@@ -1,6 +1,7 @@
 import React, { createContext, useContext, useState, useMemo, useCallback } from 'react';
 import { ThreeDTour, Room } from '../../types';
 import { Vec3, calculateDistanceMeters } from '../../lib/3d/coordinates';
+import { isExternalTourUrl, isGaussianSplatUrl, isMeshAssetUrl } from '../../lib/3d/spz-parser';
 
 export type TourMode = 'gaussian' | 'mesh' | 'panorama' | 'external' | 'depth';
 
@@ -36,11 +37,28 @@ export interface TourEngineHookReturn extends TourEngineState, TourEngineActions
 export function useTourEngine(tour?: ThreeDTour, fallbackImagesCount = 0): TourEngineHookReturn {
   const rooms = useMemo(() => tour?.rooms || [], [tour]);
 
-  // Determine available representations
-  const hasGaussian = Boolean(tour?.representation?.gaussianSplat?.url || tour?.assetUrl);
-  const hasMesh = Boolean(tour?.representation?.mesh?.url);
-  const hasPanorama = Boolean(tour?.representation?.panorama?.url);
-  const isExternal = tour?.source === 'matterport' || tour?.source === 'polycam' || tour?.source === 'kuula';
+  // Determine available representations without conflating External URLs with Gaussian Splats
+  const isExternal = Boolean(
+    tour?.source === 'matterport' ||
+    tour?.source === 'polycam' ||
+    tour?.source === 'kuula' ||
+    tour?.provider === 'matterport' ||
+    tour?.provider === 'polycam' ||
+    tour?.provider === 'kuula' ||
+    isExternalTourUrl(tour?.assetUrl, tour?.source)
+  );
+  const hasGaussian = Boolean(
+    tour?.representation?.gaussianSplat?.url ||
+    (!isExternal && isGaussianSplatUrl(tour?.assetUrl))
+  );
+  const hasMesh = Boolean(
+    tour?.representation?.mesh?.url ||
+    (!isExternal && isMeshAssetUrl(tour?.assetUrl))
+  );
+  const hasPanorama = Boolean(
+    tour?.representation?.panorama?.url ||
+    (tour?.representation?.panorama?.urls && tour.representation.panorama.urls.length > 0)
+  );
   const hasPhotos = fallbackImagesCount > 0;
 
   const availableModes = useMemo(() => {

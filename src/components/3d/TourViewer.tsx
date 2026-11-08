@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { ThreeDTour, Room } from '../../types';
 import { Vec3 } from '../../lib/3d/coordinates';
+import { isExternalTourUrl, isGaussianSplatUrl, isMeshAssetUrl } from '../../lib/3d/spz-parser';
 import { GaussianViewer } from './GaussianViewer';
 import { MeshViewer } from './MeshViewer';
 import { PanoramaViewer } from './PanoramaViewer';
@@ -29,11 +30,29 @@ export const TourViewer: React.FC<TourViewerProps> = ({
   onClose,
   isRtl = false,
 }) => {
-  // Determine available modes from representations
-  const hasGaussian = Boolean(tour?.representation?.gaussianSplat?.url || tour?.assetUrl);
-  const hasMesh = Boolean(tour?.representation?.mesh?.url);
-  const hasPanorama = Boolean(tour?.representation?.panorama?.url);
-  const isExternal = tour?.source === 'matterport' || tour?.source === 'polycam' || tour?.source === 'kuula';
+  // Determine available modes from representations without conflating External URLs with Gaussian Splats
+  const isExternal = Boolean(
+    (tour?.source === 'matterport' ||
+      tour?.source === 'polycam' ||
+      tour?.source === 'kuula' ||
+      tour?.provider === 'matterport' ||
+      tour?.provider === 'polycam' ||
+      tour?.provider === 'kuula' ||
+      isExternalTourUrl(tour?.assetUrl, tour?.source)) &&
+      Boolean(tour?.assetUrl)
+  );
+  const hasGaussian = Boolean(
+    tour?.representation?.gaussianSplat?.url ||
+      (!isExternal && isGaussianSplatUrl(tour?.assetUrl))
+  );
+  const hasMesh = Boolean(
+    tour?.representation?.mesh?.url ||
+      (!isExternal && isMeshAssetUrl(tour?.assetUrl))
+  );
+  const hasPanorama = Boolean(
+    tour?.representation?.panorama?.url ||
+      (tour?.representation?.panorama?.urls && tour.representation.panorama.urls.length > 0)
+  );
 
   const availableModes: TourRenderMode[] = [];
   if (hasGaussian) availableModes.push('gaussian');
@@ -121,9 +140,9 @@ export const TourViewer: React.FC<TourViewerProps> = ({
           />
         )}
         {currentMode === 'panorama' && (
-          tour?.representation?.panorama?.url ? (
+          (tour?.representation?.panorama?.url || tour?.representation?.panorama?.urls?.[0]) ? (
             <PanoramaViewer
-              panoramaUrl={tour.representation.panorama.url}
+              panoramaUrl={(tour?.representation?.panorama?.url || tour?.representation?.panorama?.urls?.[0]) as string}
               isRtl={isRtl}
             />
           ) : (
@@ -132,7 +151,7 @@ export const TourViewer: React.FC<TourViewerProps> = ({
             </div>
           )
         )}
-        {currentMode === 'external' && tour?.assetUrl && (
+        {currentMode === 'external' && tour?.assetUrl && isExternal && (
           <iframe
             src={tour.assetUrl}
             title={title || '3D Virtual Tour'}

@@ -570,26 +570,230 @@ export const parseGaussianSpz = async (buffer: ArrayBuffer): Promise<ParsedGauss
   throw new InvalidGaussianDataError(`Unrecognized Gaussian Splatting magic bytes: ${magic}`);
 };
 
+const EXTERNAL_TOUR_HOSTS = [
+  'matterport.com',
+  'my.matterport.com',
+  'poly.cam',
+  'kuula.co',
+  'cupix.com',
+  'youriguide.com',
+  'ricoh360.com',
+];
+
+export const isGaussianSplatUrl = (url?: string | null): boolean => {
+  if (!url || typeof url !== 'string') return false;
+  const cleanPath = url.split('?')[0].split('#')[0].trim().toLowerCase();
+  return (
+    cleanPath.endsWith('.spz') ||
+    cleanPath.endsWith('.ply') ||
+    cleanPath.endsWith('.splat')
+  );
+};
+
+export const isMeshAssetUrl = (url?: string | null): boolean => {
+  if (!url || typeof url !== 'string') return false;
+  const cleanPath = url.split('?')[0].split('#')[0].trim().toLowerCase();
+  return cleanPath.endsWith('.glb') || cleanPath.endsWith('.gltf');
+};
+
+export const isExternalTourUrl = (url?: string | null, source?: string | null): boolean => {
+  if (source === 'matterport' || source === 'polycam' || source === 'kuula') {
+    if (!url || (!isGaussianSplatUrl(url) && !isMeshAssetUrl(url))) {
+      return true;
+    }
+  }
+  if (!url || typeof url !== 'string') return false;
+  if (isGaussianSplatUrl(url) || isMeshAssetUrl(url)) return false;
+
+  try {
+    const parsed = new URL(url, 'https://hettety.com');
+    const host = parsed.hostname.toLowerCase();
+    if (EXTERNAL_TOUR_HOSTS.some((ext) => host === ext || host.endsWith(`.${ext}`))) {
+      return true;
+    }
+  } catch {
+    // Ignore invalid URL syntax
+  }
+  return false;
+};
+
+export type GaussianLoadStage = 'downloading' | 'decoding' | 'uploading' | 'ready';
+
+export interface GaussianLoadProgressDetail {
+  stage: GaussianLoadStage;
+  loadedBytes: number;
+  totalBytes: number | null;
+  /** Percentage (0-100) when Content-Length is known, or null for indeterminate streams */
+  percent: number | null;
+}
+
+export interface LoadGaussianSplatOptions {
+  signal?: AbortSignal;
+  onStageChange?: (detail: GaussianLoadProgressDetail) => void;
+}
+
+const throwIfAborted = (signal?: AbortSignal): void => {
+  if (signal?.aborted) {
+    const err = new Error('Gaussian Splatting asset download aborted.');
+    err.name = 'AbortError';
+    throw err;
+  }
+};
+
 /**
- * Universal loader: fetches asset from URL, checks cache, decodes format, and produces real cloud
+ * Universal loader: fetches asset from URL with streaming progress & AbortController support,
+ * validates format, decodes SPZ/PLY, and produces a verified Gaussian cloud.
  */
 export const loadGaussianSplatAsset = async (
   url: string,
-  onProgress?: (percent: number) => void
+  onProgress?: (percent: number) => void,
+  options?: LoadGaussianSplatOptions
 ): Promise<ParsedGaussianCloud> => {
-  if (!url) {
+  if (!url || typeof url !== 'string' || !url.trim()) {
     throw new InvalidGaussianDataError('No Gaussian Splat asset URL provided.');
   }
 
-  const response = await fetch(url);
+  if (isExternalTourUrl(url)) {
+    throw new InvalidGaussianDataError(
+      'EXTERNAL_TOUR_URL_NOT_SUPPORTED: External tour URLs (Matterport, Polycam, Kuula) must be opened in External Viewer mode, not parsed as binary Gaussian Splatting files.'
+    );
+  }
+
+  if (isMeshAssetUrl(url)) {
+    throw new InvalidGaussianDataError(
+      'UNSUPPORTED_GAUSSIAN_FORMAT: Mesh (.glb/.gltf) assets must be rendered in MeshViewer, not GaussianViewer.'
+    );
+  }
+
+  const cleanPath = url.split('?')[0].split('#')[0].trim().toLowerCase();
+  if (cleanPath.endsWith('.html') || cleanPath.endsWith('.htm')) {
+    throw new InvalidGaussianDataError(
+      'UNSUPPORTED_GAUSSIAN_FORMAT: HTML documents cannot be parsed as binary Gaussian Splatting (.spz/.ply) files.'
+    );
+  }
+
+  const signal = options?.signal;
+  const onStageChange = options?.onStageChange;
+
+  throwIfAborted(signal);
+
+  const response = await fetch(url, signal ? { signal } : undefined);
   if (!response.ok) {
     throw new InvalidGaussianDataError(`Failed to fetch 3DGS asset (${response.status}: ${response.statusText}) from ${url}`);
   }
 
-  const buffer = await response.arrayBuffer();
-  if (url.endsWith('.spz') || url.includes('/tour.spz') || url.includes('scene.spz')) {
-    return parseGaussianSpz(buffer);
+  const contentType = response.headers?.get?.('content-type')?.toLowerCase() || '';
+  if (contentType.includes('text/html')) {
+    throw new InvalidGaussianDataError(
+      `UNSUPPORTED_GAUSSIAN_FORMAT: URL returned HTML content (${contentType}) instead of a binary .spz or .ply asset.`
+    );
   }
 
-  return parseGaussianPly(buffer);
+  const rawLength = response.headers?.get?.('content-length');
+  const parsedLength = rawLength ? parseInt(rawLength, 10) : NaN;
+  const totalBytes = Number.isFinite(parsedLength) && parsedLength > 0 ? parsedLength : null;
+
+  let buffer: ArrayBuffer;
+  let loadedBytes = 0;
+
+  if (response.body && typeof response.body.getReader === 'function') {
+    const reader = response.body.getReader();
+    const chunks: Uint8Array[] = [];
+
+    onStageChange?.({
+      stage: 'downloading',
+      loadedBytes: 0,
+      totalBytes,
+      percent: totalBytes ? 0 : null,
+    });
+
+    try {
+      while (true) {
+        throwIfAborted(signal);
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (value && value.byteLength > 0) {
+          chunks.push(value);
+          loadedBytes += value.byteLength;
+          const pct = totalBytes
+            ? Math.min(99, Math.round((loadedBytes / totalBytes) * 100))
+            : null;
+          if (pct !== null) {
+            onProgress?.(pct);
+          }
+          onStageChange?.({
+            stage: 'downloading',
+            loadedBytes,
+            totalBytes,
+            percent: pct,
+          });
+        }
+      }
+    } catch (err) {
+      try {
+        await reader.cancel();
+      } catch {
+        // Ignore cancel errors
+      }
+      throw err;
+    }
+
+    const merged = new Uint8Array(loadedBytes);
+    let offset = 0;
+    for (const chunk of chunks) {
+      merged.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
+    buffer = merged.buffer;
+  } else {
+    onStageChange?.({
+      stage: 'downloading',
+      loadedBytes: 0,
+      totalBytes,
+      percent: totalBytes ? 0 : null,
+    });
+    buffer = await response.arrayBuffer();
+    loadedBytes = buffer.byteLength;
+    onStageChange?.({
+      stage: 'downloading',
+      loadedBytes,
+      totalBytes: totalBytes ?? loadedBytes,
+      percent: totalBytes ? 99 : null,
+    });
+  }
+
+  throwIfAborted(signal);
+
+  onStageChange?.({
+    stage: 'decoding',
+    loadedBytes,
+    totalBytes: totalBytes ?? loadedBytes,
+    percent: totalBytes ? 99 : null,
+  });
+
+  const isSpz =
+    cleanPath.endsWith('.spz') ||
+    url.includes('/tour.spz') ||
+    url.includes('scene.spz');
+
+  const cloud = isSpz ? await parseGaussianSpz(buffer) : parseGaussianPly(buffer);
+
+  throwIfAborted(signal);
+
+  onStageChange?.({
+    stage: 'uploading',
+    loadedBytes,
+    totalBytes: totalBytes ?? loadedBytes,
+    percent: 99,
+  });
+
+  onProgress?.(100);
+  onStageChange?.({
+    stage: 'ready',
+    loadedBytes,
+    totalBytes: totalBytes ?? loadedBytes,
+    percent: 100,
+  });
+
+  return cloud;
 };

@@ -242,6 +242,30 @@ class ReconstructionWorker:
         except ImportError:
             pass
 
+    def _extract_video_keyframes(self, video_path: str, output_dir: str, target_fps: float = 2.0, max_frames: int = 300) -> int:
+        """Extracts sharp, well-spaced frames from an uploaded video walkthrough."""
+        import cv2
+        cap = cv2.VideoCapture(video_path)
+        if not cap.isOpened():
+            logger.error(f"Cannot open video for frame extraction: {video_path}")
+            return 0
+        video_fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+        step = max(1, int(round(video_fps / target_fps)))
+        extracted = 0
+        frame_idx = 0
+        while cap.isOpened() and extracted < max_frames:
+            ret, frame = cap.read()
+            if not ret:
+                break
+            if frame_idx % step == 0:
+                out_path = os.path.join(output_dir, f"frame_{extracted:04d}.jpg")
+                cv2.imwrite(out_path, frame)
+                extracted += 1
+            frame_idx += 1
+        cap.release()
+        logger.info(f"Extracted {extracted} keyframes from video {video_path} into {output_dir}")
+        return extracted
+
     def _report_stage(
         self,
         job_id: str,
@@ -333,11 +357,38 @@ class ReconstructionWorker:
 
             # Stage 1: Download captures
             report("UPLOADING", 10, "Downloading capture keyframes")
-            self.storage_client.download_capture_files(capture_urls, raw_images_dir)
+            downloaded = self.storage_client.download_capture_files(capture_urls, raw_images_dir)
 
             if self.is_cancelled(job_id):
                 report("CANCELLED", 15, "Job cancelled by user")
                 return {"status": "cancelled", "jobId": job_id, "propertyId": property_id}
+
+            # Handle video walkthrough captures: extract frames before validation
+            video_files = [
+                f for f in downloaded
+                if f.lower().endswith((".mp4", ".mov", ".webm", ".avi", ".mkv"))
+            ]
+            if is_video or len(video_files) > 0:
+                report("VALIDATING", 15, "Extracting video keyframes for reconstruction")
+                video_source = video_files[0] if video_files else (downloaded[0] if downloaded else None)
+                if not video_source or not os.path.exists(video_source):
+                    return fail("CORRUPT_VIDEO_PAYLOAD", "Video file not found or corrupted during download.")
+                extracted_dir = os.path.join(job_dir, "extracted_frames")
+                os.makedirs(extracted_dir, exist_ok=True)
+                num_extracted = self._extract_video_keyframes(video_source, extracted_dir)
+                if num_extracted < 12:
+                    return fail(
+                        "INSUFFICIENT_KEYFRAMES",
+                        f"Extracted only {num_extracted} valid frames from video walkthrough. At least 12 clear frames are required."
+                    )
+                for f in os.listdir(raw_images_dir):
+                    try:
+                        os.remove(os.path.join(raw_images_dir, f))
+                    except Exception:
+                        pass
+                for f in os.listdir(extracted_dir):
+                    shutil.move(os.path.join(extracted_dir, f), os.path.join(raw_images_dir, f))
+                shutil.rmtree(extracted_dir, ignore_errors=True)
 
             # Stage 2: Validate keyframe dataset
             report("VALIDATING", 20, "Analyzing Laplacian sharpness and count")

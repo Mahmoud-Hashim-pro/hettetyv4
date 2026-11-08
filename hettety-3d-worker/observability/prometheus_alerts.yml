@@ -1,0 +1,46 @@
+groups:
+  - name: hettety_operational_alerts
+    rules:
+      # 1. Worker Offline Alert
+      - alert: HettetyWorkerOffline
+        expr: hettety_control_plane_active_workers == 0
+        for: 2m
+        labels:
+          severity: critical
+          service: hettety-3d-pipeline
+        annotations:
+          summary: "No active 3D reconstruction GPU workers online"
+          description: "Zero active GPU workers have reported heartbeats to the control plane in the last 2 minutes. Reconstruction queue processing is stalled."
+
+      # 2. Queue Backlog Alert
+      - alert: HettetyQueueBacklog
+        expr: hettety_control_plane_queue_latency_seconds > 120 or hettety_control_plane_jobs_total{status="queued"} > 10
+        for: 3m
+        labels:
+          severity: warning
+          service: hettety-task-queue
+        annotations:
+          summary: "Reconstruction queue backlog or high latency detected"
+          description: "Queue latency has exceeded 120 seconds or pending jobs exceed 10 for more than 3 minutes. Consider auto-scaling GPU worker instances."
+
+      # 3. GPU Out-Of-Memory (OOM) Alert
+      - alert: HettetyGpuOutOfMemory
+        expr: increase(hettety_worker_failure_total{code="GPU_OUT_OF_MEMORY"}[5m]) > 0 or increase(hettety_control_plane_job_failures_total{code="GPU_OUT_OF_MEMORY"}[5m]) > 0
+        for: 0m
+        labels:
+          severity: critical
+          service: hettety-3d-worker
+        annotations:
+          summary: "GPU Out-Of-Memory error in 3D reconstruction worker"
+          description: "A reconstruction job failed due to CUDA Out-Of-Memory (OOM). Check input image batch size, VRAM allocation, or downsample dense point cloud."
+
+      # 4. Job Timeout Alert
+      - alert: HettetyJobTimeout
+        expr: increase(hettety_control_plane_job_failures_total{code=~".*_TIMEOUT"}[10m]) > 0
+        for: 0m
+        labels:
+          severity: warning
+          service: hettety-control-plane
+        annotations:
+          summary: "3D reconstruction job exceeded stage timeout"
+          description: "Reconstruction job exceeded allowable stage execution time (COLMAP SfM, dense stereo, or 3DGS training). Check GPU utilization and dataset scale."

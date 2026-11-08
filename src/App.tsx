@@ -4767,9 +4767,9 @@ export default function App() {
           </div>
 
           {/* Menu & Actions Group - Right side (Opposite to logo) */}
-          <div className="flex items-center gap-3 sm:gap-4 lg:gap-6 xl:gap-8 shrink-0">
+          <div className="flex items-center gap-2 sm:gap-3 lg:gap-4 xl:gap-6 shrink-0">
             {/* Desktop Menu */}
-            <div className="hidden lg:flex items-center gap-2 xl:gap-5 2xl:gap-8">
+            <div className="hidden lg:flex items-center gap-1 xl:gap-3 2xl:gap-6 text-xs xl:text-sm">
               <NavLink page="home" label={t.nav_home} />
               <NavLink page="listings" label={t.nav_listings} />
               <NavLink page="yalla-sahel" label={isRtl ? '🌊 ساحل حتتي' : '🌊 Sahel Hettety'} />
@@ -4986,8 +4986,11 @@ export default function App() {
             <button onClick={() => handleNav('ai-chat')} className="w-full py-6 mt-6 bg-brand-600 text-white rounded-[2rem] font-black text-2xl uppercase tracking-widest flex items-center justify-center gap-4 shadow-2xl shadow-brand-500/40 active:scale-95 transition-transform focus:outline-none focus:ring-2 focus:ring-brand-500">
               <Sparkles size={24} aria-hidden="true" /> {t.advisor_nav || t.nav_ai}
             </button>
-            <button onClick={() => handleNav('about')} className="w-full py-6 text-lg font-bold text-slate-500 dark:text-slate-400 uppercase tracking-widest focus:outline-none focus:ring-2 focus:ring-brand-500 rounded-xl">
+            <button onClick={() => handleNav('about')} className="w-full py-4 text-lg font-bold text-slate-500 dark:text-slate-400 uppercase tracking-widest focus:outline-none focus:ring-2 focus:ring-brand-500 rounded-xl">
               {t.footer_about}
+            </button>
+            <button onClick={() => handleNav('privacy')} className="w-full py-3 text-sm font-bold text-slate-500 dark:text-slate-400 uppercase tracking-widest focus:outline-none focus:ring-2 focus:ring-brand-500 rounded-xl">
+              {t.nav_privacy || (isRtl ? 'سياسة الخصوصية' : 'Privacy Policy')}
             </button>
 
             <div className="w-full pt-10 mt-10 border-t border-slate-100 dark:border-slate-800 flex flex-col gap-4">
@@ -5074,8 +5077,8 @@ export default function App() {
           <div className="py-12 max-w-7xl mx-auto px-4">
             <div className="mb-8 flex flex-col gap-6 w-full min-w-0">
                <h1 className="text-3xl lg:text-4xl font-heading font-black text-slate-900 dark:text-white uppercase tracking-tight">{t.prop_avail}</h1>
-               <div className="flex flex-col sm:flex-row flex-wrap gap-4 w-full min-w-0 items-stretch sm:items-center">
-                 <div className="relative flex-1 min-w-[260px] sm:min-w-[280px] lg:min-w-[320px] flex gap-2">
+               <div className="flex flex-col sm:flex-row flex-wrap gap-3.5 w-full min-w-0 items-stretch sm:items-center">
+                 <div className="relative flex-1 min-w-[280px] sm:min-w-[320px] lg:min-w-[360px] flex gap-2">
                    <div className="relative flex-1 min-w-0">
                      <Search className={"absolute top-3 text-slate-400 w-4 h-4 start-3 pointer-events-none"} />
                      <input 
@@ -5086,19 +5089,19 @@ export default function App() {
                          setAiFilteredIds(null);
                        }}
                        onKeyDown={(e) => e.key === 'Enter' && handleAiSearch()}
-                       className={`w-full py-2.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 focus:ring-2 focus:ring-brand-500 outline-none text-black dark:text-white ps-9 pe-4 text-sm`} 
+                       className={`w-full py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 focus:ring-2 focus:ring-brand-500 outline-none text-black dark:text-white ps-9 pe-4 text-sm font-medium`} 
                      />
                    </div>
                    <button 
                      onClick={handleAiSearch}
                      disabled={isAiSearching || !listingSearchQuery.trim()}
-                     className="bg-brand-600 hover:bg-brand-700 text-white px-4 py-2.5 rounded-lg flex items-center gap-2 transition-colors disabled:opacity-50 disabled:cursor-not-allowed shrink-0"
+                     className="bg-brand-600 hover:bg-brand-700 text-white px-4 py-2.5 rounded-xl flex items-center gap-2 transition-colors disabled:opacity-50 disabled:cursor-not-allowed shrink-0"
                      title={isRtl ? 'بحث بالذكاء الاصطناعي' : 'AI Search'}
                    >
                      {isAiSearching ? <Loader2 className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4" />}
                    </button>
                  </div>
-                 <div className="relative flex-1 sm:flex-initial sm:w-36 md:w-44 min-w-[140px]">
+                 <div className="relative flex-1 sm:flex-initial sm:w-40 md:w-44 min-w-[150px]">
                    <DollarSign className={"absolute top-3 text-slate-400 w-4 h-4 start-3 pointer-events-none"} />
                    <input 
                      type="number"
@@ -5110,10 +5113,10 @@ export default function App() {
                        if (val === '') setMinPrice('');
                        else if (Number(val) >= 0) setMinPrice(Number(val));
                      }}
-                     className={`w-full py-2.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 focus:ring-2 focus:ring-brand-500 outline-none text-black dark:text-white ps-9 pe-3 text-sm`} 
+                     className={`w-full py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 focus:ring-2 focus:ring-brand-500 outline-none text-black dark:text-white ps-9 pe-3 text-sm font-medium`} 
                    />
                  </div>
-                 <div className="relative flex-1 sm:flex-initial sm:w-36 md:w-44 min-w-[140px]">
+                 <div className="relative flex-1 sm:flex-initial sm:w-40 md:w-44 min-w-[150px]">
                    <DollarSign className={"absolute top-3 text-slate-400 w-4 h-4 start-3 pointer-events-none"} />
                    <input 
                      type="number"
@@ -5125,13 +5128,13 @@ export default function App() {
                        if (val === '') setMaxPrice('');
                        else if (Number(val) >= 0) setMaxPrice(Number(val));
                      }}
-                     className={`w-full py-2.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 focus:ring-2 focus:ring-brand-500 outline-none text-black dark:text-white ps-9 pe-3 text-sm`} 
+                     className={`w-full py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 focus:ring-2 focus:ring-brand-500 outline-none text-black dark:text-white ps-9 pe-3 text-sm font-medium`} 
                    />
                  </div>
                  <select
                    value={typeFilter}
                    onChange={(e) => setTypeFilter(e.target.value)}
-                   className="py-2.5 px-3.5 sm:px-4 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 focus:ring-2 focus:ring-brand-500 outline-none text-black dark:text-white flex-1 sm:flex-none sm:min-w-[160px] text-sm"
+                   className="py-2.5 px-3.5 sm:px-4 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 focus:ring-2 focus:ring-brand-500 outline-none text-black dark:text-white flex-1 sm:flex-none sm:min-w-[150px] text-sm font-medium"
                  >
                    <option value="all">{isRtl ? 'كل الأنواع' : 'All Types'}</option>
                    {PROPERTY_TYPES.map(o => <option key={o.value} value={o.value}>{isRtl ? o.ar : o.en}</option>)}
@@ -5139,7 +5142,7 @@ export default function App() {
                  <select
                    value={sortBy}
                    onChange={(e) => setSortBy(e.target.value as any)}
-                   className="py-2.5 px-3.5 sm:px-4 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 focus:ring-2 focus:ring-brand-500 outline-none text-black dark:text-white flex-1 sm:flex-none sm:min-w-[200px] text-sm"
+                   className="py-2.5 px-3.5 sm:px-4 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 focus:ring-2 focus:ring-brand-500 outline-none text-black dark:text-white flex-1 sm:flex-none sm:min-w-[170px] text-sm font-medium"
                  >
                    <option value="default">{isRtl ? 'الترتيب الافتراضي' : 'Default Sort'}</option>
                    <option value="newest">{isRtl ? 'الأحدث' : 'Newest'}</option>
@@ -5148,12 +5151,14 @@ export default function App() {
                    <option value="name-asc">{isRtl ? 'الاسم: أ إلى ي' : 'Name: A to Z'}</option>
                    <option value="name-desc">{isRtl ? 'الاسم: ي إلى أ' : 'Name: Z to A'}</option>
                  </select>
-                 <button onClick={saveCurrentSearch} className="py-2.5 px-4 rounded-lg border border-brand-200 dark:border-brand-800 bg-brand-50 dark:bg-brand-900/20 text-brand-700 dark:text-brand-300 font-bold text-sm flex items-center gap-1.5 hover:bg-brand-100 dark:hover:bg-brand-900/40 transition-colors whitespace-nowrap shrink-0">
-                   <Save size={15} /> {isRtl ? 'احفظ البحث' : 'Save search'}
-                 </button>
-                 <button onClick={subscribeAlert} className="py-2.5 px-4 rounded-lg border border-accent-200 dark:border-accent-800 bg-accent-50 dark:bg-accent-900/20 text-accent-700 dark:text-accent-300 font-bold text-sm flex items-center gap-1.5 hover:bg-accent-100 dark:hover:bg-accent-900/40 transition-colors whitespace-nowrap shrink-0">
-                   <Bell size={15} /> {isRtl ? 'نبّهني بالإيميل' : 'Email alert'}
-                 </button>
+                 <div className="flex items-center gap-2">
+                   <button onClick={saveCurrentSearch} className="py-2.5 px-3.5 rounded-xl border border-brand-200 dark:border-brand-800 bg-brand-50 dark:bg-brand-900/20 text-brand-700 dark:text-brand-300 font-bold text-sm flex items-center gap-1.5 hover:bg-brand-100 dark:hover:bg-brand-900/40 transition-colors whitespace-nowrap shrink-0">
+                     <Save size={15} /> {isRtl ? 'احفظ البحث' : 'Save search'}
+                   </button>
+                   <button onClick={subscribeAlert} className="py-2.5 px-3.5 rounded-xl border border-accent-200 dark:border-accent-800 bg-accent-50 dark:bg-accent-900/20 text-accent-700 dark:text-accent-300 font-bold text-sm flex items-center gap-1.5 hover:bg-accent-100 dark:hover:bg-accent-900/40 transition-colors whitespace-nowrap shrink-0">
+                     <Bell size={15} /> {isRtl ? 'نبّهني بالإيميل' : 'Email alert'}
+                   </button>
+                 </div>
                </div>
             </div>
             {savedSearches.length > 0 && (

@@ -150,7 +150,7 @@ flowchart TD
 | **Static Type Analysis** | `tsc --noEmit` | Entire Repo | 0 Type Errors | **Clean** |
 | **Production Bundle Build** | `vite build` | 12 Chunks | Output in `dist/` | **Built in 9.8s** |
 | **Python Worker Test Suite** | Pytest 9.1.1 | 4 Suites | 63 / 63 Tests | **100% Passed** |
-| **Villa Marassi E2E Photogrammetry** | Pytest 9.1.1 | `test_phase1_real_e2e.py` | 1 E2E Run (146s) | **100% Passed** |
+| **Villa Marassi E2E Photogrammetry** | Pytest 9.1.1 | `test_phase1_real_e2e.py` | 1 E2E Run (146s) | **INTEGRATION_TESTED (CPU Fixtures)** |
 
 ---
 
@@ -176,7 +176,7 @@ Empirical sorting benchmark executed directly on the production `computeSplatSor
 
 ## 8. Certification Sign-off
 
-- **Baseline Status**: **CERTIFIED RELEASE READY**
+- **Baseline Status**: **IMPLEMENTED, UNIT_TESTED, INTEGRATION_TESTED** (Dedicated Physical GPU Acceptance Testing is **BLOCKED** pending cloud GPU host provisioning)
 - **Branch**: `main`
 - **Commit**: `1d1c601ba1048e589b1afb26b8a674eef05a9439`
 - **Sign-off Date**: November 8, 2026

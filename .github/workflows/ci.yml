@@ -2,9 +2,10 @@ name: Release Verification CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, audit/*]
   pull_request:
     branches: [main]
+  workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -12,7 +13,7 @@ concurrency:
 
 jobs:
   frontend-and-api:
-    name: Frontend & API Release Gates
+    name: Frontend & Control Plane Unit/Integration Gates (CPU)
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -36,8 +37,8 @@ jobs:
       - name: Production Vite build
         run: npm run build
 
-  python-3d-worker:
-    name: Python 3D Worker Verification
+  python-3d-worker-cpu:
+    name: Python 3D Worker Unit & Integration Tests (CPU Fixtures)
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -55,5 +56,32 @@ jobs:
           pip install --no-cache-dir torch torchvision --index-url https://download.pytorch.org/whl/cpu
           pip install -r hettety-3d-worker/requirements.txt pytest pytest-cov
 
-      - name: Run Worker Pytest suite
+      - name: Run Worker Unit & Integration Pytest suites
         run: python -m pytest hettety-3d-worker/tests
+
+      - name: Verify Strict Real Pipeline Guards (Rejection of Fixtures)
+        run: python -m pytest hettety-3d-worker/tests/acceptance/test_real_gpu_reconstruction.py -k "TestRealReconstructionStrictGuards" -v
+
+      - name: Verify Redis Worker Lifecycle Integration
+        run: python -m pytest hettety-3d-worker/tests/acceptance/test_real_redis_worker_lifecycle.py -v
+
+  gpu-acceptance-gate:
+    name: Physical GPU Acceptance Gate (Dedicated GPU Host Required)
+    # This gate requires a dedicated self-hosted runner equipped with NVIDIA GPU, CUDA >= 11.8, and COLMAP binary.
+    # It is skipped on standard CPU-only GitHub runners to prevent false certifications.
+    runs-on: [self-hosted, gpu, nvidia]
+    if: ${{ github.event_name == 'workflow_dispatch' && contains(github.event.inputs.run_gpu, 'true') }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Verify NVIDIA GPU & CUDA
+        run: |
+          nvidia-smi
+          python -c "import torch; assert torch.cuda.is_available(), 'CUDA not available'"
+
+      - name: Run Authoritative Real GPU Photogrammetry Acceptance Test
+        run: |
+          export HETTETY_REAL_PIPELINE_STRICT=1
+          export GAUSSIAN_SPLATTING_PATH=/opt/gaussian-splatting/train.py
+          python -m pytest hettety-3d-worker/tests/acceptance/test_real_gpu_reconstruction.py -v

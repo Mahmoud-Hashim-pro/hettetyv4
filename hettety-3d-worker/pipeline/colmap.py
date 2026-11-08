@@ -62,13 +62,32 @@ def is_docker_running() -> bool:
     except Exception:
         return False
 
+def is_docker_colmap_available() -> bool:
+    """
+    Checks if Docker CLI and daemon are running AND the required 'hettety-colmap:latest' image
+    is already present locally without stalling on missing pull credentials.
+    """
+    if not is_docker_running():
+        return False
+    try:
+        res = subprocess.run(
+            ["docker", "image", "inspect", "hettety-colmap:latest"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=2.0,
+            check=False
+        )
+        return res.returncode == 0
+    except Exception:
+        return False
+
 def is_colmap_available() -> bool:
     """
-    Checks whether COLMAP can be executed natively on PATH or via running Docker engine.
+    Checks whether COLMAP can be executed natively on PATH or via verified local Docker image.
     """
     if shutil.which("colmap"):
         return True
-    return is_docker_running()
+    return is_docker_colmap_available()
 
 def exec_colmap(
     cmd: List[str],

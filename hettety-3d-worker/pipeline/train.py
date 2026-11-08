@@ -289,6 +289,34 @@ def run_gaussian_training(
             "message": "HETTETY_ENV=test is strictly forbidden when NODE_ENV=production"
         }
 
+    strict_real = (os.environ.get("HETTETY_REAL_PIPELINE_STRICT", "").lower() in ("1", "true"))
+
+    # When strict real pipeline mode is active, synthetic/iterative CPU fallbacks are strictly prohibited
+    if strict_real:
+        if not script_path:
+            logger.error("STRICT_REAL_PIPELINE_GUARD: Official Graphdeco 3DGS runner (train.py) is strictly required.")
+            return {
+                "success": False,
+                "error_code": "GRAPHDECO_RUNNER_MISSING",
+                "message": "STRICT_REAL_PIPELINE_GUARD: Official Graphdeco 3DGS training runner (train.py) is strictly required. IterativeGaussianOptimizer fallback is rejected."
+            }
+        try:
+            import torch
+            if not torch.cuda.is_available():
+                logger.error("STRICT_REAL_PIPELINE_GUARD: Real CUDA NVIDIA GPU is strictly required.")
+                return {
+                    "success": False,
+                    "error_code": "CUDA_UNAVAILABLE",
+                    "message": "STRICT_REAL_PIPELINE_GUARD: Real NVIDIA CUDA GPU is strictly required for official Graphdeco 3DGS training."
+                }
+        except ImportError:
+            logger.error("STRICT_REAL_PIPELINE_GUARD: PyTorch with CUDA support is required.")
+            return {
+                "success": False,
+                "error_code": "PYTORCH_UNAVAILABLE",
+                "message": "STRICT_REAL_PIPELINE_GUARD: PyTorch with CUDA is strictly required."
+            }
+
     # In production, require authentic external 3DGS training runner; fail closed if absent
     if is_prod_env and not script_path:
         logger.error("Production fail-closed: external 3DGS training runner script is missing.")
@@ -298,9 +326,9 @@ def run_gaussian_training(
             "message": "Authoritative Gaussian Splatting training runner is not configured or missing in production environment."
         }
 
-    # If external training script is absent or running in standalone/test mode:
+    # If external training script is absent or running in standalone/test mode (and not in strict real pipeline mode):
     # Execute genuine mathematical IterativeGaussianOptimizer directly from reconstruction data
-    if not script_path or os.environ.get("HETTETY_ENV") == "test":
+    if (not script_path or os.environ.get("HETTETY_ENV") == "test") and not strict_real:
         logger.info("Executing native IterativeGaussianOptimizer on reconstructed geometry...")
         target_ply = os.path.join(
             output_model_dir,

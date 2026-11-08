@@ -504,7 +504,18 @@ def run_sfm(
             "message": f"COLMAP requires at least 8 images, but only {image_count} were provided."
         })
 
+    strict_real = (os.environ.get("HETTETY_REAL_PIPELINE_STRICT", "").lower() in ("1", "true"))
+
     if not is_colmap_available():
+        if strict_real:
+            logger.error("STRICT_REAL_PIPELINE_GUARD: Real COLMAP binary or container is strictly required. Synthetic fixture fallbacks are strictly rejected.")
+            return SfMResult({
+                "success": False,
+                "error_code": "COLMAP_UNAVAILABLE",
+                "registered_images": 0,
+                "points_count": 0,
+                "message": "STRICT_REAL_PIPELINE_GUARD: Real COLMAP executable on PATH or container is strictly required. Synthetic fixture fallbacks are strictly rejected."
+            })
         is_test_env = (os.environ.get("HETTETY_ENV") == "test")
         is_prod = (os.environ.get("NODE_ENV") == "production") or (os.environ.get("HETTETY_ENV") == "production")
         if is_test_env and not is_prod:
@@ -649,7 +660,16 @@ def run_dense_stereo(
     os.makedirs(dense_dir, exist_ok=True)
     fused_ply = os.path.join(dense_dir, "fused.ply")
 
+    strict_real = (os.environ.get("HETTETY_REAL_PIPELINE_STRICT", "").lower() in ("1", "true"))
+
     if not is_colmap_available():
+        if strict_real:
+            logger.error("STRICT_REAL_PIPELINE_GUARD: Real COLMAP dense stereo execution is strictly required. Synthetic fixture fallbacks are strictly rejected.")
+            return {
+                "success": False,
+                "error_code": "COLMAP_UNAVAILABLE",
+                "message": "STRICT_REAL_PIPELINE_GUARD: Real COLMAP dense stereo execution is strictly required. Synthetic fixture fallbacks are strictly rejected."
+            }
         is_test_env = (os.environ.get("HETTETY_ENV") == "test")
         is_prod = (os.environ.get("NODE_ENV") == "production") or (os.environ.get("HETTETY_ENV") == "production")
         if is_test_env and not is_prod:

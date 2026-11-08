@@ -20,7 +20,7 @@ const AboutPage = ({ onCta, t, isRtl }: { onCta: () => void, t: any, isRtl: bool
           <span className={`inline-block py-1 px-3 rounded-full bg-brand-500/10 dark:bg-brand-500/20 text-brand-600 dark:text-brand-300 text-sm font-bold mb-6 border border-brand-500/20 dark:border-brand-500/30 ${isRtl ? 'font-cairo' : 'uppercase tracking-widest'}`}>
             {t.about_badge}
           </span>
-          <h1 className={`text-5xl md:text-7xl font-black mb-8 leading-tight text-slate-900 dark:text-white ${isRtl ? 'font-cairo' : 'tracking-tighter'}`}>
+          <h1 className={`text-4xl sm:text-5xl md:text-6xl lg:text-7xl font-black mb-6 sm:mb-8 leading-tight text-slate-900 dark:text-white ${isRtl ? 'font-cairo' : 'tracking-tighter'}`}>
             {t.about_title_start} <span className="text-accent-500 dark:text-accent-400">{t.about_title_end}</span>
           </h1>
           <p className="text-xl text-slate-600 dark:text-slate-300 leading-relaxed max-w-2xl mx-auto font-medium">

@@ -4753,7 +4753,7 @@ export default function App() {
       ) : (
         <>
       <nav className="sticky top-0 z-50 bg-white/95 dark:bg-slate-900/95 backdrop-blur-xl border-none text-slate-900 dark:text-white shadow-sm dark:shadow-slate-950 transition-all duration-500">
-        <div className="w-full px-4 sm:px-6 lg:px-8 xl:px-10 h-20 flex items-center justify-between max-w-full">
+        <div className="w-full px-3 sm:px-5 lg:px-6 xl:px-8 h-20 flex items-center justify-between max-w-full">
           {/* Logo Group - Left side */}
           <div className="flex items-center shrink-0">
             <button 
@@ -4794,11 +4794,11 @@ export default function App() {
                 <button 
                   type="button"
                   onClick={() => toggleDarkMode()} 
-                  className="w-12 h-12 rounded-2xl bg-white dark:bg-slate-800 hover:bg-slate-50 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 transition-all flex items-center justify-center cursor-pointer border border-slate-200 dark:border-slate-800 hover:border-brand-300 dark:hover:border-brand-700 shadow-sm active:scale-90 focus:outline-none focus:ring-2 focus:ring-brand-500"
+                  className="w-10 h-10 rounded-xl bg-white dark:bg-slate-800 hover:bg-slate-50 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 transition-all flex items-center justify-center cursor-pointer border border-slate-200 dark:border-slate-800 hover:border-brand-300 dark:hover:border-brand-700 shadow-sm active:scale-90 focus:outline-none focus:ring-2 focus:ring-brand-500"
                   aria-label="Toggle Theme"
                 >
                   <div className="transform transition-transform duration-500 hover:rotate-12">
-                    {isDarkMode ? <Sun size={24} className="text-amber-500" aria-hidden="true" /> : <Moon size={24} className="text-slate-600" aria-hidden="true" />}
+                    {isDarkMode ? <Sun size={20} className="text-amber-500" aria-hidden="true" /> : <Moon size={20} className="text-slate-600" aria-hidden="true" />}
                   </div>
                 </button>
                 <button 
@@ -4865,42 +4865,42 @@ export default function App() {
                     aria-label={isRtl ? "قائمة الملف الشخصي" : "User Profile Menu"}
                     aria-haspopup="menu"
                     aria-expanded={showProfileMenu}
-                    className="flex items-center gap-2.5 pl-1.5 pr-3 py-1.5 rounded-full bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 border border-slate-200 dark:border-slate-700 transition-all cursor-pointer focus:outline-none focus:ring-2 focus:ring-brand-500"
+                    className="flex items-center gap-2 pl-1.5 pr-2.5 sm:pr-3 py-1.5 rounded-full bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 border border-slate-200 dark:border-slate-700 transition-all cursor-pointer focus:outline-none focus:ring-2 focus:ring-brand-500 shrink-0"
                   >
-                    <div className="w-9 h-9 rounded-full bg-gradient-to-br from-brand-500 to-brand-700 text-white flex items-center justify-center font-black text-sm uppercase shrink-0">
+                    <div className="w-9 h-9 rounded-full bg-gradient-to-br from-brand-500 to-brand-700 text-white flex items-center justify-center font-black text-sm uppercase shrink-0 shadow-sm">
                       {(userName || userEmail || 'U').charAt(0)}
                     </div>
-                    <span className="text-sm font-bold text-slate-900 dark:text-white max-w-[12rem] truncate">{userName || userEmail.split('@')[0]}</span>
-                    <ChevronRight size={16} className={`text-slate-400 transition-transform ${showProfileMenu ? '-rotate-90' : 'rotate-90'}`} aria-hidden="true" />
+                    <span className="hidden xl:inline-block text-sm font-bold text-slate-900 dark:text-white max-w-[7rem] 2xl:max-w-[9rem] truncate">{userName || userEmail.split('@')[0]}</span>
+                    <ChevronRight size={14} className={`text-slate-400 transition-transform shrink-0 ${showProfileMenu ? '-rotate-90' : 'rotate-90'}`} aria-hidden="true" />
                   </button>
                   {showProfileMenu && (
-                    <div className={`absolute top-full mt-4 w-72 bg-white dark:bg-slate-900 rounded-3xl shadow-2xl border border-slate-100 dark:border-slate-800 overflow-hidden z-50 ${isRtl ? 'left-0' : 'right-0'} animate-fade-in`}>
+                    <div className={`absolute top-full mt-3 w-80 max-w-[calc(100vw-1.5rem)] bg-white dark:bg-slate-900 rounded-2xl shadow-2xl border border-slate-200 dark:border-slate-800 overflow-hidden z-50 ${isRtl ? 'left-0' : 'right-0'} animate-fade-in`}>
                       {/* Header */}
-                      <div className="p-5 border-b border-slate-50 dark:border-slate-800">
-                        <div className="font-black text-slate-900 dark:text-white truncate">{userName || (isRtl ? 'مستخدم' : 'User')}</div>
+                      <div className="p-4 sm:p-5 border-b border-slate-100 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-900/50">
+                        <div className="font-black text-slate-900 dark:text-white text-base truncate">{userName || (isRtl ? 'مستخدم' : 'User')}</div>
                         <div className="text-xs text-slate-500 dark:text-slate-400 truncate mt-0.5">{userEmail}</div>
                         {isAdmin && (
-                          <span className={`inline-flex items-center gap-1.5 mt-3 px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-wider ${isSuperAdmin ? 'bg-accent-100 dark:bg-accent-900/30 text-accent-700 dark:text-accent-400' : 'bg-brand-100 dark:bg-brand-900/30 text-brand-700 dark:text-brand-400'}`}>
+                          <span className={`inline-flex items-center gap-1.5 mt-2.5 px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-wider ${isSuperAdmin ? 'bg-accent-100 dark:bg-accent-900/30 text-accent-700 dark:text-accent-400' : 'bg-brand-100 dark:bg-brand-900/30 text-brand-700 dark:text-brand-400'}`}>
                             <Shield size={11} aria-hidden="true" /> {isSuperAdmin ? (isRtl ? 'سوبر أدمن' : 'Super Admin') : (isRtl ? 'أدمن' : 'Admin')}
                           </span>
                         )}
                       </div>
                       {/* Items */}
                       <div className="py-2">
-                        <button onClick={() => { setShowProfileMenu(false); handleNav('profile'); }} className="w-full flex items-center gap-3 px-5 py-3 text-sm font-bold text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors cursor-pointer">
-                          <User size={16} className="text-slate-400" aria-hidden="true" /> {isRtl ? 'الملف الشخصي' : 'Personal Profile'}
+                        <button onClick={() => { setShowProfileMenu(false); handleNav('profile'); }} className="w-full flex items-center gap-3 px-5 py-3 text-sm font-bold text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors cursor-pointer whitespace-nowrap">
+                          <User size={16} className="text-slate-400 shrink-0" aria-hidden="true" /> {isRtl ? 'الملف الشخصي' : 'Personal Profile'}
                         </button>
                         {isAdmin && (
-                          <button onClick={() => { setShowProfileMenu(false); handleNav('manage-users'); }} className="w-full flex items-center gap-3 px-5 py-3 text-sm font-bold text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors cursor-pointer">
-                            <Shield size={16} className="text-slate-400" aria-hidden="true" /> {isRtl ? 'لوحة التحكم' : 'Operations Command Center'}
+                          <button onClick={() => { setShowProfileMenu(false); handleNav('manage-users'); }} className="w-full flex items-center gap-3 px-5 py-3 text-sm font-bold text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors cursor-pointer whitespace-nowrap">
+                            <Shield size={16} className="text-slate-400 shrink-0" aria-hidden="true" /> {isRtl ? 'لوحة التحكم' : 'Operations Command Center'}
                           </button>
                         )}
-                        <button onClick={() => { setShowProfileMenu(false); handleNav('add-listing'); }} className="w-full flex items-center gap-3 px-5 py-3 text-sm font-bold text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors cursor-pointer">
-                          <PlusCircle size={16} className="text-slate-400" aria-hidden="true" /> {isRtl ? 'إضافة عقار' : 'Add New Listing'}
+                        <button onClick={() => { setShowProfileMenu(false); handleNav('add-listing'); }} className="w-full flex items-center gap-3 px-5 py-3 text-sm font-bold text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors cursor-pointer whitespace-nowrap">
+                          <PlusCircle size={16} className="text-slate-400 shrink-0" aria-hidden="true" /> {isRtl ? 'إضافة عقار' : 'Add New Listing'}
                         </button>
-                        <div className="my-2 border-t border-slate-50 dark:border-slate-800"></div>
-                        <button onClick={() => { setShowProfileMenu(false); handleLogout(); }} className="w-full flex items-center gap-3 px-5 py-3 text-sm font-bold text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors cursor-pointer">
-                          <LogOut size={16} aria-hidden="true" /> {isRtl ? 'تسجيل الخروج' : 'Sign Out'}
+                        <div className="my-1.5 border-t border-slate-100 dark:border-slate-800"></div>
+                        <button onClick={() => { setShowProfileMenu(false); handleLogout(); }} className="w-full flex items-center gap-3 px-5 py-3 text-sm font-bold text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors cursor-pointer whitespace-nowrap">
+                          <LogOut size={16} aria-hidden="true" className="shrink-0" /> {isRtl ? 'تسجيل الخروج' : 'Sign Out'}
                         </button>
                       </div>
                     </div>

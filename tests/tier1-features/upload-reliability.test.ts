@@ -298,4 +298,147 @@ describe('Tier 1 — Phase 2: Upload Reliability, 1:1 Destination Integrity & Jo
     await enqueueToRedis(failJob, 'redis://127.0.0.1:1').catch(() => false);
     expect(enqueuedWorkerJobs.has('reconstruction:job-fail-retry-1:attempt_1')).toBe(false);
   });
+
+  it('Requirement 12: Atomic Lua enqueue deduplication and rollback on XADD failure', async () => {
+    const { enqueueToRedis, enqueuedWorkerJobs, setRedisClientForTesting, resetRedisClientForTesting } = await import('../../api/reconstruction');
+    const job = {
+      id: 'job-lua-atomic-dedup',
+      attemptId: 'attempt_1',
+      propertyId: 'prop-lua',
+      ownerId: 'owner-lua',
+      status: 'QUEUED',
+      createdAt: new Date().toISOString(),
+    } as any;
+
+    const redisData = new Map<string, string>();
+    const streamEntries: any[] = [];
+    let simulateStreamFailure = true;
+
+    const mockClientWithEval = {
+      eval: vi.fn(async (script: string, opts: { keys: string[]; arguments: string[] }) => {
+        const [queueKey, streamName] = opts.keys;
+        const [ttl, jobId, attemptId, payload, enqueuedAt] = opts.arguments;
+
+        // Simulating the atomic Lua script with pcall:
+        if (redisData.has(queueKey)) {
+          return 0; // Already acquired
+        }
+        redisData.set(queueKey, '1');
+
+        if (simulateStreamFailure) {
+          // pcall failure: Lua deletes key and raises error
+          redisData.delete(queueKey);
+          throw new Error('REDIS_STREAM_FULL: Stream buffer exhausted');
+        }
+
+        streamEntries.push({ streamName, jobId, attemptId, payload, enqueuedAt });
+        return 1;
+      }),
+      del: vi.fn(async (key: string) => {
+        redisData.delete(key);
+        return 1;
+      }),
+      quit: vi.fn(async () => {}),
+    };
+
+    setRedisClientForTesting(mockClientWithEval);
+
+    try {
+      enqueuedWorkerJobs.clear();
+      const queueKey = `reconstruction:${job.id}:${job.attemptId}`;
+
+      // 1. Failure: Lua execution fails on stream insertion
+      const firstResult = await enqueueToRedis(job, 'redis://localhost:6379');
+      expect(firstResult).toBe(false);
+
+      // Verify deduplication key is not locked in Redis or in-memory
+      expect(redisData.has(queueKey)).toBe(false);
+      expect(enqueuedWorkerJobs.has(queueKey)).toBe(false);
+
+      // 2. Stream recovers, retry succeeds
+      simulateStreamFailure = false;
+      const retryResult = await enqueueToRedis(job, 'redis://localhost:6379');
+      expect(retryResult).toBe(true);
+      expect(redisData.has(queueKey)).toBe(true);
+      expect(enqueuedWorkerJobs.has(queueKey)).toBe(true);
+      expect(streamEntries.length).toBe(1);
+
+      // 3. Duplicate enqueue attempt is cleanly deduplicated
+      const duplicateResult = await enqueueToRedis(job, 'redis://localhost:6379');
+      expect(duplicateResult).toBe(true);
+      expect(streamEntries.length).toBe(1);
+    } finally {
+      resetRedisClientForTesting();
+    }
+  });
+
+  it('Requirement 13: Non-eval multi-step rollback guarantees deduplication key is released on failure', async () => {
+    const { enqueueToRedis, enqueuedWorkerJobs, setRedisClientForTesting, resetRedisClientForTesting } = await import('../../api/reconstruction');
+    const job = {
+      id: 'job-multistep-rollback',
+      attemptId: 'attempt_1',
+      propertyId: 'prop-ms',
+      ownerId: 'owner-ms',
+      status: 'QUEUED',
+      createdAt: new Date().toISOString(),
+    } as any;
+
+    const redisData = new Map<string, string>();
+    let xAddFails = true;
+    const streamEntries: any[] = [];
+
+    const mockClientWithoutEval = {
+      set: vi.fn(async (key: string, val: string, opts?: any) => {
+        if (opts?.NX && redisData.has(key)) {
+          return null;
+        }
+        redisData.set(key, val);
+        return 'OK';
+      }),
+      xAdd: vi.fn(async (stream: string, id: string, payload: any) => {
+        if (xAddFails) {
+          throw new Error('REDIS_CONNECTION_DROPPED');
+        }
+        streamEntries.push({ stream, payload });
+        return '1700000000-1';
+      }),
+      del: vi.fn(async (key: string) => {
+        redisData.delete(key);
+        return 1;
+      }),
+      quit: vi.fn(async () => {}),
+    };
+
+    setRedisClientForTesting(mockClientWithoutEval);
+
+    try {
+      enqueuedWorkerJobs.clear();
+      const queueKey = `reconstruction:${job.id}:${job.attemptId}`;
+
+      // 1. Initial attempt fails on xAdd
+      const resFail = await enqueueToRedis(job, 'redis://localhost:6379');
+      expect(resFail).toBe(false);
+      expect(mockClientWithoutEval.del).toHaveBeenCalledWith(queueKey);
+      expect(redisData.has(queueKey)).toBe(false);
+      expect(enqueuedWorkerJobs.has(queueKey)).toBe(false);
+
+      // 2. Retry with same attempt succeeds
+      xAddFails = false;
+      const resRetry = await enqueueToRedis(job, 'redis://localhost:6379');
+      expect(resRetry).toBe(true);
+      expect(redisData.has(queueKey)).toBe(true);
+      expect(enqueuedWorkerJobs.has(queueKey)).toBe(true);
+      expect(streamEntries.length).toBe(1);
+
+      // 3. Retry with attempt_2 creates separate queue key
+      const jobAttempt2 = { ...job, attemptId: 'attempt_2' };
+      const queueKey2 = `reconstruction:${job.id}:attempt_2`;
+      const resAttempt2 = await enqueueToRedis(jobAttempt2, 'redis://localhost:6379');
+      expect(resAttempt2).toBe(true);
+      expect(redisData.has(queueKey2)).toBe(true);
+      expect(streamEntries.length).toBe(2);
+    } finally {
+      resetRedisClientForTesting();
+    }
+  });
 });

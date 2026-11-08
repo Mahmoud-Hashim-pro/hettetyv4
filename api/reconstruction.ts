@@ -862,7 +862,11 @@ export async function enqueueToRedis(
         if not acquired then
           return 0
         end
-        redis.call('XADD', KEYS[2], '*', 'jobId', ARGV[2], 'attemptId', ARGV[3], 'payload', ARGV[4], 'enqueuedAt', ARGV[5])
+        local ok, err = pcall(redis.call, 'XADD', KEYS[2], '*', 'jobId', ARGV[2], 'attemptId', ARGV[3], 'payload', ARGV[4], 'enqueuedAt', ARGV[5])
+        if not ok then
+          redis.call('DEL', KEYS[1])
+          error(err)
+        end
         return 1
       `;
       const res = await client.eval(luaScript, {

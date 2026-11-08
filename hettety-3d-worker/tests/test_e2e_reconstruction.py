@@ -837,9 +837,13 @@ class TestHettety3DReconstructionE2E(unittest.TestCase):
         )
         def mock_download(urls, target_dir):
             import shutil
+            downloaded_files = []
             for f in os.listdir(fixture_dir):
                 if f.lower().endswith((".jpg", ".png")):
-                    shutil.copy(os.path.join(fixture_dir, f), os.path.join(target_dir, f))
+                    dest = os.path.join(target_dir, f)
+                    shutil.copy(os.path.join(fixture_dir, f), dest)
+                    downloaded_files.append(dest)
+            return downloaded_files
         worker.storage_client.download_capture_files = mock_download
 
         # Mock scale_ply_to_metric to simulate failure

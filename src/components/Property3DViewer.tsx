@@ -502,7 +502,7 @@ const SpatialTourScene: React.FC<{
 };
 
 export interface Property3DViewerProps {
-  images: string[];
+  images?: string[];
   /** Predicted depth maps, index-matched to images. */
   depthMaps?: string[];
   panoramas?: string[];
@@ -511,8 +511,9 @@ export interface Property3DViewerProps {
   /** Hettety reconstructed 3D spatial tour asset (Gaussian Splat / SPZ / GLB) */
   threeDTour?: ThreeDTourAsset;
   title?: string;
-  onClose: () => void;
+  onClose?: () => void;
   isRtl?: boolean;
+  propertyId?: string;
 }
 
 const Property3DViewer: React.FC<Property3DViewerProps> = ({ images = [], depthMaps = [], panoramas = [], tourUrl, threeDTour, title, onClose, isRtl }) => {

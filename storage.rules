@@ -22,6 +22,35 @@ service firebase.storage {
          request.auth.token.email == "modyhashim2006@gmail.com");
     }
 
+    // Confidential property contracts & deeds:
+    // Restricted strictly to the property owner and super-admins.
+    match /properties/{ownerUid}/contracts/{fileName} {
+      allow read: if isOwner(ownerUid) || isSuperAdmin();
+      allow create: if isOwner(ownerUid) && (
+                     (request.resource.contentType == 'application/pdf' && request.resource.size < 15 * 1024 * 1024) ||
+                     (request.resource.contentType.matches('image/.*') && request.resource.size < 15 * 1024 * 1024)
+                   );
+      allow update: if false;
+      allow delete: if isOwner(ownerUid) || isSuperAdmin();
+    }
+
+    match /properties/{ownerUid}/deeds/{fileName} {
+      allow read: if isOwner(ownerUid) || isSuperAdmin();
+      allow create: if isOwner(ownerUid) && (
+                     (request.resource.contentType == 'application/pdf' && request.resource.size < 15 * 1024 * 1024) ||
+                     (request.resource.contentType.matches('image/.*') && request.resource.size < 15 * 1024 * 1024)
+                   );
+      allow update: if false;
+      allow delete: if isOwner(ownerUid) || isSuperAdmin();
+    }
+
+    // Staged upload sessions:
+    // Private by default. Client direct writes strictly DENIED — must use signed V4 URLs
+    match /properties/{propertyId}/uploads/{jobId}/{fileName} {
+      allow read: if isSuperAdmin();
+      allow write: if false;
+    }
+
     // Property media — any authenticated user may upload:
     //  • images  (≤ 15MB)
     //  • videos  (≤ 80MB) — property tour clips

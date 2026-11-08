@@ -8,6 +8,13 @@ import {
 import { MarketAnalyticsDashboard } from '../../src/components/analytics/MarketAnalyticsDashboard';
 import { PlatformSecurityCenter } from '../../src/components/operations/PlatformSecurityCenter';
 import { Property } from '../../src/types';
+import controlPlaneHandler, {
+  recordWorkerHeartbeat,
+  recordJobFailureMetric,
+  recordQueueLatencyMetric,
+  getControlPlaneMetrics,
+  formatControlPlanePrometheus,
+} from '../../api/reconstruction';
 
 describe('Tier 1 — Phase 10-12: Analytics, Operations & Security Governance', () => {
   const mockProperties: Property[] = [
@@ -127,6 +134,93 @@ describe('Tier 1 — Phase 10-12: Analytics, Operations & Security Governance', 
       expect(screen.getByText(/SEC-01/i)).toBeInTheDocument();
       expect(screen.getByText(/SEC-03/i)).toBeInTheDocument();
       expect(screen.getByText(/84.5M EGP/i)).toBeInTheDocument();
+    });
+  });
+
+  describe('Phase 17 — Production Observability & Control Plane Telemetry', () => {
+    it('tracks active worker heartbeats, queue latency, and job failure counters', () => {
+      // 1. Worker heartbeat registration
+      recordWorkerHeartbeat('worker-gpu-alpha', 'job-101', 'attempt_1');
+      recordWorkerHeartbeat('worker-gpu-beta', 'job-102', 'attempt_1');
+
+      // 2. Queue latency recording
+      recordQueueLatencyMetric(1250);
+      recordQueueLatencyMetric(2750);
+
+      // 3. Job failure counters
+      recordJobFailureMetric('QUALITY_GATE_REJECTED');
+      recordJobFailureMetric('QUALITY_GATE_REJECTED');
+      recordJobFailureMetric('COLMAP_SFM_FAILED');
+
+      const metrics = getControlPlaneMetrics();
+      expect(metrics.activeWorkersCount).toBeGreaterThanOrEqual(2);
+      expect(metrics.activeWorkers.some((w) => w.workerId === 'worker-gpu-alpha')).toBe(true);
+      expect(metrics.queueLatency.samples).toBeGreaterThanOrEqual(2);
+      expect(metrics.queueLatency.avgSeconds).toBeGreaterThan(0);
+      expect(metrics.jobFailureCounters['QUALITY_GATE_REJECTED']).toBeGreaterThanOrEqual(2);
+      expect(metrics.jobFailureCounters['COLMAP_SFM_FAILED']).toBeGreaterThanOrEqual(1);
+    });
+
+    it('formats Prometheus exposition text with required control plane metrics', () => {
+      recordWorkerHeartbeat('worker-gpu-prom', 'job-prom', 'attempt_1');
+      recordJobFailureMetric('GPU_OUT_OF_MEMORY');
+
+      const promText = formatControlPlanePrometheus();
+      expect(promText).toContain('# HELP hettety_control_plane_active_workers');
+      expect(promText).toContain('hettety_control_plane_active_workers');
+      expect(promText).toContain('# HELP hettety_control_plane_queue_latency_seconds');
+      expect(promText).toContain('# HELP hettety_control_plane_jobs_total');
+      expect(promText).toContain('hettety_control_plane_job_failures_total{code="GPU_OUT_OF_MEMORY"}');
+    });
+
+    it('serves metrics via control plane API handler in JSON and Prometheus formats', async () => {
+      let statusRes = 0;
+      let jsonRes: any = null;
+      let sendRes: any = null;
+
+      const mockRes = {
+        status: (code: number) => {
+          statusRes = code;
+          return {
+            json: (data: any) => {
+              jsonRes = data;
+            },
+            send: (body: any) => {
+              sendRes = body;
+            },
+            end: (body: any) => {
+              sendRes = body;
+            },
+          };
+        },
+        setHeader: () => {},
+      };
+
+      // Query JSON
+      await controlPlaneHandler(
+        {
+          method: 'GET',
+          query: { action: 'metrics' },
+        },
+        mockRes
+      );
+
+      expect(statusRes).toBe(200);
+      expect(jsonRes.success).toBe(true);
+      expect(jsonRes.metrics).toBeDefined();
+      expect(jsonRes.metrics.activeWorkersCount).toBeGreaterThanOrEqual(1);
+
+      // Query Prometheus format
+      await controlPlaneHandler(
+        {
+          method: 'GET',
+          query: { action: 'metrics', format: 'prometheus' },
+        },
+        mockRes
+      );
+
+      expect(statusRes).toBe(200);
+      expect(sendRes).toContain('hettety_control_plane_active_workers');
     });
   });
 });

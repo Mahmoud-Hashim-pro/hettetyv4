@@ -22,6 +22,20 @@ from pipeline.publish import publish_tour_assets
 from pipeline.calibrate import calibrate_sparse_scale
 from storage.object_storage import ObjectStorageClient
 from task_queue.consumer import QueueConsumer
+import time
+
+try:
+    from observability.metrics import get_worker_metrics
+    from observability.logger import setup_worker_logging
+except ImportError:
+    try:
+        from hettety_3d_worker.observability.metrics import get_worker_metrics
+        from hettety_3d_worker.observability.logger import setup_worker_logging
+    except ImportError:
+        import sys
+        sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        from observability.metrics import get_worker_metrics
+        from observability.logger import setup_worker_logging
 
 logging.basicConfig(
     level=logging.INFO,
@@ -322,7 +336,12 @@ class ReconstructionWorker:
         def report(status: str, progress: int, stage_desc: str):
             self._report_stage(job_id, property_id, status, progress, stage_desc, callback_url, api_key, attempt_id=attempt_id, worker_id=worker_id)
 
+        worker_metrics = get_worker_metrics()
+        worker_metrics.record_job_start(job_id, property_id)
+        job_start_time = time.time()
+
         def fail(err_code: str, err_msg: str) -> Dict[str, Any]:
+            worker_metrics.record_job_failure(job_id, err_code, time.time() - job_start_time)
             return self._fail_job(job_id, property_id, err_code, err_msg, callback_url, api_key, attempt_id=attempt_id, worker_id=worker_id)
 
         job_dir = safe_job_workspace(self.work_dir, job_id)
@@ -573,6 +592,16 @@ class ReconstructionWorker:
             if not pub_res.get("success"):
                 return fail(pub_res.get("error_code", "PUBLISH_FAILED"), pub_res.get("message", "Publishing failed"))
 
+            job_duration = time.time() - job_start_time
+            total_imgs = val_res.get("image_count", len(capture_urls))
+            reg_ratio = min(1.0, float(sfm_res.get("registered_images", 0)) / max(1, total_imgs))
+            worker_metrics.record_job_success(
+                job_id=job_id,
+                duration_sec=job_duration,
+                splat_count=opt_res.get("splat_count", 0),
+                registration_ratio=reg_ratio,
+                peak_vram_mb=worker_metrics.get_peak_vram_mb()
+            )
             report("READY", 100, "Spatial tour reconstruction complete")
             logger.info(f"==> Successfully completed reconstruction for Job {job_id}!")
             return pub_res
@@ -580,6 +609,7 @@ class ReconstructionWorker:
         except Exception as e:
             from pipeline.process_manager import JobCancelledException
             if isinstance(e, JobCancelledException):
+                worker_metrics.record_job_cancelled(job_id, time.time() - job_start_time)
                 logger.warning(f"Reconstruction job {job_id} cancelled during managed execution: {e}")
                 report("CANCELLED", 0, "Job cancelled by user request")
                 return {"status": "cancelled", "jobId": job_id, "propertyId": property_id}
@@ -614,6 +644,14 @@ class ReconstructionWorker:
                     logger.info(f"Cleaned up intermediate workspace files for {job_id}")
             except Exception as cleanup_err:
                 logger.warning(f"Error during workspace cleanup for {job_id}: {cleanup_err}")
+
+    def get_metrics(self) -> Dict[str, Any]:
+        """Returns snapshot of worker Prometheus telemetry."""
+        return get_worker_metrics().get_snapshot()
+
+    def get_prometheus_metrics(self) -> str:
+        """Returns Prometheus exposition text for worker telemetry."""
+        return get_worker_metrics().format_prometheus()
 
     def _fail_job(
         self,

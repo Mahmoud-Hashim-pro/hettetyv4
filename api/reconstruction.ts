@@ -67,6 +67,8 @@ export interface ReconstructionJobPayload {
     max: [number, number, number];
   };
   qualityReport?: any;
+  enqueuedAt?: number;
+  startedProcessingAt?: number;
 }
 
 // In-memory control plane store for fast local development and testing
@@ -77,6 +79,164 @@ export const inFlightIdempotencyLocks = new Map<string, Promise<any>>();
 export const enqueuedWorkerJobs = new Set<string>();
 export const mockPropertiesStore = new Map<string, { authorUid: string; [key: string]: any }>();
 export const mockAttemptsStore = new Map<string, any[]>();
+
+/**
+ * Phase 17: Production Observability & Control Plane Telemetry
+ */
+export interface ControlPlaneWorkerRecord {
+  workerId: string;
+  lastHeartbeat: number;
+  currentJobId?: string;
+  attemptId?: string;
+}
+
+export interface ControlPlaneMetricsSnapshot {
+  activeWorkersCount: number;
+  activeWorkers: Array<{ workerId: string; lastSeenSecondsAgo: number; currentJobId?: string }>;
+  queueLatency: {
+    samples: number;
+    avgSeconds: number;
+    lastSeconds: number;
+    minSeconds: number;
+    maxSeconds: number;
+  };
+  jobFailureCounters: Record<string, number>;
+  totalJobs: {
+    queued: number;
+    ready: number;
+    failed: number;
+    cancelled: number;
+  };
+}
+
+export const activeWorkersStore = new Map<string, ControlPlaneWorkerRecord>();
+export const jobFailureCounters = new Map<string, number>();
+export const queueLatencyMetrics = {
+  samples: 0,
+  totalMs: 0,
+  lastMs: 0,
+  minMs: Infinity,
+  maxMs: 0,
+};
+
+export function recordWorkerHeartbeat(workerId: string, currentJobId?: string, attemptId?: string): void {
+  if (!workerId) return;
+  activeWorkersStore.set(workerId, {
+    workerId,
+    lastHeartbeat: Date.now(),
+    currentJobId,
+    attemptId,
+  });
+}
+
+export function recordJobFailureMetric(errorCode: string): void {
+  const code = errorCode || 'UNKNOWN';
+  jobFailureCounters.set(code, (jobFailureCounters.get(code) || 0) + 1);
+}
+
+export function recordQueueLatencyMetric(latencyMs: number): void {
+  if (latencyMs < 0) return;
+  queueLatencyMetrics.samples++;
+  queueLatencyMetrics.totalMs += latencyMs;
+  queueLatencyMetrics.lastMs = latencyMs;
+  queueLatencyMetrics.minMs = Math.min(queueLatencyMetrics.minMs, latencyMs);
+  queueLatencyMetrics.maxMs = Math.max(queueLatencyMetrics.maxMs, latencyMs);
+}
+
+export function getControlPlaneMetrics(): ControlPlaneMetricsSnapshot {
+  const now = Date.now();
+  const activeWorkerWindowMs = 60_000;
+  const activeList: Array<{ workerId: string; lastSeenSecondsAgo: number; currentJobId?: string }> = [];
+
+  for (const [wId, record] of activeWorkersStore.entries()) {
+    const elapsed = now - record.lastHeartbeat;
+    if (elapsed <= activeWorkerWindowMs) {
+      activeList.push({
+        workerId: wId,
+        lastSeenSecondsAgo: Math.round(elapsed / 1000),
+        currentJobId: record.currentJobId,
+      });
+    }
+  }
+
+  const failures: Record<string, number> = {};
+  for (const [code, count] of jobFailureCounters.entries()) {
+    failures[code] = count;
+  }
+
+  let queued = 0;
+  let ready = 0;
+  let failed = 0;
+  let cancelled = 0;
+  for (const job of controlPlaneJobs.values()) {
+    if (job.status === 'QUEUED') queued++;
+    else if (job.status === 'READY') ready++;
+    else if (job.status === 'FAILED') failed++;
+    else if (job.status === 'CANCELLED') cancelled++;
+  }
+
+  const avgSec = queueLatencyMetrics.samples > 0
+    ? (queueLatencyMetrics.totalMs / queueLatencyMetrics.samples) / 1000
+    : 0;
+  const lastSec = queueLatencyMetrics.lastMs > 0 ? queueLatencyMetrics.lastMs / 1000 : 0;
+  const minSec = queueLatencyMetrics.minMs === Infinity ? 0 : queueLatencyMetrics.minMs / 1000;
+  const maxSec = queueLatencyMetrics.maxMs / 1000;
+
+  return {
+    activeWorkersCount: activeList.length,
+    activeWorkers: activeList,
+    queueLatency: {
+      samples: queueLatencyMetrics.samples,
+      avgSeconds: Number(avgSec.toFixed(3)),
+      lastSeconds: Number(lastSec.toFixed(3)),
+      minSeconds: Number(minSec.toFixed(3)),
+      maxSeconds: Number(maxSec.toFixed(3)),
+    },
+    jobFailureCounters: failures,
+    totalJobs: {
+      queued,
+      ready,
+      failed,
+      cancelled,
+    },
+  };
+}
+
+export function formatControlPlanePrometheus(): string {
+  const m = getControlPlaneMetrics();
+  const lines: string[] = [
+    '# HELP hettety_control_plane_active_workers Current count of active GPU workers reporting heartbeats within 60s',
+    '# TYPE hettety_control_plane_active_workers gauge',
+    `hettety_control_plane_active_workers ${m.activeWorkersCount}`,
+    '',
+    '# HELP hettety_control_plane_queue_latency_seconds Average queue latency in seconds from enqueue to first worker processing stage',
+    '# TYPE hettety_control_plane_queue_latency_seconds gauge',
+    `hettety_control_plane_queue_latency_seconds ${m.queueLatency.avgSeconds}`,
+    '',
+    '# HELP hettety_control_plane_queue_latency_last_seconds Latest queue latency in seconds',
+    '# TYPE hettety_control_plane_queue_latency_last_seconds gauge',
+    `hettety_control_plane_queue_latency_last_seconds ${m.queueLatency.lastSeconds}`,
+    '',
+    '# HELP hettety_control_plane_jobs_total Total reconstruction jobs managed by control plane status',
+    '# TYPE hettety_control_plane_jobs_total counter',
+    `hettety_control_plane_jobs_total{status="queued"} ${m.totalJobs.queued}`,
+    `hettety_control_plane_jobs_total{status="ready"} ${m.totalJobs.ready}`,
+    `hettety_control_plane_jobs_total{status="failed"} ${m.totalJobs.failed}`,
+    `hettety_control_plane_jobs_total{status="cancelled"} ${m.totalJobs.cancelled}`,
+  ];
+
+  if (Object.keys(m.jobFailureCounters).length > 0) {
+    lines.push('');
+    lines.push('# HELP hettety_control_plane_job_failures_total Total failed reconstruction jobs by error code');
+    lines.push('# TYPE hettety_control_plane_job_failures_total counter');
+    for (const [code, count] of Object.entries(m.jobFailureCounters)) {
+      lines.push(`hettety_control_plane_job_failures_total{code="${code}"} ${count}`);
+    }
+  }
+
+  lines.push('');
+  return lines.join('\n');
+}
 
 /**
  * Strict state machine allowed transitions
@@ -817,6 +977,9 @@ export async function enqueueToRedis(
   redisUrl?: string,
   customClient?: any
 ): Promise<boolean> {
+  if (!job.enqueuedAt) {
+    job.enqueuedAt = Date.now();
+  }
   const queueKey = `reconstruction:${job.id}:${job.attemptId || 'attempt_1'}`;
   const url = redisUrl || process.env.REDIS_URL;
   const clientToUse = customClient || mockRedisClientInstance;
@@ -934,6 +1097,22 @@ export default async function handler(req: any, res: any) {
 
   try {
     const action = req.query?.action || req.body?.action || (req.method === 'GET' ? 'get-job' : 'create-job');
+
+    // 0a. Action: METRICS / OBSERVABILITY TELEMETRY (Prometheus & JSON)
+    if (action === 'metrics' || action === 'get-metrics') {
+      const isPrometheus = req.headers?.accept === 'text/plain' || req.query?.format === 'prometheus';
+      if (isPrometheus) {
+        if (res.setHeader) {
+          res.setHeader('Content-Type', 'text/plain; version=0.0.4; charset=utf-8');
+        }
+        const body = formatControlPlanePrometheus();
+        return res.status(200).send ? res.status(200).send(body) : res.status(200).end(body);
+      }
+      return res.status(200).json({
+        success: true,
+        metrics: getControlPlaneMetrics(),
+      });
+    }
 
     // 0. Action: GET RECONSTRUCTION JOB
     if (action === 'get-job' || (req.method === 'GET' && (!action || action === 'get-job'))) {
@@ -1598,6 +1777,9 @@ export default async function handler(req: any, res: any) {
       }
 
       const { jobId, attemptId, workerId, expectedStateVersion } = req.body;
+      if (workerId) {
+        recordWorkerHeartbeat(workerId, jobId, attemptId);
+      }
       if (!jobId) {
         return res.status(400).json({ error: 'INVALID_REQUEST: jobId is required.' });
       }
@@ -1669,6 +1851,9 @@ export default async function handler(req: any, res: any) {
       const targetStatus = (status || '').toUpperCase();
       const effectiveWorkerId = workerId || req.headers?.['x-worker-id'] || req.headers?.['x-worker-node'] || (process.env.NODE_ENV === 'test' && action === 'update-stage' ? 'worker-node-1' : undefined);
       const effectiveAttemptId = attemptId || req.headers?.['x-attempt-id'] || (process.env.NODE_ENV === 'test' && action === 'update-stage' ? 'attempt_1' : undefined);
+      if (effectiveWorkerId) {
+        recordWorkerHeartbeat(effectiveWorkerId, jobId, effectiveAttemptId);
+      }
 
       if (!jobId) {
         return res.status(400).json({ error: 'INVALID_REQUEST: jobId is required.', errorCode: 'JOB_ATTEMPT_WORKER_REQUIRED' });
@@ -2091,6 +2276,13 @@ export default async function handler(req: any, res: any) {
           current.workerId = workerId;
         }
 
+        if (current.enqueuedAt && !current.startedProcessingAt) {
+          current.startedProcessingAt = Date.now();
+          recordQueueLatencyMetric(current.startedProcessingAt - current.enqueuedAt);
+        }
+        if (targetStatus === 'FAILED' || errorCode) {
+          recordJobFailureMetric(errorCode || 'WORKER_FAILED');
+        }
         if (targetStatus && targetStatus !== current.status) {
           current.stageStartedAt = nowIso;
           current.status = targetStatus as any;

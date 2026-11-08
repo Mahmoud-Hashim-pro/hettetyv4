@@ -44,6 +44,7 @@ import { LoadErrorBoundary } from './components/LoadErrorBoundary';
 import RealEstateAdvisor from './components/RealEstateAdvisor';
 import { parseNaturalLanguageQuery } from './services/search/query-parser';
 import { rankAndFilterProperties } from './services/search/ranking-engine';
+import { PREMIER_LANDMARK_PROPERTIES } from './lib/inventoryData';
 
 // Lazy-loaded so the heavy three.js bundle is only fetched when a 3D tour is opened
 const Property3DViewer = lazyWithReload(() => import('./components/Property3DViewer'), 'viewer3d');
@@ -369,9 +370,9 @@ const PropertyCard: React.FC<{
         {/* The badge follows verificationStatus alone. A stale isVerified: true on a
             listing a reviewer later rejected must never keep showing green. And an
             unreviewed listing says so, rather than saying nothing. */}
-        <div className={`${listingReviewInfo(property, t).chip} px-2 py-1 rounded-full text-xs font-bold flex items-center gap-1 shadow-sm truncate max-w-full`}>
+        <div className={`${listingReviewInfo(property, t).chip} px-2.5 py-1 rounded-full text-xs font-bold flex items-center gap-1 shadow-sm max-w-full whitespace-nowrap`}>
           {property.verificationStatus === 'Verified' && <ShieldCheck size={12} aria-hidden="true" />}
-          <span className="truncate">{listingReviewInfo(property, t).label}</span>
+          <span>{listingReviewInfo(property, t).label}</span>
         </div>
       </div>
       {onToggleFavorite && (
@@ -414,7 +415,7 @@ const PropertyCard: React.FC<{
     </div>
     <div className="p-6 flex-1 flex flex-col">
       <div className="flex justify-between items-start mb-2">
-        <h3 className="text-lg font-heading font-bold text-slate-900 dark:text-white line-clamp-1">{property.title}</h3>
+        <h3 className="text-lg font-heading font-bold text-slate-900 dark:text-white line-clamp-1 min-w-0 flex-1 me-2">{property.title}</h3>
         <span className="text-brand-600 dark:text-brand-400 font-bold whitespace-nowrap">
           {priceLabel(property, isRtl)}{property.price ? <span className="text-[10px] text-slate-600 dark:text-slate-400 font-medium">{pricePeriodSuffix(property.pricePeriod, isRtl)}</span> : null}
         </span>
@@ -2182,7 +2183,7 @@ Images: ${property.images?.length ? property.images.join(', ') : property.imageU
                 <span className={`${av.color} text-white text-2xl font-black uppercase tracking-widest px-8 py-3 rounded-xl -rotate-12 shadow-2xl`}>{av.label}</span>
               </div>
             )}
-            {(displayImages.length > 0 || (property.panoramas && property.panoramas.length > 0)) && (
+            {(displayImages.length > 0 || (property.panoramas && property.panoramas.length > 0) || Boolean(property.threeDTour) || Boolean(property.digitalTwinUrl)) && (
               <button
                 onClick={() => setShow3D(true)}
                 className={`absolute top-4 ${isRtl ? 'right-4' : 'left-4'} bg-black/60 hover:bg-brand-600 text-white backdrop-blur px-4 py-2 rounded-full text-sm font-bold transition-colors flex items-center gap-2 cursor-pointer z-20`}
@@ -3538,20 +3539,26 @@ const AdminDashboard = ({ isRtl, isSuperAdmin }: { isRtl: boolean; isSuperAdmin:
 
   return (
     <div className="max-w-7xl mx-auto py-12 px-4 animate-fade-in transition-colors duration-500">
-      <div className="flex flex-col md:flex-row md:items-center justify-between gap-6 mb-12">
-        <div className="flex items-center gap-4">
-          <div className="w-14 h-14 bg-slate-900 dark:bg-black rounded-2xl flex items-center justify-center shadow-lg border border-slate-800 dark:border-slate-700">
+      <div className="flex flex-col gap-6 mb-8 w-full min-w-0">
+        <div className="flex items-center gap-4 min-w-0">
+          <div className="w-14 h-14 bg-slate-900 dark:bg-black rounded-2xl flex items-center justify-center shadow-lg border border-slate-800 dark:border-slate-700 shrink-0">
             <Shield className="text-accent-500" size={32} />
           </div>
-          <div>
-            <h1 className="text-4xl font-heading font-black text-slate-900 dark:text-white tracking-tight">
+          <div className="min-w-0">
+            <h1 className="text-3xl sm:text-4xl font-heading font-black text-slate-900 dark:text-white tracking-tight">
               {isSuperAdmin ? (isRtl ? 'لوحة تحكم السوبر أدمن' : 'Super Admin Dashboard') : (isRtl ? 'لوحة تحكم الأدمن' : 'Admin Dashboard')}
             </h1>
-            <p className="text-slate-500 dark:text-slate-400 font-medium">{isRtl ? 'مركز إدارة عمليات HETTETY' : 'HETTETY Operations Command Center'}</p>
+            <p className="text-slate-500 dark:text-slate-400 font-medium text-sm sm:text-base">
+              {isRtl ? 'مركز إدارة عمليات HETTETY' : 'HETTETY Operations Command Center'}
+            </p>
           </div>
         </div>
 
-        <div className="flex overflow-x-auto no-scrollbar gap-1 bg-slate-100 dark:bg-slate-800 p-1 rounded-xl border border-slate-200 dark:border-slate-700 max-w-full" role="tablist" aria-label={isRtl ? 'أقسام لوحة التحكم' : 'Admin dashboard sections'}>
+        <div 
+          className="flex flex-wrap lg:flex-nowrap items-center gap-1.5 bg-slate-100 dark:bg-slate-800 p-1.5 rounded-2xl border border-slate-200 dark:border-slate-700 w-full max-w-full min-w-0 overflow-x-auto shadow-xs" 
+          role="tablist" 
+          aria-label={isRtl ? 'أقسام لوحة التحكم' : 'Admin dashboard sections'}
+        >
           {[
             { id: 'stats', label: isRtl ? 'الإحصائيات' : 'Stats', icon: <Target size={16} aria-hidden="true" /> },
             { id: 'properties', label: isRtl ? 'العقارات' : 'Properties', icon: <Building2 size={16} aria-hidden="true" /> },
@@ -3566,15 +3573,15 @@ const AdminDashboard = ({ isRtl, isSuperAdmin }: { isRtl: boolean; isSuperAdmin:
               role="tab"
               aria-selected={activeTab === tab.id}
               onClick={() => setActiveTab(tab.id as any)}
-              className={`flex items-center gap-2 px-4 sm:px-6 py-2.5 rounded-lg text-sm font-bold transition-all whitespace-nowrap shrink-0 focus:outline-none focus:ring-2 focus:ring-brand-500 ${
+              className={`flex items-center gap-2 px-3.5 sm:px-4.5 py-2.5 rounded-xl text-xs sm:text-sm font-bold transition-all whitespace-nowrap shrink-0 focus:outline-none focus:ring-2 focus:ring-brand-500 cursor-pointer ${
                 activeTab === tab.id 
                 ? 'bg-white dark:bg-slate-700 text-brand-900 dark:text-white shadow-sm border border-slate-200 dark:border-slate-600' 
-                : 'text-slate-500 dark:text-slate-400 hover:text-brand-600 dark:hover:text-brand-400 cursor-pointer'
+                : 'text-slate-500 dark:text-slate-400 hover:text-brand-600 dark:hover:text-brand-400'
               }`}
             >
-              {tab.icon} {tab.label}
+              {tab.icon} <span>{tab.label}</span>
               {tab.badge !== undefined && tab.badge > 0 && (
-                <span className="bg-accent-500 text-white text-[10px] w-5 h-5 rounded-full flex items-center justify-center animate-pulse">
+                <span className="bg-accent-500 text-white text-[10px] w-5 h-5 rounded-full flex items-center justify-center animate-pulse ms-1">
                   {tab.badge}
                 </span>
               )}
@@ -3605,7 +3612,7 @@ const AdminDashboard = ({ isRtl, isSuperAdmin }: { isRtl: boolean; isSuperAdmin:
       )}
 
       {activeTab === 'verifications' && (
-        <div className="bg-white dark:bg-slate-900 rounded-3xl border border-slate-200 dark:border-slate-800 overflow-hidden shadow-xl animate-scale-up">
+        <div className="bg-white dark:bg-slate-900 rounded-3xl border border-slate-200 dark:border-slate-800 overflow-hidden shadow-xl animate-scale-up w-full max-w-full min-w-0">
           <div className="p-6 border-b border-slate-100 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/50">
             <h2 className="font-bold text-slate-800 dark:text-white flex items-center gap-2">
               <ShieldCheck className="text-green-600 dark:text-green-400" />
@@ -3618,20 +3625,20 @@ const AdminDashboard = ({ isRtl, isSuperAdmin }: { isRtl: boolean; isSuperAdmin:
               <p className="font-medium">{isRtl ? 'لا توجد طلبات معلقة حالياً' : 'No pending requests at the moment.'}</p>
             </div>
           ) : (
-            <div className="overflow-x-auto">
-              <table className="w-full text-left">
+            <div className="overflow-x-auto w-full max-w-full">
+              <table className="w-full text-start">
                 <thead className="bg-slate-50 dark:bg-slate-800 text-slate-500 dark:text-slate-400 text-xs font-black uppercase tracking-widest">
                   <tr>
-                    <th className="px-8 py-4">{isRtl ? 'العقار' : 'Property'}</th>
-                    <th className="px-8 py-4">{isRtl ? 'الموقع' : 'Location'}</th>
-                    <th className="px-8 py-4">{isRtl ? 'التاريخ' : 'Date'}</th>
-                    <th className="px-8 py-4 text-right">{isRtl ? 'الإجراءات' : 'Actions'}</th>
+                    <th className="px-4 sm:px-6 py-4">{isRtl ? 'العقار' : 'Property'}</th>
+                    <th className="px-4 sm:px-6 py-4">{isRtl ? 'الموقع' : 'Location'}</th>
+                    <th className="px-4 sm:px-6 py-4">{isRtl ? 'التاريخ' : 'Date'}</th>
+                    <th className="px-4 sm:px-6 py-4 text-end">{isRtl ? 'الإجراءات' : 'Actions'}</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
                   {pendingProperties.map((prop) => (
                     <tr key={prop.id} className="hover:bg-slate-50/50 dark:hover:bg-slate-800/50 transition-colors">
-                      <td className="px-8 py-6">
+                      <td className="px-4 sm:px-6 py-4 sm:py-6">
                         <div className="flex items-center gap-4">
                           <PropertyImage src={prop.imageUrl} alt={prop.title || (isRtl ? 'صورة العقار' : 'Property thumbnail')} iconSize={18} className="w-12 h-12 rounded-lg object-cover" />
                           <div>
@@ -3640,8 +3647,8 @@ const AdminDashboard = ({ isRtl, isSuperAdmin }: { isRtl: boolean; isSuperAdmin:
                           </div>
                         </div>
                       </td>
-                      <td className="px-8 py-6 text-slate-600 dark:text-slate-400 text-sm">{prop.location}</td>
-                      <td className="px-8 py-6 text-slate-400 dark:text-slate-500 text-xs">
+                      <td className="px-4 sm:px-6 py-4 sm:py-6 text-slate-600 dark:text-slate-400 text-sm">{prop.location}</td>
+                      <td className="px-4 sm:px-6 py-4 sm:py-6 text-slate-400 dark:text-slate-500 text-xs">
                         <div>{prop.publishDate}</div>
                         {/* The verdict says "a reviewer read the documents this seller
                             uploaded". The reviewer has to be able to open them. */}
@@ -3659,7 +3666,7 @@ const AdminDashboard = ({ isRtl, isSuperAdmin }: { isRtl: boolean; isSuperAdmin:
                           </div>
                         )}
                       </td>
-                      <td className="px-8 py-6 text-right">
+                      <td className="px-4 sm:px-6 py-4 sm:py-6 text-end">
                         <div className="flex justify-end gap-2">
                           <button 
                             onClick={() => handleVerifyProperty(prop.id, 'Verified')}
@@ -3699,7 +3706,7 @@ const AdminDashboard = ({ isRtl, isSuperAdmin }: { isRtl: boolean; isSuperAdmin:
       )}
 
       {activeTab === 'documents' && (
-        <div className="bg-white dark:bg-slate-900 rounded-3xl border border-slate-200 dark:border-slate-800 overflow-hidden shadow-xl animate-scale-up">
+        <div className="bg-white dark:bg-slate-900 rounded-3xl border border-slate-200 dark:border-slate-800 overflow-hidden shadow-xl animate-scale-up w-full max-w-full min-w-0">
           <div className="p-6 border-b border-slate-100 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/50">
             <h2 className="font-bold text-slate-800 dark:text-white flex items-center gap-2">
               <FileText className="text-brand-600 dark:text-brand-400" aria-hidden="true" />
@@ -3717,32 +3724,32 @@ const AdminDashboard = ({ isRtl, isSuperAdmin }: { isRtl: boolean; isSuperAdmin:
               <p className="font-medium">{isRtl ? 'مفيش مستندات مستنية مراجعة.' : 'Nothing waiting for review.'}</p>
             </div>
           ) : (
-            <div className="overflow-x-auto">
-              <table className="w-full text-left">
+            <div className="overflow-x-auto w-full max-w-full">
+              <table className="w-full text-start">
                 <thead className="bg-slate-50 dark:bg-slate-800 text-slate-500 dark:text-slate-400 text-xs font-black uppercase tracking-widest">
                   <tr>
-                    <th className="px-8 py-4">{isRtl ? 'الملف' : 'File'}</th>
-                    <th className="px-8 py-4">{isRtl ? 'صاحبه' : 'Owner'}</th>
-                    <th className="px-8 py-4">{isRtl ? 'التاريخ' : 'Date'}</th>
-                    <th className="px-8 py-4">{isRtl ? 'الحالة' : 'State'}</th>
-                    <th className="px-8 py-4 text-right">{isRtl ? 'الإجراءات' : 'Actions'}</th>
+                    <th className="px-4 sm:px-6 py-4">{isRtl ? 'الملف' : 'File'}</th>
+                    <th className="px-4 sm:px-6 py-4">{isRtl ? 'صاحبه' : 'Owner'}</th>
+                    <th className="px-4 sm:px-6 py-4">{isRtl ? 'التاريخ' : 'Date'}</th>
+                    <th className="px-4 sm:px-6 py-4">{isRtl ? 'الحالة' : 'State'}</th>
+                    <th className="px-4 sm:px-6 py-4 text-end">{isRtl ? 'الإجراءات' : 'Actions'}</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
                   {reviewDocs.map((d) => (
                     <tr key={d.id} className="hover:bg-slate-50/50 dark:hover:bg-slate-800/50 transition-colors">
-                      <td className="px-8 py-6">
+                      <td className="px-4 sm:px-6 py-4 sm:py-6">
                         <div className="font-bold text-slate-900 dark:text-white">{d.name}</div>
                         <div className="text-xs text-brand-600 dark:text-brand-400 font-mono">{d.fileId} • {d.type}</div>
                       </td>
-                      <td className="px-8 py-6 text-slate-600 dark:text-slate-400 text-sm">{users.find(u => u.id === d.ownerUid)?.email || `#${(d.ownerUid || '').slice(0, 8)}`}</td>
-                      <td className="px-8 py-6 text-slate-400 dark:text-slate-500 text-xs">{d.uploadDate}</td>
-                      <td className="px-8 py-6">
+                      <td className="px-4 sm:px-6 py-4 sm:py-6 text-slate-600 dark:text-slate-400 text-sm">{users.find(u => u.id === d.ownerUid)?.email || `#${(d.ownerUid || '').slice(0, 8)}`}</td>
+                      <td className="px-4 sm:px-6 py-4 sm:py-6 text-slate-400 dark:text-slate-500 text-xs">{d.uploadDate}</td>
+                      <td className="px-4 sm:px-6 py-4 sm:py-6">
                         <span className={`px-3 py-1 rounded-full text-xs font-bold border ${d.reviewStatus === 'InReview' ? 'bg-amber-50 dark:bg-amber-900/20 text-amber-700 dark:text-amber-400 border-amber-200 dark:border-amber-800' : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 border-slate-200 dark:border-slate-700'}`}>
                           {d.reviewStatus === 'InReview' ? (isRtl ? 'قيد المراجعة' : 'Under review') : (isRtl ? 'لم تتم مراجعته' : 'Not reviewed')}
                         </span>
                       </td>
-                      <td className="px-8 py-6 text-right">
+                      <td className="px-4 sm:px-6 py-4 sm:py-6 text-end">
                         <button
                           onClick={() => openDocForReview(d)}
                           disabled={updating === d.id}
@@ -3830,7 +3837,7 @@ const AdminDashboard = ({ isRtl, isSuperAdmin }: { isRtl: boolean; isSuperAdmin:
       )}
 
       {activeTab === 'properties' && (
-        <div className="bg-white dark:bg-slate-900 rounded-3xl border border-slate-200 dark:border-slate-800 overflow-hidden shadow-xl animate-scale-up">
+        <div className="bg-white dark:bg-slate-900 rounded-3xl border border-slate-200 dark:border-slate-800 overflow-hidden shadow-xl animate-scale-up w-full max-w-full min-w-0">
           <div className="p-6 border-b border-slate-100 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/50 flex items-center justify-between">
             <h2 className="font-bold text-slate-800 dark:text-white flex items-center gap-2">
               <Building2 className="text-brand-600 dark:text-brand-400" />
@@ -3848,23 +3855,23 @@ const AdminDashboard = ({ isRtl, isSuperAdmin }: { isRtl: boolean; isSuperAdmin:
               <p className="font-medium">{isRtl ? 'لا توجد عقارات بعد' : 'No properties yet.'}</p>
             </div>
           ) : (
-            <div className="overflow-x-auto">
-              <table className="w-full text-left">
+            <div className="overflow-x-auto w-full max-w-full">
+              <table className="w-full text-start">
                 <thead className="bg-slate-50 dark:bg-slate-800 text-slate-500 dark:text-slate-400 text-xs font-black uppercase tracking-widest">
                   <tr>
-                    <th className="px-8 py-4">{isRtl ? 'العقار' : 'Property'}</th>
-                    <th className="px-8 py-4">{isRtl ? 'الموقع' : 'Location'}</th>
-                    <th className="px-8 py-4">{isRtl ? 'السعر' : 'Price'}</th>
-                    <th className="px-8 py-4">{isRtl ? 'الحالة' : 'Status'}</th>
-                    <th className="px-8 py-4">{isRtl ? 'التوفر' : 'Availability'}</th>
-                    <th className="px-8 py-4">{isRtl ? 'التوثيق' : 'Verification'}</th>
-                    <th className="px-8 py-4 text-right">{isRtl ? 'الإجراءات' : 'Actions'}</th>
+                    <th className="px-4 sm:px-6 py-4">{isRtl ? 'العقار' : 'Property'}</th>
+                    <th className="px-4 sm:px-6 py-4">{isRtl ? 'الموقع' : 'Location'}</th>
+                    <th className="px-4 sm:px-6 py-4">{isRtl ? 'السعر' : 'Price'}</th>
+                    <th className="px-4 sm:px-6 py-4">{isRtl ? 'الحالة' : 'Status'}</th>
+                    <th className="px-4 sm:px-6 py-4">{isRtl ? 'التوفر' : 'Availability'}</th>
+                    <th className="px-4 sm:px-6 py-4">{isRtl ? 'التوثيق' : 'Verification'}</th>
+                    <th className="px-4 sm:px-6 py-4 text-end">{isRtl ? 'الإجراءات' : 'Actions'}</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
                   {allProperties.map((prop) => (
                     <tr key={prop.id} className="hover:bg-slate-50/50 dark:hover:bg-slate-800/50 transition-colors">
-                      <td className="px-8 py-5">
+                      <td className="px-4 sm:px-6 py-4">
                         <div className="flex items-center gap-4">
                           {prop.imageUrl
                             ? <PropertyImage src={prop.imageUrl} alt={prop.title || (isRtl ? 'صورة العقار' : 'Property thumbnail')} iconSize={18} className="w-12 h-12 rounded-lg object-cover" />
@@ -3875,14 +3882,14 @@ const AdminDashboard = ({ isRtl, isSuperAdmin }: { isRtl: boolean; isSuperAdmin:
                           </div>
                         </div>
                       </td>
-                      <td className="px-8 py-5 text-slate-600 dark:text-slate-400 text-sm">{prop.location}</td>
-                      <td className="px-8 py-5 text-slate-900 dark:text-white text-sm font-bold whitespace-nowrap">{prop.price?.toLocaleString(isRtl ? 'ar-EG' : 'en-US')} {isRtl ? 'ج.م' : 'EGP'}</td>
-                      <td className="px-8 py-5">
+                      <td className="px-4 sm:px-6 py-4 text-slate-600 dark:text-slate-400 text-sm">{prop.location}</td>
+                      <td className="px-4 sm:px-6 py-4 text-slate-900 dark:text-white text-sm font-bold whitespace-nowrap">{prop.price?.toLocaleString(isRtl ? 'ar-EG' : 'en-US')} {isRtl ? 'ج.م' : 'EGP'}</td>
+                      <td className="px-4 sm:px-6 py-4">
                         <span className={`px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-wider whitespace-nowrap ${prop.status === 'For Sale' ? 'bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-400' : 'bg-purple-100 dark:bg-purple-900/30 text-purple-700 dark:text-purple-400'}`}>
                           {prop.status === 'For Sale' ? (isRtl ? 'للبيع' : 'For Sale') : (isRtl ? 'للإيجار' : 'For Rent')}
                         </span>
                       </td>
-                      <td className="px-8 py-5">
+                      <td className="px-4 sm:px-6 py-4">
                         <select
                           value={prop.availability || 'Available'}
                           disabled={updating === prop.id}
@@ -3894,7 +3901,7 @@ const AdminDashboard = ({ isRtl, isSuperAdmin }: { isRtl: boolean; isSuperAdmin:
                           <option value="Sold">{prop.status === 'For Rent' ? (isRtl ? 'مؤجَّر' : 'Rented') : (isRtl ? 'مباع' : 'Sold')}</option>
                         </select>
                       </td>
-                      <td className="px-8 py-5">
+                      <td className="px-4 sm:px-6 py-4">
                         <span className={`px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-wider whitespace-nowrap ${
                           prop.verificationStatus === 'Verified' ? 'bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-400'
                           : prop.verificationStatus === 'Rejected' ? 'bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-400'
@@ -3903,7 +3910,7 @@ const AdminDashboard = ({ isRtl, isSuperAdmin }: { isRtl: boolean; isSuperAdmin:
                           {prop.verificationStatus === 'Verified' ? (isRtl ? 'موثق' : 'Verified') : prop.verificationStatus === 'Rejected' ? (isRtl ? 'مرفوض' : 'Rejected') : (isRtl ? 'معلق' : 'Pending')}
                         </span>
                       </td>
-                      <td className="px-8 py-5 text-right">
+                      <td className="px-4 sm:px-6 py-4 text-end">
                         <div className="flex justify-end gap-2">
                           {prop.verificationStatus === 'Verified' ? (
                             <button
@@ -3960,7 +3967,7 @@ const AdminDashboard = ({ isRtl, isSuperAdmin }: { isRtl: boolean; isSuperAdmin:
       )}
 
       {activeTab === 'purchases' && (
-        <div className="bg-white dark:bg-slate-900 rounded-3xl border border-slate-200 dark:border-slate-800 overflow-hidden shadow-xl animate-scale-up">
+        <div className="bg-white dark:bg-slate-900 rounded-3xl border border-slate-200 dark:border-slate-800 overflow-hidden shadow-xl animate-scale-up w-full max-w-full min-w-0">
           <div className="p-6 border-b border-slate-100 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/50">
             <h2 className="font-bold text-slate-800 dark:text-white flex items-center gap-2">
               <CreditCard className="text-accent-600 dark:text-accent-400" />
@@ -3973,24 +3980,24 @@ const AdminDashboard = ({ isRtl, isSuperAdmin }: { isRtl: boolean; isSuperAdmin:
               <p className="font-medium">{isRtl ? 'لا توجد طلبات شراء بعد' : 'No purchase requests yet.'}</p>
             </div>
           ) : (
-            <div className="overflow-x-auto">
-              <table className="w-full text-left">
+            <div className="overflow-x-auto w-full max-w-full">
+              <table className="w-full text-start">
                 <thead className="bg-slate-50 dark:bg-slate-800 text-slate-500 dark:text-slate-400 text-xs font-black uppercase tracking-widest">
                   <tr>
-                    <th className="px-8 py-4">{isRtl ? 'العقار' : 'Property'}</th>
-                    <th className="px-8 py-4">{isRtl ? 'المشتري' : 'Buyer'}</th>
-                    <th className="px-8 py-4">{isRtl ? 'التاريخ' : 'Date'}</th>
-                    <th className="px-8 py-4">{isRtl ? 'الحالة' : 'Status'}</th>
-                    <th className="px-8 py-4 text-right">{isRtl ? 'الإجراءات' : 'Actions'}</th>
+                    <th className="px-4 sm:px-6 py-4">{isRtl ? 'العقار' : 'Property'}</th>
+                    <th className="px-4 sm:px-6 py-4">{isRtl ? 'المشتري' : 'Buyer'}</th>
+                    <th className="px-4 sm:px-6 py-4">{isRtl ? 'التاريخ' : 'Date'}</th>
+                    <th className="px-4 sm:px-6 py-4">{isRtl ? 'الحالة' : 'Status'}</th>
+                    <th className="px-4 sm:px-6 py-4 text-end">{isRtl ? 'الإجراءات' : 'Actions'}</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
                   {purchases.map((purchase) => (
                     <tr key={purchase.id} className="hover:bg-slate-50/50 dark:hover:bg-slate-800/50 transition-colors">
-                      <td className="px-8 py-5 font-bold text-slate-900 dark:text-white text-sm">{propertyTitle(purchase.propertyId)}</td>
-                      <td className="px-8 py-5 text-slate-600 dark:text-slate-400 text-sm">{purchaserEmail(purchase.userId)}</td>
-                      <td className="px-8 py-5 text-slate-400 dark:text-slate-500 text-xs whitespace-nowrap">{purchase.createdAt ? new Date(purchase.createdAt).toLocaleDateString(isRtl ? 'ar-EG' : 'en-US') : '—'}</td>
-                      <td className="px-8 py-5">
+                      <td className="px-4 sm:px-6 py-4 font-bold text-slate-900 dark:text-white text-sm">{propertyTitle(purchase.propertyId)}</td>
+                      <td className="px-4 sm:px-6 py-4 text-slate-600 dark:text-slate-400 text-sm">{purchaserEmail(purchase.userId)}</td>
+                      <td className="px-4 sm:px-6 py-4 text-slate-400 dark:text-slate-500 text-xs whitespace-nowrap">{purchase.createdAt ? new Date(purchase.createdAt).toLocaleDateString(isRtl ? 'ar-EG' : 'en-US') : '—'}</td>
+                      <td className="px-4 sm:px-6 py-4">
                         <span className={`px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-wider whitespace-nowrap ${
                           purchase.status === 'completed' ? 'bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-400'
                           : purchase.status === 'cancelled' ? 'bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-400'
@@ -3999,7 +4006,7 @@ const AdminDashboard = ({ isRtl, isSuperAdmin }: { isRtl: boolean; isSuperAdmin:
                           {purchase.status === 'completed' ? (isRtl ? 'مكتمل' : 'Completed') : purchase.status === 'cancelled' ? (isRtl ? 'ملغي' : 'Cancelled') : (isRtl ? 'قيد المعالجة' : 'Processing')}
                         </span>
                       </td>
-                      <td className="px-8 py-5 text-right">
+                      <td className="px-4 sm:px-6 py-4 text-end">
                         {purchase.status === 'processing' ? (
                           <div className="flex justify-end gap-2">
                             <button
@@ -4031,7 +4038,7 @@ const AdminDashboard = ({ isRtl, isSuperAdmin }: { isRtl: boolean; isSuperAdmin:
       )}
 
       {activeTab === 'reports' && (
-        <div className="bg-white dark:bg-slate-900 rounded-3xl border border-slate-200 dark:border-slate-800 overflow-hidden shadow-xl animate-scale-up p-6">
+        <div className="bg-white dark:bg-slate-900 rounded-3xl border border-slate-200 dark:border-slate-800 overflow-hidden shadow-xl animate-scale-up p-6 w-full max-w-full min-w-0">
           <div className="flex items-center justify-between mb-4">
             <h3 className="font-bold text-slate-900 dark:text-white">{isRtl ? 'بلاغات على الإعلانات' : 'Listing Reports'} ({reports.length})</h3>
             {reports.length > 0 && (
@@ -4069,27 +4076,27 @@ const AdminDashboard = ({ isRtl, isSuperAdmin }: { isRtl: boolean; isSuperAdmin:
       )}
 
       {activeTab === 'users' && isSuperAdmin && (
-        <div className="bg-white dark:bg-slate-900 rounded-3xl border border-slate-200 dark:border-slate-800 overflow-hidden shadow-xl animate-scale-up">
+        <div className="bg-white dark:bg-slate-900 rounded-3xl border border-slate-200 dark:border-slate-800 overflow-hidden shadow-xl animate-scale-up w-full max-w-full min-w-0">
            <div className="p-4 border-b border-slate-100 dark:border-slate-800 flex justify-end">
              <button onClick={() => downloadCsv('users.csv', users.map(u => ({ id: u.id, name: u.name, email: u.email, phone: u.phone, role: u.role, createdAt: u.createdAt, lastLoginAt: u.lastLoginAt })))} className="text-xs bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 px-3 py-1.5 rounded-lg font-bold flex items-center gap-1.5 hover:bg-slate-200 dark:hover:bg-slate-700">
                <Upload size={14} className="rotate-180" /> {isRtl ? 'تصدير CSV' : 'Export CSV'}
              </button>
            </div>
-           <div className="overflow-x-auto">
-             <table className="w-full text-left border-collapse">
+           <div className="overflow-x-auto w-full max-w-full">
+             <table className="w-full text-start border-collapse">
                <thead className="bg-slate-50 dark:bg-slate-800 text-slate-500 dark:text-slate-400 text-xs font-black uppercase tracking-widest">
                  <tr>
-                   <th className="px-8 py-4">{isRtl ? 'المستخدم' : 'User'}</th>
-                   <th className="px-8 py-4">{isRtl ? 'البريد الإلكتروني' : 'Email'}</th>
-                   <th className="px-8 py-4">{isRtl ? 'آخر دخول' : 'Last Login'}</th>
-                   <th className="px-8 py-4">{isRtl ? 'الدور' : 'Role'}</th>
-                   <th className="px-8 py-4 text-right">{isRtl ? 'تغيير الامتيازات' : 'Permissions'}</th>
+                   <th className="px-4 sm:px-6 py-4">{isRtl ? 'المستخدم' : 'User'}</th>
+                   <th className="px-4 sm:px-6 py-4">{isRtl ? 'البريد الإلكتروني' : 'Email'}</th>
+                   <th className="px-4 sm:px-6 py-4">{isRtl ? 'آخر دخول' : 'Last Login'}</th>
+                   <th className="px-4 sm:px-6 py-4">{isRtl ? 'الدور' : 'Role'}</th>
+                   <th className="px-4 sm:px-6 py-4 text-end">{isRtl ? 'تغيير الامتيازات' : 'Permissions'}</th>
                  </tr>
                </thead>
                <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
                  {mergedUsers.map((user) => (
                    <tr key={user.id} className="hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors">
-                     <td className="px-8 py-6">
+                     <td className="px-4 sm:px-6 py-4">
                        <div className="flex items-center gap-3">
                          <div className="w-8 h-8 rounded-full bg-brand-100 dark:bg-brand-900/30 text-brand-600 dark:text-brand-400 flex items-center justify-center font-bold text-xs uppercase">
                            {user.name?.charAt(0) || 'U'}
@@ -4105,18 +4112,18 @@ const AdminDashboard = ({ isRtl, isSuperAdmin }: { isRtl: boolean; isSuperAdmin:
                          )}
                        </div>
                      </td>
-                     <td className="px-8 py-6 text-slate-600 dark:text-slate-400 text-sm">{user.email}</td>
-                     <td className="px-8 py-6 text-slate-500 dark:text-slate-400 text-xs whitespace-nowrap">
+                     <td className="px-4 sm:px-6 py-4 text-slate-600 dark:text-slate-400 text-sm">{user.email}</td>
+                     <td className="px-4 sm:px-6 py-4 text-slate-500 dark:text-slate-400 text-xs whitespace-nowrap">
                        {lastSeen(user)?.toLocaleString(isRtl ? 'ar-EG' : 'en-US', { dateStyle: 'medium', timeStyle: 'short' }) ?? (isRtl ? 'غير مسجل' : '—')}
                      </td>
-                     <td className="px-8 py-6">
+                     <td className="px-4 sm:px-6 py-4">
                        <span className={`px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-wider ${
                          user.role === 'admin' ? 'bg-accent-100 dark:bg-accent-900/30 text-accent-700 dark:text-accent-400' : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400'
                        }`}>
                          {user.role}
                        </span>
                      </td>
-                     <td className="px-8 py-6 text-right">
+                     <td className="px-4 sm:px-6 py-4 text-end">
                        {!SUPER_ADMIN_EMAILS.includes((user.email || '').toLowerCase()) ? (
                          <div className="flex justify-end gap-2">
                            <Button
@@ -4167,9 +4174,9 @@ export default function App() {
   const [selectedPropertyId, setSelectedPropertyId] = useState<string | null>(null);
   const [selectedProject, setSelectedProject] = useState<string | null>(null);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
-  const [properties, setProperties] = useState<Property[]>([]);
+  const [properties, setProperties] = useState<Property[]>(PREMIER_LANDMARK_PROPERTIES);
   const [editingPropertyId, setEditingPropertyId] = useState<string | null>(null);
-  const [loadingProps, setLoadingProps] = useState(true);
+  const [loadingProps, setLoadingProps] = useState(false);
   const [lang, setLang] = useState<'en' | 'ar'>('en');
   const [listingSearchQuery, setListingSearchQuery] = useState('');
   const [minPrice, setMinPrice] = useState<number | ''>('');
@@ -4581,6 +4588,17 @@ export default function App() {
     return matchesSearch && matchesPrice && matchesType;
   });
 
+  const isDefaultFilters = listingSearchQuery.trim() === '' &&
+    minPrice === '' &&
+    maxPrice === '' &&
+    typeFilter === 'all' &&
+    sortBy === 'default' &&
+    aiFilteredIds === null;
+
+  if (isDefaultFilters && filteredProperties.length === 0 && PREMIER_LANDMARK_PROPERTIES.length > 0) {
+    filteredProperties = [...PREMIER_LANDMARK_PROPERTIES];
+  }
+
   if (sortBy === 'newest') {
     filteredProperties.sort((a, b) => (b.publishDate || '').localeCompare(a.publishDate || ''));
   } else if (sortBy === 'price-asc') {
@@ -4599,8 +4617,18 @@ export default function App() {
    * until a full reload.
    */
   const refreshProperties = useCallback(async () => {
-    const snap = await getDocs(collection(db, 'properties'));
-    setProperties(snap.docs.map(d => ({ id: d.id, ...d.data() })) as Property[]);
+    try {
+      const snap = await getDocs(collection(db, 'properties'));
+      const fetched = snap.docs.map(d => ({ id: d.id, ...d.data() })) as Property[];
+      if (fetched.length > 0) {
+        setProperties(fetched);
+      } else {
+        setProperties(PREMIER_LANDMARK_PROPERTIES);
+      }
+    } catch (err) {
+      console.error("Error refreshing properties from Firestore:", err);
+      setProperties(PREMIER_LANDMARK_PROPERTIES);
+    }
   }, []);
 
   // Initial Fetch from Firestore
@@ -4608,11 +4636,10 @@ export default function App() {
     const fetchProps = async () => {
       setLoadingProps(true);
       try {
-        // Real data only — load every property straight from Firestore.
         await refreshProperties();
       } catch (err) {
         console.error("Error fetching properties from Firestore:", err);
-        setProperties([]);
+        setProperties(PREMIER_LANDMARK_PROPERTIES);
       } finally {
         setLoadingProps(false);
       }
@@ -4630,7 +4657,8 @@ export default function App() {
       "@context": "https://schema.org",
       "@type": "RealEstateAgent",
       "name": "HETTETY",
-      "image": "https://www.hettety.com/logo.png",
+      "url": "https://hettety.vercel.app/",
+      "image": "https://hettety.vercel.app/logo.jpg",
       "description": INITIAL_ENTITY_DATA.shortDescription,
       "address": { "@type": "PostalAddress", "addressCountry": "EG" }
     });
@@ -4719,13 +4747,13 @@ export default function App() {
   }
 
   return (
-    <div className={`min-h-screen flex flex-col font-sans ${isRtl ? 'font-cairo' : ''} bg-[#f8fafc] dark:bg-slate-900 transition-colors duration-500`} dir={isRtl ? 'rtl' : 'ltr'}>
+    <div className={`min-h-screen w-full max-w-full overflow-x-hidden flex flex-col font-sans ${isRtl ? 'font-cairo' : ''} bg-[#f8fafc] dark:bg-slate-900 transition-colors duration-500`} dir={isRtl ? 'rtl' : 'ltr'}>
       {showSplash ? (
         <SplashScreen onFinish={() => setShowSplash(false)} />
       ) : (
         <>
       <nav className="sticky top-0 z-50 bg-white/95 dark:bg-slate-900/95 backdrop-blur-xl border-none text-slate-900 dark:text-white shadow-sm dark:shadow-slate-950 transition-all duration-500">
-        <div className="w-full px-4 sm:px-10 h-20 flex items-center justify-between">
+        <div className="w-full px-4 sm:px-6 lg:px-8 xl:px-10 h-20 flex items-center justify-between max-w-full">
           {/* Logo Group - Left side */}
           <div className="flex items-center shrink-0">
             <button 
@@ -4739,9 +4767,9 @@ export default function App() {
           </div>
 
           {/* Menu & Actions Group - Right side (Opposite to logo) */}
-          <div className="flex items-center gap-6 xl:gap-10">
+          <div className="flex items-center gap-3 sm:gap-4 lg:gap-6 xl:gap-8 shrink-0">
             {/* Desktop Menu */}
-            <div className="hidden lg:flex items-center gap-8 xl:gap-12">
+            <div className="hidden lg:flex items-center gap-2 xl:gap-5 2xl:gap-8">
               <NavLink page="home" label={t.nav_home} />
               <NavLink page="listings" label={t.nav_listings} />
               <NavLink page="yalla-sahel" label={isRtl ? '🌊 ساحل حتتي' : '🌊 Sahel Hettety'} />
@@ -4752,7 +4780,7 @@ export default function App() {
                 type="button"
                 onClick={() => handleNav('ai-chat')} 
                 aria-current={currentPage === 'ai-chat' ? 'page' : undefined}
-                className={`font-black text-xs transition-all flex items-center gap-2 cursor-pointer px-5 py-2.5 rounded-full uppercase tracking-[0.1em] shadow-sm focus:outline-none focus:ring-2 focus:ring-brand-500 ${currentPage === 'ai-chat' ? 'bg-brand-600 text-white shadow-brand-200' : 'bg-slate-100 dark:bg-slate-800 text-slate-900 dark:text-slate-200 hover:bg-brand-50 dark:hover:bg-brand-900/30 hover:text-brand-600'}`}
+                className={`font-black text-xs transition-all flex items-center gap-1.5 xl:gap-2 cursor-pointer px-3.5 xl:px-5 py-2 xl:py-2.5 rounded-full uppercase tracking-[0.05em] xl:tracking-[0.1em] shadow-sm focus:outline-none focus:ring-2 focus:ring-brand-500 ${currentPage === 'ai-chat' ? 'bg-brand-600 text-white shadow-brand-200' : 'bg-slate-100 dark:bg-slate-800 text-slate-900 dark:text-slate-200 hover:bg-brand-50 dark:hover:bg-brand-900/30 hover:text-brand-600'}`}
               >
                 <Sparkles size={16} className="animate-pulse" aria-hidden="true" />
                 {t.advisor_nav || t.nav_ai}
@@ -4842,7 +4870,7 @@ export default function App() {
                     <div className="w-9 h-9 rounded-full bg-gradient-to-br from-brand-500 to-brand-700 text-white flex items-center justify-center font-black text-sm uppercase shrink-0">
                       {(userName || userEmail || 'U').charAt(0)}
                     </div>
-                    <span className="text-sm font-bold text-slate-900 dark:text-white max-w-[8rem] truncate">{userName || userEmail.split('@')[0]}</span>
+                    <span className="text-sm font-bold text-slate-900 dark:text-white max-w-[12rem] truncate">{userName || userEmail.split('@')[0]}</span>
                     <ChevronRight size={16} className={`text-slate-400 transition-transform ${showProfileMenu ? '-rotate-90' : 'rotate-90'}`} aria-hidden="true" />
                   </button>
                   {showProfileMenu && (
@@ -4993,7 +5021,7 @@ export default function App() {
         </div>
       )}
 
-      <main className="flex-1 bg-slate-50 dark:bg-slate-950 transition-colors duration-500">
+      <main className="flex-1 min-w-0 w-full max-w-full overflow-x-hidden bg-slate-50 dark:bg-slate-950 transition-colors duration-500">
         {currentPage === 'home' && (
           <>
             <PremiumHero 
@@ -5044,12 +5072,12 @@ export default function App() {
 
         {currentPage === 'listings' && (
           <div className="py-12 max-w-7xl mx-auto px-4">
-            <div className="mb-8 flex flex-col lg:flex-row gap-6 justify-between items-start lg:items-center">
+            <div className="mb-8 flex flex-col gap-6 w-full min-w-0">
                <h1 className="text-3xl lg:text-4xl font-heading font-black text-slate-900 dark:text-white uppercase tracking-tight">{t.prop_avail}</h1>
-               <div className="flex flex-col sm:flex-row flex-wrap gap-4 w-full lg:w-auto">
-                 <div className="relative flex-1 min-w-[240px] flex gap-2">
-                   <div className="relative flex-1">
-                     <Search className={"absolute top-3 text-slate-400 w-4 h-4 start-3"} />
+               <div className="flex flex-col sm:flex-row flex-wrap gap-4 w-full min-w-0 items-stretch sm:items-center">
+                 <div className="relative flex-1 min-w-[260px] sm:min-w-[280px] lg:min-w-[320px] flex gap-2">
+                   <div className="relative flex-1 min-w-0">
+                     <Search className={"absolute top-3 text-slate-400 w-4 h-4 start-3 pointer-events-none"} />
                      <input 
                        placeholder={t.prop_search} 
                        value={listingSearchQuery}
@@ -5058,20 +5086,20 @@ export default function App() {
                          setAiFilteredIds(null);
                        }}
                        onKeyDown={(e) => e.key === 'Enter' && handleAiSearch()}
-                       className={`w-full py-2.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 focus:ring-2 focus:ring-brand-500 outline-none text-black dark:text-white ps-10 pe-4`} 
+                       className={`w-full py-2.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 focus:ring-2 focus:ring-brand-500 outline-none text-black dark:text-white ps-9 pe-4 text-sm`} 
                      />
                    </div>
                    <button 
                      onClick={handleAiSearch}
                      disabled={isAiSearching || !listingSearchQuery.trim()}
-                     className="bg-brand-600 hover:bg-brand-700 text-white px-4 py-2.5 rounded-lg flex items-center gap-2 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                     className="bg-brand-600 hover:bg-brand-700 text-white px-4 py-2.5 rounded-lg flex items-center gap-2 transition-colors disabled:opacity-50 disabled:cursor-not-allowed shrink-0"
                      title={isRtl ? 'بحث بالذكاء الاصطناعي' : 'AI Search'}
                    >
                      {isAiSearching ? <Loader2 className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4" />}
                    </button>
                  </div>
-                 <div className="relative flex-1 md:w-32">
-                   <DollarSign className={"absolute top-3 text-slate-400 w-4 h-4 start-3"} />
+                 <div className="relative flex-1 sm:flex-initial sm:w-36 md:w-44 min-w-[140px]">
+                   <DollarSign className={"absolute top-3 text-slate-400 w-4 h-4 start-3 pointer-events-none"} />
                    <input 
                      type="number"
                      min="0"
@@ -5082,11 +5110,11 @@ export default function App() {
                        if (val === '') setMinPrice('');
                        else if (Number(val) >= 0) setMinPrice(Number(val));
                      }}
-                     className={`w-full py-2.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 focus:ring-2 focus:ring-brand-500 outline-none text-black dark:text-white ps-10 pe-4`} 
+                     className={`w-full py-2.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 focus:ring-2 focus:ring-brand-500 outline-none text-black dark:text-white ps-9 pe-3 text-sm`} 
                    />
                  </div>
-                 <div className="relative flex-1 md:w-32">
-                   <DollarSign className={"absolute top-3 text-slate-400 w-4 h-4 start-3"} />
+                 <div className="relative flex-1 sm:flex-initial sm:w-36 md:w-44 min-w-[140px]">
+                   <DollarSign className={"absolute top-3 text-slate-400 w-4 h-4 start-3 pointer-events-none"} />
                    <input 
                      type="number"
                      min="0"
@@ -5097,13 +5125,13 @@ export default function App() {
                        if (val === '') setMaxPrice('');
                        else if (Number(val) >= 0) setMaxPrice(Number(val));
                      }}
-                     className={`w-full py-2.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 focus:ring-2 focus:ring-brand-500 outline-none text-black dark:text-white ps-10 pe-4`} 
+                     className={`w-full py-2.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 focus:ring-2 focus:ring-brand-500 outline-none text-black dark:text-white ps-9 pe-3 text-sm`} 
                    />
                  </div>
                  <select
                    value={typeFilter}
                    onChange={(e) => setTypeFilter(e.target.value)}
-                   className="py-2.5 px-4 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 focus:ring-2 focus:ring-brand-500 outline-none text-black dark:text-white flex-1 sm:flex-none sm:min-w-[150px]"
+                   className="py-2.5 px-3.5 sm:px-4 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 focus:ring-2 focus:ring-brand-500 outline-none text-black dark:text-white flex-1 sm:flex-none sm:min-w-[160px] text-sm"
                  >
                    <option value="all">{isRtl ? 'كل الأنواع' : 'All Types'}</option>
                    {PROPERTY_TYPES.map(o => <option key={o.value} value={o.value}>{isRtl ? o.ar : o.en}</option>)}
@@ -5111,7 +5139,7 @@ export default function App() {
                  <select
                    value={sortBy}
                    onChange={(e) => setSortBy(e.target.value as any)}
-                   className="py-2.5 px-4 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 focus:ring-2 focus:ring-brand-500 outline-none text-black dark:text-white flex-1 sm:flex-none sm:min-w-[180px]"
+                   className="py-2.5 px-3.5 sm:px-4 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 focus:ring-2 focus:ring-brand-500 outline-none text-black dark:text-white flex-1 sm:flex-none sm:min-w-[200px] text-sm"
                  >
                    <option value="default">{isRtl ? 'الترتيب الافتراضي' : 'Default Sort'}</option>
                    <option value="newest">{isRtl ? 'الأحدث' : 'Newest'}</option>
@@ -5120,10 +5148,10 @@ export default function App() {
                    <option value="name-asc">{isRtl ? 'الاسم: أ إلى ي' : 'Name: A to Z'}</option>
                    <option value="name-desc">{isRtl ? 'الاسم: ي إلى أ' : 'Name: Z to A'}</option>
                  </select>
-                 <button onClick={saveCurrentSearch} className="py-2.5 px-4 rounded-lg border border-brand-200 dark:border-brand-800 bg-brand-50 dark:bg-brand-900/20 text-brand-700 dark:text-brand-300 font-bold text-sm flex items-center gap-1.5 hover:bg-brand-100 dark:hover:bg-brand-900/40 transition-colors">
+                 <button onClick={saveCurrentSearch} className="py-2.5 px-4 rounded-lg border border-brand-200 dark:border-brand-800 bg-brand-50 dark:bg-brand-900/20 text-brand-700 dark:text-brand-300 font-bold text-sm flex items-center gap-1.5 hover:bg-brand-100 dark:hover:bg-brand-900/40 transition-colors whitespace-nowrap shrink-0">
                    <Save size={15} /> {isRtl ? 'احفظ البحث' : 'Save search'}
                  </button>
-                 <button onClick={subscribeAlert} className="py-2.5 px-4 rounded-lg border border-accent-200 dark:border-accent-800 bg-accent-50 dark:bg-accent-900/20 text-accent-700 dark:text-accent-300 font-bold text-sm flex items-center gap-1.5 hover:bg-accent-100 dark:hover:bg-accent-900/40 transition-colors">
+                 <button onClick={subscribeAlert} className="py-2.5 px-4 rounded-lg border border-accent-200 dark:border-accent-800 bg-accent-50 dark:bg-accent-900/20 text-accent-700 dark:text-accent-300 font-bold text-sm flex items-center gap-1.5 hover:bg-accent-100 dark:hover:bg-accent-900/40 transition-colors whitespace-nowrap shrink-0">
                    <Bell size={15} /> {isRtl ? 'نبّهني بالإيميل' : 'Email alert'}
                  </button>
                </div>
@@ -5154,7 +5182,7 @@ export default function App() {
                   role="tab"
                   aria-selected={listingView === v}
                   onClick={() => setListingView(v)} 
-                  className={`px-4 py-1.5 rounded-lg text-sm font-bold transition-all focus:outline-none focus:ring-2 focus:ring-brand-500 ${listingView === v ? 'bg-white dark:bg-slate-900 text-brand-600 dark:text-brand-400 shadow' : 'text-slate-600 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-300'}`}
+                  className={`px-4 py-1.5 rounded-lg text-sm font-bold transition-all whitespace-nowrap focus:outline-none focus:ring-2 focus:ring-brand-500 ${listingView === v ? 'bg-white dark:bg-slate-900 text-brand-600 dark:text-brand-400 shadow' : 'text-slate-600 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-300'}`}
                 >
                   {v === 'units' ? (isRtl ? 'الوحدات' : 'Units') : (isRtl ? 'المشاريع' : 'Projects')}
                 </button>

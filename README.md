@@ -1,5 +1,8 @@
 # HETTETY (حتتي) — Intelligent Spatial Real Estate Platform & 3D Gaussian Splatting Engine
 
+> 🌐 **Production Website**: [https://hettety.vercel.app/](https://hettety.vercel.app/)  
+> 🏢 **Platform Overview**: Egyptian Real Estate & Financial Platform with 3D Virtual Tours, Matterport Walkthroughs & AI Property Advisor.
+
 A high-performance luxury real estate marketplace and spatial property platform engineered for the MENA region. Features end-to-end photogrammetric 3D tour reconstruction, a metric calibration pipeline with survey-reference support, AI-assisted advisory, Arabic (RTL) localization, and an enterprise Firebase Admin control plane.
 
 ---
@@ -174,7 +177,7 @@ WORK_DIR=/tmp/hettety_3d
 # Where the worker reports progress, failures and published assets. It sends
 # WORKER_SHARED_SECRET as a bearer token here, so this must be the real control
 # plane and nothing else. A production worker refuses to start without it.
-HETTETY_CONTROL_PLANE_URL=https://your-deployment/api/reconstruction
+HETTETY_CONTROL_PLANE_URL=https://hettety.vercel.app/api/reconstruction
 ```
 
 ### Running Tests

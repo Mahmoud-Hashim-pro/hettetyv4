@@ -882,6 +882,24 @@ class TestRealReconstructionStrictGuards(unittest.TestCase):
         self.assertEqual(details_clean["commit_sha"], head_sha)
         self.assertTrue(details_clean["is_clean"])
 
+        # Case 9: train.py is clean, but another tracked repository file (scene/cameras.py) has uncommitted changes
+        cameras_file = os.path.join(official_mock_dir, "scene", "cameras.py")
+        with open(cameras_file, "w") as f:
+            f.write("# auxiliary file\n")
+        subprocess.run(["git", "add", "scene/cameras.py"], cwd=official_mock_dir, check=True)
+        subprocess.run(["git", "commit", "-m", "add cameras.py"], cwd=official_mock_dir, check=True)
+        res_head_9 = subprocess.run(["git", "rev-parse", "HEAD"], cwd=official_mock_dir, capture_output=True, text=True, check=True)
+        head_sha_9 = res_head_9.stdout.strip()
+        with open(cameras_file, "a") as f:
+            f.write("# uncommitted modification to auxiliary file\n")
+        valid_dirty_aux, reason_dirty_aux = validate_graphdeco_runner_provenance(
+            official_script,
+            allowed_commits={head_sha_9}
+        )
+        self.assertFalse(valid_dirty_aux)
+        self.assertIn("uncommitted local modifications", reason_dirty_aux)
+        subprocess.run(["git", "checkout", "--", "scene/cameras.py"], cwd=official_mock_dir, check=True)
+
     def test_gaussian_ply_schema_validation(self):
         """
         Verifies that validate_gaussian_ply_schema confirms compliant 3DGS PLY files
@@ -918,6 +936,40 @@ class TestRealReconstructionStrictGuards(unittest.TestCase):
         with self.assertRaises(ValueError) as ctx:
             validate_gaussian_ply_schema(bad_ply)
         self.assertIn("missing required properties", str(ctx.exception))
+
+        # Unsupported property type (e.g. unknown type or list)
+        unsupp_ply = os.path.join(self.temp_dir, "unsupp_prop.ply")
+        with open(unsupp_ply, "wb") as f:
+            f.write(
+                b"ply\nformat binary_little_endian 1.0\n"
+                b"element vertex 1\n"
+                b"property float x\nproperty float y\nproperty float z\n"
+                b"property float opacity\n"
+                b"property float scale_0\nproperty float scale_1\nproperty float scale_2\n"
+                b"property float rot_0\nproperty float rot_1\nproperty float rot_2\nproperty float rot_3\n"
+                b"property custom_unsupported_type unsupp\n"
+                b"end_header\n"
+            )
+        with self.assertRaises(ValueError) as ctx:
+            validate_gaussian_ply_schema(unsupp_ply)
+        self.assertIn("unsupported property type", str(ctx.exception))
+
+        # List property rejected
+        list_ply = os.path.join(self.temp_dir, "list_prop.ply")
+        with open(list_ply, "wb") as f:
+            f.write(
+                b"ply\nformat binary_little_endian 1.0\n"
+                b"element vertex 1\n"
+                b"property float x\nproperty float y\nproperty float z\n"
+                b"property float opacity\n"
+                b"property float scale_0\nproperty float scale_1\nproperty float scale_2\n"
+                b"property float rot_0\nproperty float rot_1\nproperty float rot_2\nproperty float rot_3\n"
+                b"property list uchar int vertex_indices\n"
+                b"end_header\n"
+            )
+        with self.assertRaises(ValueError) as ctx:
+            validate_gaussian_ply_schema(list_ply)
+        self.assertIn("list properties", str(ctx.exception))
 
         # Truncated payload: declares 100 vertices but only has 10 vertices
         trunc_body_ply = os.path.join(self.temp_dir, "trunc_gaussians.ply")
@@ -1006,6 +1058,195 @@ class TestRealReconstructionStrictGuards(unittest.TestCase):
         is_valid_tampered, tampered_errors = verify_retained_deliverables(evidence_manifest)
         self.assertFalse(is_valid_tampered)
         self.assertTrue(any("manifest hash mismatch" in e for e in tampered_errors))
+
+        # Verify required_keys detects missing deliverables
+        is_valid_req, req_errors = verify_retained_deliverables(
+            {"run_id": "r1", "status": "PASSED", "artifacts": {"other": {"path": test_dir, "isDirectory": True}}},
+            required_keys=["spz", "glb"]
+        )
+        self.assertFalse(is_valid_req)
+        self.assertTrue(any("missing required deliverable 'spz'" in e for e in req_errors))
+
+        # Symlink boundary escape test
+        outside_dir = os.path.join(self.temp_dir, "outside_dir")
+        os.makedirs(outside_dir, exist_ok=True)
+        symlink_dir = os.path.join(test_dir, "escape_link")
+        try:
+            os.symlink(outside_dir, symlink_dir, target_is_directory=True)
+            with self.assertRaises(ValueError) as ctx:
+                compute_directory_manifest_hash(test_dir)
+            self.assertIn("SECURITY_VIOLATION", str(ctx.exception))
+        except (OSError, NotImplementedError):
+            pass
+        finally:
+            if os.path.islink(symlink_dir):
+                os.unlink(symlink_dir)
+
+    def test_large_ply_streaming_bounds_and_optimization_truncation_rejection(self):
+        """
+        Proves that parse_ply_header_and_bounds does not cap validation at 10,000 vertices,
+        includes points beyond 10,000 in bounding box calculation, detects non-finite coordinates
+        at vertex 10,000+, and optimize_splat_cloud strictly rejects truncated binary PLYs.
+        """
+        import struct
+
+        # 1. 12,000 vertex binary PLY where point 11,500 has extreme coordinates (420.0, 420.0, 420.0)
+        large_ply = os.path.join(self.temp_dir, "large_12k.ply")
+        with open(large_ply, "wb") as f:
+            f.write(
+                b"ply\nformat binary_little_endian 1.0\n"
+                b"element vertex 12000\n"
+                b"property float x\nproperty float y\nproperty float z\n"
+                b"property float opacity\n"
+                b"property float scale_0\nproperty float scale_1\nproperty float scale_2\n"
+                b"property float rot_0\nproperty float rot_1\nproperty float rot_2\nproperty float rot_3\n"
+                b"end_header\n"
+            )
+            for idx in range(12000):
+                if idx == 11500:
+                    f.write(struct.pack("<fff f fff ffff", 420.0, 420.0, 420.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0))
+                else:
+                    f.write(struct.pack("<fff f fff ffff", 1.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0))
+
+        splat_count, bounds = parse_ply_header_and_bounds(large_ply)
+        self.assertEqual(splat_count, 12000)
+        self.assertEqual(bounds["max"][0], 420.0)
+        self.assertEqual(bounds["max"][1], 420.0)
+        self.assertEqual(bounds["max"][2], 420.0)
+
+        # 2. 12,000 vertex binary PLY where point 11,500 has non-finite coordinate (NaN)
+        nan_large_ply = os.path.join(self.temp_dir, "nan_large_12k.ply")
+        with open(nan_large_ply, "wb") as f:
+            f.write(
+                b"ply\nformat binary_little_endian 1.0\n"
+                b"element vertex 12000\n"
+                b"property float x\nproperty float y\nproperty float z\n"
+                b"property float opacity\n"
+                b"property float scale_0\nproperty float scale_1\nproperty float scale_2\n"
+                b"property float rot_0\nproperty float rot_1\nproperty float rot_2\nproperty float rot_3\n"
+                b"end_header\n"
+            )
+            for idx in range(12000):
+                if idx == 11500:
+                    f.write(struct.pack("<fff f fff ffff", float("nan"), 1.0, 1.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0))
+                else:
+                    f.write(struct.pack("<fff f fff ffff", 1.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0))
+
+        with self.assertRaises(ValueError) as ctx:
+            parse_ply_header_and_bounds(nan_large_ply)
+        self.assertIn("non-finite", str(ctx.exception).lower())
+
+        # 3. optimize_splat_cloud strictly rejects truncated binary PLY
+        trunc_for_opt = os.path.join(self.temp_dir, "trunc_opt.ply")
+        opt_dest = os.path.join(self.temp_dir, "trunc_opt_out.ply")
+        with open(trunc_for_opt, "wb") as f:
+            f.write(
+                b"ply\nformat binary_little_endian 1.0\n"
+                b"element vertex 50\n"
+                b"property float x\nproperty float y\nproperty float z\n"
+                b"property float opacity\n"
+                b"property float scale_0\nproperty float scale_1\nproperty float scale_2\n"
+                b"property float rot_0\nproperty float rot_1\nproperty float rot_2\nproperty float rot_3\n"
+                b"end_header\n"
+            )
+            # Only write 10 vertices (out of 50 declared)
+            for idx in range(10):
+                f.write(struct.pack("<fff f fff ffff", float(idx), 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0))
+
+        res_opt = optimize_splat_cloud(trunc_for_opt, opt_dest)
+        self.assertFalse(res_opt["success"])
+        self.assertIn("truncated", res_opt["message"].lower())
+
+        # 4. optimize_splat_cloud produces valid PLY containing end_header\n that can be parsed
+        valid_for_opt = os.path.join(self.temp_dir, "valid_for_opt.ply")
+        valid_opt_dest = os.path.join(self.temp_dir, "valid_opt_out.ply")
+        with open(valid_for_opt, "wb") as f:
+            f.write(
+                b"ply\nformat binary_little_endian 1.0\n"
+                b"element vertex 15\n"
+                b"property float x\nproperty float y\nproperty float z\n"
+                b"property float opacity\n"
+                b"property float scale_0\nproperty float scale_1\nproperty float scale_2\n"
+                b"property float rot_0\nproperty float rot_1\nproperty float rot_2\nproperty float rot_3\n"
+                b"end_header\n"
+            )
+            for idx in range(15):
+                f.write(struct.pack("<fff f fff ffff", float(idx), 0.0, 0.0, 2.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0))
+
+        res_valid_opt = optimize_splat_cloud(valid_for_opt, valid_opt_dest)
+        self.assertTrue(res_valid_opt["success"])
+        with open(valid_opt_dest, "rb") as f_chk:
+            content_opt = f_chk.read()
+        self.assertIn(b"end_header\n", content_opt)
+        opt_splat_cnt, opt_bounds = parse_ply_header_and_bounds(valid_opt_dest)
+        self.assertEqual(opt_splat_cnt, 15)
+
+        # 5. parse_ply_header_and_bounds on big-endian binary PLY
+        be_bounds_ply = os.path.join(self.temp_dir, "be_bounds.ply")
+        with open(be_bounds_ply, "wb") as f:
+            f.write(
+                b"ply\nformat binary_big_endian 1.0\n"
+                b"element vertex 4\n"
+                b"property float x\nproperty float y\nproperty float z\n"
+                b"end_header\n"
+            )
+            for idx in range(4):
+                f.write(struct.pack(">fff", float(idx * 10), float(idx * 5), float(idx * 2)))
+        be_cnt, be_bounds = parse_ply_header_and_bounds(be_bounds_ply)
+        self.assertEqual(be_cnt, 4)
+        self.assertEqual(be_bounds["max"][0], 30.0)
+
+        # 6. parse_ply_header_and_bounds with coordinates > 500 (large offset survey)
+        offset_ply = os.path.join(self.temp_dir, "offset_bounds.ply")
+        with open(offset_ply, "wb") as f:
+            f.write(
+                b"ply\nformat binary_little_endian 1.0\n"
+                b"element vertex 4\n"
+                b"property float x\nproperty float y\nproperty float z\n"
+                b"end_header\n"
+            )
+            for idx in range(4):
+                f.write(struct.pack("<fff", 600.0 + idx, 700.0 + idx, 800.0 + idx))
+        off_cnt, off_bounds = parse_ply_header_and_bounds(offset_ply)
+        self.assertEqual(off_cnt, 4)
+        self.assertEqual(off_bounds["min"][0], 600.0)
+        self.assertEqual(off_bounds["max"][0], 603.0)
+
+        # 7. scale_ply_to_metric strictly rejects truncated binary PLY
+        trunc_for_scale = os.path.join(self.temp_dir, "trunc_scale.ply")
+        scale_dest = os.path.join(self.temp_dir, "trunc_scale_out.ply")
+        with open(trunc_for_scale, "wb") as f:
+            f.write(
+                b"ply\nformat binary_little_endian 1.0\n"
+                b"element vertex 100\n"
+                b"property float x\nproperty float y\nproperty float z\n"
+                b"end_header\n"
+            )
+            f.write(struct.pack("<fff", 1.0, 2.0, 3.0))
+        res_scale_trunc = scale_ply_to_metric(trunc_for_scale, scale_dest, scale_factor=2.0)
+        self.assertFalse(res_scale_trunc["success"])
+        self.assertIn("truncated", res_scale_trunc["message"].lower())
+
+        # 8. convert_ply_to_spz fails closed when metric scaling fails
+        spz_dest = os.path.join(self.temp_dir, "trunc_spz_out.spz")
+        res_spz_trunc = convert_ply_to_spz(trunc_for_scale, spz_dest, scale_factor=2.0)
+        self.assertFalse(res_spz_trunc["success"])
+
+        # 9. parse_ply_header_and_bounds rejects missing format declaration with format error
+        bad_fmt_bounds = os.path.join(self.temp_dir, "bad_fmt_bounds.ply")
+        with open(bad_fmt_bounds, "wb") as f:
+            f.write(b"ply\nelement vertex 10\nproperty float x\nproperty float y\nproperty float z\nend_header\n" + b"0 0 0\n" * 10)
+        with self.assertRaises(ValueError) as ctx:
+            parse_ply_header_and_bounds(bad_fmt_bounds)
+        self.assertIn("format", str(ctx.exception).lower())
+
+        # 10. parse_ply_header_and_bounds rejects missing end_header
+        missing_end_bounds = os.path.join(self.temp_dir, "missing_end_bounds.ply")
+        with open(missing_end_bounds, "wb") as f:
+            f.write(b"ply\nformat ascii 1.0\nelement vertex 10\nproperty float x\nproperty float y\nproperty float z\n")
+        with self.assertRaises(ValueError) as ctx:
+            parse_ply_header_and_bounds(missing_end_bounds)
+        self.assertIn("end_header", str(ctx.exception).lower())
 
     def test_failure_preserves_partial_deliverables_and_logs(self):
         """
@@ -1244,9 +1485,11 @@ class TestRealGPUPipelineAcceptance(unittest.TestCase):
             sfm_res = run_sfm(image_dir=self.fixture_dir, output_dir=sfm_out, is_video=False)
             if os.path.exists(sfm_out):
                 partial_artifacts["sparse_sfm"] = {"path": sfm_out}
-            sfm_log = os.path.join(self.temp_dir, "colmap_sfm.log")
+            sfm_log = sfm_res.get("log_path") or os.path.join(sfm_out, "colmap_sfm.log")
+            if not os.path.exists(sfm_log):
+                sfm_log = os.path.join(self.temp_dir, "colmap_sfm.log")
             if os.path.exists(sfm_log):
-                partial_artifacts["colmap_sfm_log"] = {"path": sfm_log}
+                partial_artifacts["colmap_sfm_log"] = {"path": sfm_log, "sizeBytes": os.path.getsize(sfm_log)}
 
             self.assertTrue(sfm_res["success"], f"Real COLMAP SfM failed: {sfm_res}")
             self.assertGreaterEqual(sfm_res["registered_images"], profile["min_registered_cameras"], f"SfM registered fewer cameras than required by profile {profile['min_registered_cameras']}")
@@ -1273,9 +1516,11 @@ class TestRealGPUPipelineAcceptance(unittest.TestCase):
                 partial_artifacts["dense_ply"] = {"path": dense_res["fused_ply"], "sizeBytes": os.path.getsize(dense_res["fused_ply"])}
             if os.path.exists(dense_out):
                 partial_artifacts["dense_dir"] = {"path": dense_out}
-            dense_log = os.path.join(self.temp_dir, "colmap_dense.log")
+            dense_log = dense_res.get("log_path") or os.path.join(dense_out, "colmap_dense.log")
+            if not os.path.exists(dense_log):
+                dense_log = os.path.join(self.temp_dir, "colmap_dense.log")
             if os.path.exists(dense_log):
-                partial_artifacts["colmap_dense_log"] = {"path": dense_log}
+                partial_artifacts["colmap_dense_log"] = {"path": dense_log, "sizeBytes": os.path.getsize(dense_log)}
 
             self.assertTrue(dense_res["success"], f"Real Dense Stereo failed: {dense_res}")
             self.assertGreaterEqual(dense_res["dense_point_count"], profile["min_dense_points"], f"Dense points {dense_res['dense_point_count']} below profile threshold {profile['min_dense_points']}")
@@ -1437,6 +1682,64 @@ class TestRealGPUPipelineAcceptance(unittest.TestCase):
             evidence["blocking_reason"] = f"Execution exception: {e}"
             raise
         finally:
+            try:
+                sfm_dir = os.path.join(self.temp_dir, "sfm")
+                if os.path.exists(sfm_dir) and "sparse_sfm" not in partial_artifacts:
+                    partial_artifacts["sparse_sfm"] = {"path": sfm_dir}
+                for log_cand in [
+                    os.path.join(sfm_dir, "colmap_sfm.log"),
+                    os.path.join(self.temp_dir, "colmap_sfm.log")
+                ]:
+                    if os.path.exists(log_cand) and "colmap_sfm_log" not in partial_artifacts:
+                        partial_artifacts["colmap_sfm_log"] = {"path": log_cand, "sizeBytes": os.path.getsize(log_cand)}
+
+                dense_dir = os.path.join(self.temp_dir, "dense")
+                if os.path.exists(dense_dir):
+                    if "dense_dir" not in partial_artifacts:
+                        partial_artifacts["dense_dir"] = {"path": dense_dir}
+                    fused_p = os.path.join(dense_dir, "fused.ply")
+                    if os.path.exists(fused_p) and "dense_ply" not in partial_artifacts:
+                        partial_artifacts["dense_ply"] = {"path": fused_p, "sizeBytes": os.path.getsize(fused_p)}
+                for log_cand in [
+                    os.path.join(dense_dir, "colmap_dense.log"),
+                    os.path.join(self.temp_dir, "colmap_dense.log")
+                ]:
+                    if os.path.exists(log_cand) and "colmap_dense_log" not in partial_artifacts:
+                        partial_artifacts["colmap_dense_log"] = {"path": log_cand, "sizeBytes": os.path.getsize(log_cand)}
+
+                model_dir = os.path.join(self.temp_dir, "model")
+                if os.path.exists(model_dir):
+                    if "model_dir" not in partial_artifacts:
+                        partial_artifacts["model_dir"] = {"path": model_dir}
+                    out_log = os.path.join(model_dir, "training_stdout.log")
+                    if os.path.exists(out_log) and "training_log" not in partial_artifacts:
+                        partial_artifacts["training_log"] = {"path": out_log, "sizeBytes": os.path.getsize(out_log)}
+                    err_log = os.path.join(model_dir, "training_stderr.log")
+                    if os.path.exists(err_log) and "training_stderr_log" not in partial_artifacts:
+                        partial_artifacts["training_stderr_log"] = {"path": err_log, "sizeBytes": os.path.getsize(err_log)}
+                    for chk_ply in [
+                        os.path.join(model_dir, "point_cloud", "iteration_30000", "point_cloud.ply"),
+                        os.path.join(model_dir, "point_cloud", "iteration_7000", "point_cloud.ply"),
+                    ]:
+                        if os.path.exists(chk_ply) and "trained_ply" not in partial_artifacts:
+                            partial_artifacts["trained_ply"] = {"path": chk_ply, "sizeBytes": os.path.getsize(chk_ply)}
+                            break
+
+                for opt_cand in [os.path.join(self.temp_dir, "optimized.ply")]:
+                    if os.path.exists(opt_cand) and "optimized_ply" not in partial_artifacts:
+                        partial_artifacts["optimized_ply"] = {"path": opt_cand, "sizeBytes": os.path.getsize(opt_cand)}
+                for met_cand in [os.path.join(self.temp_dir, "metric.ply")]:
+                    if os.path.exists(met_cand) and "metric_ply" not in partial_artifacts:
+                        partial_artifacts["metric_ply"] = {"path": met_cand, "sizeBytes": os.path.getsize(met_cand)}
+                for spz_cand in [os.path.join(self.temp_dir, "scene.spz")]:
+                    if os.path.exists(spz_cand) and "spz" not in partial_artifacts:
+                        partial_artifacts["spz"] = {"path": spz_cand, "sizeBytes": os.path.getsize(spz_cand)}
+                for glb_cand in [os.path.join(self.temp_dir, "mesh.glb")]:
+                    if os.path.exists(glb_cand) and "glb" not in partial_artifacts:
+                        partial_artifacts["glb"] = {"path": glb_cand, "sizeBytes": os.path.getsize(glb_cand)}
+            except Exception as scan_err:
+                print(f"Warning: Exception while discovering partial deliverables: {scan_err}")
+
             if partial_artifacts:
                 try:
                     retained_manifest = retain_deliverables(
@@ -1449,7 +1752,10 @@ class TestRealGPUPipelineAcceptance(unittest.TestCase):
                     print(f"Warning: Failed retaining partial deliverables: {retain_err}")
             write_acceptance_evidence(evidence, self.evidence_dir)
             if evidence.get("status") == "PASSED":
-                is_valid_manifest, manifest_errs = verify_retained_deliverables(evidence)
+                is_valid_manifest, manifest_errs = verify_retained_deliverables(
+                    evidence,
+                    required_keys=["spz", "glb", "sparse_sfm"]
+                )
                 self.assertTrue(is_valid_manifest, f"Retained deliverable verification failed: {manifest_errs}")
 
 

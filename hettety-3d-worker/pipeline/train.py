@@ -679,9 +679,9 @@ def validate_graphdeco_runner_provenance(
             reason = f"PROVENANCE_REJECTED: '{rel_script}' is untracked or not committed in repository at '{repo_root}'."
             return (False, reason, details) if return_details else (False, reason)
 
-        # Check clean working tree
+        # Check clean working tree across entire repository
         res_status = subprocess.run(
-            ["git", "-C", repo_root, "status", "--porcelain", rel_script],
+            ["git", "-C", repo_root, "status", "--porcelain"],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
@@ -689,7 +689,7 @@ def validate_graphdeco_runner_provenance(
         )
         status_out = res_status.stdout.strip()
         if status_out:
-            reason = f"PROVENANCE_REJECTED: '{rel_script}' contains uncommitted local modifications ({status_out})."
+            reason = f"PROVENANCE_REJECTED: Repository at '{repo_root}' contains uncommitted local modifications ({status_out})."
             return (False, reason, details) if return_details else (False, reason)
 
         details["is_clean"] = True
@@ -816,12 +816,12 @@ def validate_gaussian_ply_schema(ply_path: str) -> Dict[str, Any]:
             header_len += 1
         header_text = header_chunk[:header_end_idx].decode("ascii", errors="replace")
 
-    format_match = re.search(r"format\s+(ascii|binary_little_endian|binary_big_endian)\s+1\.0", header_text)
+    format_match = re.search(r"^\s*format\s+(ascii|binary_little_endian|binary_big_endian)\s+1\.0", header_text, re.MULTILINE)
     if not format_match:
         raise ValueError("Invalid PLY file: missing or unrecognized format declaration.")
     format_type = format_match.group(1)
 
-    vertex_match = re.search(r"element\s+vertex\s+(\d+)", header_text)
+    vertex_match = re.search(r"^\s*element\s+vertex\s+(\d+)", header_text, re.MULTILINE)
     if not vertex_match:
         raise ValueError("Invalid PLY file: missing 'element vertex <count>' in header.")
 
@@ -846,11 +846,12 @@ def validate_gaussian_ply_schema(ply_path: str) -> Dict[str, Any]:
                 p_type = parts[1].lower()
                 p_name = parts[2]
                 properties.append(p_name)
-                if p_type in PLY_3DGS_SCALAR_TYPES:
-                    s, f_ch = PLY_3DGS_SCALAR_TYPES[p_type]
-                    prop_specs.append((p_name, p_type, s, f_ch))
-                else:
-                    prop_specs.append((p_name, p_type, 4, "f"))
+                if p_type == "list":
+                    raise ValueError("Invalid 3DGS PLY schema: list properties in vertex element are not supported.")
+                if p_type not in PLY_3DGS_SCALAR_TYPES:
+                    raise ValueError(f"Invalid 3DGS PLY schema: unsupported property type '{p_type}'.")
+                s, f_ch = PLY_3DGS_SCALAR_TYPES[p_type]
+                prop_specs.append((p_name, p_type, s, f_ch))
 
     missing = [p for p in required_props if p not in properties]
     if missing:

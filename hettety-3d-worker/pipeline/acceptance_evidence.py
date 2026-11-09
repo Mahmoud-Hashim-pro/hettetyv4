@@ -273,7 +273,18 @@ def compute_directory_manifest_hash(dir_path: str) -> Tuple[str, int, int]:
     file_count = 0
     entries: List[Tuple[str, str, int]] = []
 
-    for root, _, files in os.walk(real_dir):
+    for root, dirs, files in os.walk(real_dir):
+        for d in dirs:
+            dp = os.path.join(root, d)
+            if os.path.islink(dp):
+                target = os.path.realpath(dp)
+                try:
+                    common = os.path.commonpath([real_dir, target])
+                    if common != real_dir:
+                        raise ValueError(f"SECURITY_VIOLATION: Directory symlink '{dp}' escapes directory boundary '{real_dir}' -> '{target}'")
+                except ValueError as err:
+                    raise ValueError(f"SECURITY_VIOLATION: Directory symlink error on '{dp}': {err}")
+
         for f in files:
             fp = os.path.join(root, f)
             # Safely verify symlinks do not escape target directory
@@ -394,7 +405,8 @@ def retain_deliverables(
 
 def verify_retained_deliverables(
     evidence_json_or_dict: Union[str, Dict[str, Any]],
-    base_dir: Optional[str] = None
+    base_dir: Optional[str] = None,
+    required_keys: Optional[List[str]] = None
 ) -> Tuple[bool, List[str]]:
     """
     Cryptographically verifies the presence and integrity of all retained deliverables
@@ -421,6 +433,11 @@ def verify_retained_deliverables(
         return False, ["No artifacts found in evidence manifest."]
 
     errors: List[str] = []
+
+    if required_keys:
+        for req in required_keys:
+            if req not in artifacts:
+                errors.append(f"Retained evidence manifest is missing required deliverable '{req}'.")
 
     for key, art_meta in artifacts.items():
         if not isinstance(art_meta, dict):

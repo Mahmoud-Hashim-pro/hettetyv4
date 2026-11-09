@@ -529,7 +529,8 @@ def run_sfm(
     image_dir: str,
     output_dir: str,
     is_video: bool = False,
-    cancel_check: Optional[Callable[[], bool]] = None
+    cancel_check: Optional[Callable[[], bool]] = None,
+    log_path: Optional[str] = None
 ) -> SfMResult:
     db_path = os.path.join(output_dir, "database.db")
     sparse_dir = os.path.join(output_dir, "sparse")
@@ -573,7 +574,7 @@ def run_sfm(
             "message": "COLMAP binary is not installed on PATH and Docker daemon is not running."
         })
 
-    sfm_log = os.path.join(output_dir, "colmap_sfm.log")
+    sfm_log = log_path or os.path.join(output_dir, "colmap_sfm.log")
 
     # 1. Feature extraction
     cmd_extract = [
@@ -686,6 +687,7 @@ def run_sfm(
         "sparse_dir": valid_sparse or sparse_dir,
         "registration_ratio": round(reg_ratio, 3),
         "total_images": image_count,
+        "log_path": sfm_log,
         **metrics
     })
 
@@ -740,7 +742,7 @@ def extract_ply_vertex_count(ply_path: str) -> int:
         header_text = header_chunk[:header_end_idx].decode("ascii", errors="replace")
 
     # Format check: must occur before other schema/size checks to report format errors accurately
-    format_match = re.search(r"format\s+(ascii|binary_little_endian|binary_big_endian)\s+1\.0", header_text)
+    format_match = re.search(r"^\s*format\s+(ascii|binary_little_endian|binary_big_endian)\s+1\.0", header_text, re.MULTILINE)
     if not format_match:
         raise ValueError("Invalid PLY file: missing or unrecognized format declaration.")
     format_type = format_match.group(1)
@@ -910,7 +912,8 @@ def run_dense_stereo(
     image_dir: str,
     dense_dir: str,
     max_image_size: int = 2000,
-    cancel_check: Optional[Callable[[], bool]] = None
+    cancel_check: Optional[Callable[[], bool]] = None,
+    log_path: Optional[str] = None
 ) -> Dict[str, Any]:
     """
     Executes genuine multi-view dense stereo reconstruction:
@@ -956,7 +959,7 @@ def run_dense_stereo(
             candidate_sparse = c
             break
 
-    dense_log = os.path.join(dense_dir, "colmap_dense.log")
+    dense_log = log_path or os.path.join(dense_dir, "colmap_dense.log")
 
     try:
         # 1. Image Undistortion
@@ -992,7 +995,7 @@ def run_dense_stereo(
         ]
         exec_colmap(cmd_fuse, check=True, cancel_check=cancel_check, log_path=dense_log)
 
-        if not os.path.exists(fused_ply) or os.path.getsize(fused_ply) < 100:
+        if not os.path.exists(fused_ply) or os.path.getsize(fused_ply) < 12:
             return {
                 "success": False,
                 "error_code": "DENSE_FUSION_EMPTY",
@@ -1015,7 +1018,8 @@ def run_dense_stereo(
             "fused_ply": fused_ply,
             "dense_dir": dense_dir,
             "dense_point_count": dense_point_count,
-            "size_bytes": os.path.getsize(fused_ply)
+            "size_bytes": os.path.getsize(fused_ply),
+            "log_path": dense_log
         }
 
     except subprocess.CalledProcessError as e:

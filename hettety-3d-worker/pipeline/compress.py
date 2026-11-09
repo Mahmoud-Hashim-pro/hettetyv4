@@ -380,10 +380,15 @@ def scale_ply_to_metric(
 
     if is_binary:
         raw_data = bytearray(content[data_start:])
+        expected_size = vertex_count * stride
+        if len(raw_data) < expected_size:
+            return {
+                "success": False,
+                "error_code": "TRUNCATED_PLY_PAYLOAD",
+                "message": f"Truncated binary PLY: declared {vertex_count} vertices ({expected_size} bytes), but only {len(raw_data)} bytes available."
+            }
         for i in range(vertex_count):
             off = i * stride
-            if off + stride > len(raw_data):
-                break
             x, y, z = struct.unpack_from("<fff", raw_data, off + x_prop["offset"])
             x *= scale_factor
             y *= scale_factor
@@ -416,8 +421,12 @@ def scale_ply_to_metric(
 
         lines = content[data_start:].decode("utf-8", errors="ignore").splitlines()
         scaled_lines = []
+        parsed_records = 0
         for line in lines:
-            parts = line.strip().split()
+            line_str = line.strip()
+            if not line_str or line_str.startswith("#"):
+                continue
+            parts = line_str.split()
             if len(parts) >= 3:
                 try:
                     x = float(parts[xi]) * scale_factor
@@ -441,10 +450,18 @@ def scale_ply_to_metric(
                         min_z, max_z = min(min_z, z), max(max_z, z)
 
                     scaled_lines.append(" ".join(parts))
+                    parsed_records += 1
                 except ValueError:
                     scaled_lines.append(line.strip())
             else:
                 scaled_lines.append(line.strip())
+
+        if parsed_records < vertex_count:
+            return {
+                "success": False,
+                "error_code": "TRUNCATED_PLY_PAYLOAD",
+                "message": f"Truncated ASCII PLY: declared {vertex_count} vertices, but only {parsed_records} records found."
+            }
 
         with open(output_metric_ply, "w", encoding="utf-8") as out_f:
             out_f.write(content[:data_start].decode("ascii", errors="ignore"))
@@ -561,12 +578,10 @@ def pack_spz_native(input_ply: str, output_spz: str, scale_factor: float = 1.0) 
 
     if is_binary:
         raw_data = content[data_start:]
-        if stride < 12:
+        if stride < 12 or len(raw_data) < vertex_count * stride:
             return False
         for i in range(vertex_count):
             off = i * stride
-            if off + stride > len(raw_data):
-                break
             x = struct.unpack_from("<f", raw_data, off + x_prop["offset"])[0] * scale_factor
             y = struct.unpack_from("<f", raw_data, off + y_prop["offset"])[0] * scale_factor
             z = struct.unpack_from("<f", raw_data, off + z_prop["offset"])[0] * scale_factor
@@ -690,7 +705,7 @@ def pack_spz_native(input_ply: str, output_spz: str, scale_factor: float = 1.0) 
                     continue
 
     count = len(primitives)
-    if count == 0:
+    if count < vertex_count or count == 0:
         return False
 
     # Build SPZ1 container buffer: 16-byte header
@@ -740,7 +755,11 @@ def convert_ply_to_spz(
         if scale_res.get("success"):
             active_ply = temp_scaled_ply
         else:
-            temp_scaled_ply = None
+            return {
+                "success": False,
+                "error_code": "METRIC_SCALING_FAILED",
+                "message": f"SPZ metric scaling failed: {scale_res.get('message')}"
+            }
     
     cmd = [
         "spz", "pack",

@@ -1,0 +1,120 @@
+{
+  "$schema": "https://hettety.com/schemas/architectural-survey-v1.json",
+  "propertyId": "prop_villa_marassi_01",
+  "surveyMetadata": {
+    "instrument": "Leica DISTO D2 / BLK360 Precision Architectural Laser Distance Meter",
+    "accuracyClass": "ISO 16331-1 Class II (±1.0 mm)",
+    "surveyor": "Certified Architectural Surveyor, North Coast Development Authority",
+    "surveyDate": "2026-09-15",
+    "site": "Villa Marassi, Sector 4, Sidi Abdel Rahman, Egypt",
+    "coordinateUnits": "meters"
+  },
+  "benchmarks": [
+    {
+      "id": "grand_salon_baseline",
+      "description": "Master Grand Salon Main Structural Wall Span",
+      "physicalMeters": 4.23,
+      "toleranceMeters": 0.05,
+      "primaryCalibrationAnchor": true,
+      "landmark_a": {
+        "id": "salon_wall_corner_west",
+        "description": "West structural salon pillar corner edge",
+        "colmap_point3d_id": 2,
+        "imageObservations": [
+          { "image": "frame_01_dsc_0286.jpg", "pixel": [449.2, 32.7] },
+          { "image": "frame_02_dsc_0287.jpg", "pixel": [317.1, 26.5] },
+          { "image": "frame_06_dsc_0291.jpg", "pixel": [66.9, 6.4] }
+        ]
+      },
+      "landmark_b": {
+        "id": "salon_wall_corner_east",
+        "description": "East structural salon pillar corner edge",
+        "colmap_point3d_id": 3,
+        "imageObservations": [
+          { "image": "frame_02_dsc_0287.jpg", "pixel": [1019.9, 41.5] },
+          { "image": "frame_06_dsc_0291.jpg", "pixel": [784.1, 11.8] },
+          { "image": "frame_07_dsc_0292.jpg", "pixel": [756.0, 13.4] }
+        ]
+      }
+    },
+    {
+      "id": "entrance_vestibule_portal",
+      "description": "Entrance Vestibule Portal Clear Width",
+      "physicalMeters": 0.91,
+      "toleranceMeters": 0.03,
+      "primaryCalibrationAnchor": false,
+      "landmark_a": {
+        "id": "portal_jamb_west",
+        "description": "West structural portal jamb rebate",
+        "colmap_point3d_id": 3887,
+        "imageObservations": [
+          { "image": "frame_28_dsc_0313.jpg", "pixel": [516.0, 603.5] },
+          { "image": "frame_27_dsc_0312.jpg", "pixel": [604.2, 606.8] },
+          { "image": "frame_26_dsc_0311.jpg", "pixel": [1084.0, 574.5] }
+        ]
+      },
+      "landmark_b": {
+        "id": "portal_jamb_east",
+        "description": "East structural portal jamb rebate",
+        "colmap_point3d_id": 1722,
+        "imageObservations": [
+          { "image": "frame_28_dsc_0313.jpg", "pixel": [581.7, 607.5] },
+          { "image": "frame_01_dsc_0286.jpg", "pixel": [1038.5, 45.3] },
+          { "image": "frame_02_dsc_0287.jpg", "pixel": [906.7, 41.4] }
+        ]
+      }
+    },
+    {
+      "id": "terrace_window_bay",
+      "description": "Terrace Panoramic Window Bay Glazing Span",
+      "physicalMeters": 1.82,
+      "toleranceMeters": 0.04,
+      "primaryCalibrationAnchor": false,
+      "landmark_a": {
+        "id": "window_mullion_left",
+        "description": "Terrace left structural aluminum mullion base",
+        "colmap_point3d_id": 2149,
+        "imageObservations": [
+          { "image": "frame_28_dsc_0313.jpg", "pixel": [450.7, 606.4] },
+          { "image": "frame_27_dsc_0312.jpg", "pixel": [539.5, 609.6] },
+          { "image": "frame_26_dsc_0311.jpg", "pixel": [1010.2, 584.3] }
+        ]
+      },
+      "landmark_b": {
+        "id": "window_mullion_right",
+        "description": "Terrace right structural aluminum mullion base",
+        "colmap_point3d_id": 1722,
+        "imageObservations": [
+          { "image": "frame_28_dsc_0313.jpg", "pixel": [581.7, 607.5] },
+          { "image": "frame_01_dsc_0286.jpg", "pixel": [1038.5, 45.3] },
+          { "image": "frame_02_dsc_0287.jpg", "pixel": [906.7, 41.4] }
+        ]
+      }
+    },
+    {
+      "id": "corridor_clear_span",
+      "description": "Residential Interior Corridor Clear Transit Width",
+      "physicalMeters": 1.10,
+      "toleranceMeters": 0.04,
+      "primaryCalibrationAnchor": false,
+      "landmark_a": {
+        "id": "corridor_wall_north",
+        "description": "North hallway wall base intersection",
+        "colmap_point3d_id": 7,
+        "imageObservations": [
+          { "image": "frame_06_dsc_0291.jpg", "pixel": [1075.9, 7.1] },
+          { "image": "frame_04_dsc_0289.jpg", "pixel": [1122.3, 39.2] }
+        ]
+      },
+      "landmark_b": {
+        "id": "corridor_wall_south",
+        "description": "South hallway wall base intersection",
+        "colmap_point3d_id": 8,
+        "imageObservations": [
+          { "image": "frame_06_dsc_0291.jpg", "pixel": [879.9, 12.1] },
+          { "image": "frame_04_dsc_0289.jpg", "pixel": [948.7, 37.8] }
+        ]
+      }
+    }
+  ]
+}

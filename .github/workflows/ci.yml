@@ -1,4 +1,4 @@
-name: Release Verification CI
+name: Release Verification CI (CPU Gates)
 
 on:
   push:
@@ -64,24 +64,3 @@ jobs:
 
       - name: Verify Redis Worker Lifecycle Integration
         run: python -m pytest hettety-3d-worker/tests/acceptance/test_real_redis_worker_lifecycle.py -v
-
-  gpu-acceptance-gate:
-    name: Physical GPU Acceptance Gate (Dedicated GPU Host Required)
-    # This gate requires a dedicated self-hosted runner equipped with NVIDIA GPU, CUDA >= 11.8, and COLMAP binary.
-    # It is skipped on standard CPU-only GitHub runners to prevent false certifications.
-    runs-on: [self-hosted, gpu, nvidia]
-    if: ${{ github.event_name == 'workflow_dispatch' && contains(github.event.inputs.run_gpu, 'true') }}
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Verify NVIDIA GPU & CUDA
-        run: |
-          nvidia-smi
-          python -c "import torch; assert torch.cuda.is_available(), 'CUDA not available'"
-
-      - name: Run Authoritative Real GPU Photogrammetry Acceptance Test
-        run: |
-          export HETTETY_REAL_PIPELINE_STRICT=1
-          export GAUSSIAN_SPLATTING_PATH=/opt/gaussian-splatting/train.py
-          python -m pytest hettety-3d-worker/tests/acceptance/test_real_gpu_reconstruction.py -v

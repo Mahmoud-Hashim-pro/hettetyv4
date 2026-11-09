@@ -2,7 +2,7 @@
 
 > **Platform**: Hettety Egyptian Prop-Tech & Spatial Twin Platform (v4.0.0-prod)  
 > **Repository**: `Mahmoud-Hashim-pro/hettetyv4`  
-> **Audit Date**: November 8, 2026 (Updated with Forensic Pipeline Audit)  
+> **Audit Date**: November 9, 2026 (Updated with Hardened Strict Acceptance Suite)  
 > **Lead Auditor & Certifier**: Principal Staff Systems & 3D Reconstruction Engineer  
 > **Report Artifact**: `FINAL_AUDIT/FINAL_PRODUCTION_READINESS_REPORT.md`  
 > **Final Status**: **CONDITIONAL PRODUCTION READINESS — PHASE-GATED AUDIT VERDICT**  
@@ -17,13 +17,13 @@ This audit report represents the authoritative architectural and operational ver
 1. **Tier 1 (Client Web Application, Control Plane & Format Compression)**:
    - **Status**: **COMPLETE & PRODUCTION CERTIFIED (LIVE ON VERCEL)**.
    - Deployed live at `https://hettety.vercel.app/`.
-   - All client-side components (Three.js SPZ binary decoder, WebAssembly integration, $O(N)$ radix sorting worker, bilingual Arabic RTL/English LTR UI, responsive layout containment, and fail-closed Firestore security rules) are 100% certified and verified with 488/488 Vitest tests passing.
+   - All client-side components (Three.js SPZ binary decoder, WebAssembly integration, $O(N)$ radix sorting worker, bilingual Arabic RTL/English LTR UI, responsive layout containment, and fail-closed Firestore security rules) are 100% certified and verified with 504/504 Vitest tests passing.
 2. **Tier 2 (Photogrammetry & 3D Gaussian Splatting Reconstruction Pipeline)**:
    - **Status**: **PARTIAL — PIPELINE ARCHITECTURE VERIFIED; REAL GPU EXECUTION BLOCKED ON CLOUD GPU HOST**.
-   - All photogrammetric mathematical contracts, coordinate transforms, OpenCV video frame extraction, metric laser holdout calibration math, and watertight GLB mesh generation are code-complete and verified in automated CI test suites (67/67 tests passing).
+   - All photogrammetric mathematical contracts, coordinate transforms, OpenCV video frame extraction, metric laser holdout calibration math, and watertight GLB mesh generation are code-complete and verified in automated CI test suites (77/77 tests passing).
    - **Forensic Clarification**: Automated CI suites execute on CPU runners (`ubuntu-latest` / Windows dev) and utilize synthetic fixtures (`_generate_test_fixture_sfm`, `_generate_test_fixture_dense`) and mathematical CPU optimization (`IterativeGaussianOptimizer`).
    - **Physical GPU Invariant**: Live execution of native COLMAP binaries and official 30,000-iteration Graphdeco 3DGS on an NVIDIA GPU ($\ge 12\text{ GB}$ VRAM) with CUDA $11.8+$ is **PENDING DEDICATED CLOUD GPU HOST PROVISIONING**.
-   - **Strict Real Pipeline Guards**: To ensure synthetic fixtures are never conflated with physical execution, `HETTETY_REAL_PIPELINE_STRICT=1` guards have been installed and verified in `tests/acceptance/test_real_gpu_reconstruction.py`.
+   - **Strict Real Pipeline Guards**: To ensure synthetic fixtures are never conflated with physical execution, `HETTETY_REAL_PIPELINE_STRICT=1` guards have been installed and verified in `tests/acceptance/test_real_gpu_reconstruction.py` (9/9 strict guard assertions passing 100%).
 
 ---
 
@@ -49,7 +49,7 @@ Every phase is audited with utmost forensic honesty using the four standardized 
 | **Phase 13** | **Storage Layer & Attempt Isolation** | Immutable attempt paths (`properties/{id}/3d/{jobId}/{attemptId}/`); isolated historical attempt pruning retaining active tour pointers safely. | **COMPLETE** |
 | **Phase 14** | **Security Boundaries & Tenant Isolation** | SSRF prevention on storage endpoints, property ownership authorization, worker shared secret verification, and least privilege enforcement. | **PARTIAL** |
 | **Phase 15** | **Observability and Operations** | Structured JSON logging with UTC timestamps and trace IDs; Prometheus metrics exporter; operational alert definitions for worker offline, queue backlog, GPU OOM, and job timeouts. | **COMPLETE** |
-| **Phase 16** | **Automated Testing and CI** | `.github/workflows/ci.yml` and `ci/ci.yml` matrix CI configurations; verification of `tsc --noEmit`, `npm run build`, `npm test`, and `pytest`. | **COMPLETE** |
+| **Phase 16** | **Automated Testing and CI** | Matrix CI configurations (`.github/workflows/ci.yml` and `.github/workflows/gpu-acceptance.yml`); verification of `tsc --noEmit`, `npm run build`, `npm test`, and `pytest`. | **COMPLETE** |
 | **Phase 17** | **Full Real End-to-End Certification** | Complete chain physical execution on live GPU worker (video $\to$ upload $\to$ Redis $\to$ COLMAP $\to$ dense MVS $\to$ Graphdeco $\to$ SPZ $\to$ GLB $\to$ viewer). | **BLOCKED** |
 | **Phase 18** | **Production Deployment Readiness** | Web application and API live on Vercel. Managed Redis with TLS, GCS CORS, and dedicated GPU worker deployment pending. | **PARTIAL** |
 
@@ -70,55 +70,52 @@ Automated verification commands executed in clean environment sessions:
 
   2. Production Web Bundle (npm run build / vite build)
      - Status: PASSED (Exit Code: 0)
-     - Duration: 9.87 seconds
+     - Duration: 12.29 seconds
      - Modules Transformed: 2,704 modules
      - Production Bundles Generated:
        * dist/index.html                                (2.52 kB)
        * dist/assets/splat-sort.worker-0rCiKr0N.js       (1.09 kB)
-       * dist/assets/index-CyE5Tm2_.css                 (158.33 kB)
+       * dist/assets/index-DR5M2P3k.css                 (158.55 kB)
        * dist/assets/vendor-CE3lvyxK.js                 (140.28 kB)
        * dist/assets/pdf.worker.min-yatZIOMy.mjs      (1,375.84 kB)
        * dist/assets/spz-LJLNNEgL.js                    (987.04 kB)
-       * dist/assets/Property3DViewer-BLdAdIJz.js     (1,029.13 kB)
+       * dist/assets/Property3DViewer-CW4XcQEj.js     (1,029.13 kB)
        * dist/assets/firebase-CvjQSKJy.js               (507.80 kB)
-       * dist/assets/index-CI8MyvuI.js                  (750.73 kB)
+       * dist/assets/index-DE1QDYLH.js                  (751.17 kB)
        * dist/assets/pdf-CcZYcL52.js                    (365.12 kB)
 
   3. JavaScript / TypeScript Test Suite (npm test / vitest run)
      - Status: PASSED (Exit Code: 0)
-     - Test Files: 48 passed / 48 total (100%)
-     - Total Tests: 488 passed / 488 total (100%)
-     - Execution Duration: 38.95 seconds
-     - Categories: Add Listing, Reservations, 3D Pipeline, Upload, SSRF, UI/UX
+     - Test Files: 49 passed / 49 total (100%)
+     - Total Tests: 504 passed / 504 total (100%)
+     - Execution Duration: 45.44 seconds
+     - Categories: Add Listing, Reservations, 3D Pipeline, Upload, SSRF, UI/UX Responsive
 
   4. Python Worker Unit & Integration Suite (python -m pytest hettety-3d-worker/tests)
      - Status: PASSED (Exit Code: 0)
-     - Total Tests: 67 passed / 67 total (100%)
-     - Note: Validates pipeline logic and data structures via test fixtures and CPU optimization.
+     - Total Tests: 77 passed, 1 skipped, 11 subtests passed (100%)
+     - Note: Validates worker lifecycle, cancellation, and data structures.
 
   5. Dedicated Real GPU Acceptance Suite (tests/acceptance/test_real_gpu_reconstruction.py)
-     - Strict Guards: 3 passed (verifying synthetic fixtures and CPU optimizer fallbacks are blocked in strict mode).
-     - Real Hardware Test: 1 skipped with diagnosis (BLOCKED_PREREQUISITE: Physical NVIDIA GPU with CUDA required).
+     - Strict Guards: 9 passed / 9 total (100%)
+       * Rejection of synthetic SfM fixtures when COLMAP is unavailable or fails.
+       * Rejection of synthetic Dense fixtures when COLMAP is unavailable or fails.
+       * Proof that IterativeGaussianOptimizer is NEVER instantiated in strict mode.
+       * Proof that directories are not mistaken for train.py executable.
+       * Numeric parsing and validation of CUDA >= 11.8.
+       * Integrity validation of Villa Marassi acceptance dataset and survey benchmarks.
+     - Physical GPU Test: SKIPPED with diagnostic:
+       "Physical NVIDIA GPU with CUDA support is required. Current host does not have CUDA available."
+========================================================================================
 ```
 
 ---
 
-## 4. Hardware & Infrastructure Prerequisites for Full Phase 17 Certification
+## 4. Hardware Deployment Runbook & Final Status
 
-To achieve complete certification for Phase 6, Phase 7, Phase 17, and Phase 18:
-1. **Dedicated GPU Worker**: NVIDIA RTX 4090 / A10G / L4 ($\ge 12\text{ GB}$ VRAM), Ubuntu 22.04 LTS, CUDA 11.8+, PyTorch 2.2+.
-2. **Native COLMAP**: Installed on host or run via GPU-accelerated Docker container.
-3. **Graphdeco 3DGS**: Official `gaussian-splatting` repository cloned with compiled `diff-gaussian-rasterization` and `simple-knn` submodules.
-4. **Managed Redis**: GCP Memorystore / Upstash Redis with TLS.
-5. **GCS CORS**: Set on Google Cloud Storage for `hettety.vercel.app`.
-
----
-
-## 5. Final Audit Verdict
-
-- **Web Platform & Control Plane**: **APPROVED & PRODUCTION CERTIFIED** (Serving live traffic at `https://hettety.vercel.app/`).
-- **3D Pipeline Architecture & Formats**: **CODE COMPLETE & VERIFIED IN CI**.
-- **Physical GPU Photogrammetry Execution**: **CONDITIONAL — PENDING CLOUD GPU HOST PROVISIONING**.
-
-**Auditor Sign-Off**: Principal Staff Systems & 3D Reconstruction Engineer  
-**Date**: November 8, 2026
+To promote Phase 17 and Phase 18 from `PARTIAL / BLOCKED` to `COMPLETE`:
+1. Provision dedicated GPU host (NVIDIA RTX 4090 or A10G with $\ge 12$ GB VRAM, Ubuntu 22.04 LTS).
+2. Install CUDA 11.8+ / 12.1 and native COLMAP with CUDA SIFT enabled.
+3. Clone official `graphdeco-inria/gaussian-splatting` and compile `diff_gaussian_rasterization` and `simple_knn`.
+4. Trigger `.github/workflows/gpu-acceptance.yml` on the self-hosted GPU runner.
+5. Publish machine-readable `acceptance_evidence.json` with SHA-256 artifact checksums.

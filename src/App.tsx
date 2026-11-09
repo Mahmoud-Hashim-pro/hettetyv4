@@ -13,7 +13,7 @@ import {
   DollarSign, BedDouble, Bath, Maximize, Loader2,
   Check, FileCheck, Key, RefreshCw,
   User, ArrowLeft, Phone, Target, CreditCard, PlusCircle, Edit2, Save, LogOut, Shield, Trash2, Bell, Lock as LockIcon,
-  Plus, History, PanelLeftClose, PanelLeftOpen, ChevronLeft, ChevronRight, MessageSquare, Sun, Moon, Heart, Star
+  Plus, History, PanelLeftClose, PanelLeftOpen, ChevronLeft, ChevronRight, MessageSquare, Sun, Moon, Heart, Star, Video
 } from 'lucide-react';
 import { Type, createChat, extract3DMarker, withRetry, isOverloadedError, generateContentResilient, aiErrorMessage } from './ai';
 import { AddListingPage, PAYMENT_OPTIONS, PROPERTY_TYPES, FINISHING_OPTIONS, AMENITIES } from './components/add-listing-page';
@@ -364,8 +364,16 @@ const PropertyCard: React.FC<{
         </div>
       ) : null; })()}
       <div className="absolute top-4 start-4 flex flex-col items-start gap-1.5 z-10 max-w-[calc(100%-80px)]">
-        <div className="bg-accent-500 text-white px-3 py-1 rounded-full text-xs font-bold uppercase tracking-wider shadow-sm">
-          {property.status === 'For Sale' ? t.prop_forsale : t.prop_forrent}
+        <div className="flex items-center gap-1.5 flex-wrap">
+          <div className="bg-accent-500 text-white px-3 py-1 rounded-full text-xs font-bold uppercase tracking-wider shadow-sm">
+            {property.status === 'For Sale' ? t.prop_forsale : t.prop_forrent}
+          </div>
+          {property.videoUrl && (
+            <div className="bg-brand-600/95 text-white px-2.5 py-1 rounded-full text-xs font-bold flex items-center gap-1 shadow-sm whitespace-nowrap">
+              <Video size={12} aria-hidden="true" />
+              <span>{isRtl ? 'فيديو معاينة' : 'Video Tour'}</span>
+            </div>
+          )}
         </div>
         {/* The badge follows verificationStatus alone. A stale isVerified: true on a
             listing a reviewer later rejected must never keep showing green. And an
@@ -4573,16 +4581,16 @@ export default function App() {
   });
 
   let filteredProperties = publicProperties.filter(p => {
-    const matchesPrice = (minPrice === '' || p.price >= Number(minPrice)) &&
-                         (maxPrice === '' || p.price <= Number(maxPrice));
+    const matchesPrice = (minPrice === '' || (p.price != null && p.price >= Number(minPrice))) &&
+                         (maxPrice === '' || (p.price != null && p.price <= Number(maxPrice)));
     const matchesType = typeFilter === 'all' || p.propertyType === typeFilter;
 
     if (aiFilteredIds !== null) {
       return aiFilteredIds.includes(p.id) && matchesPrice && matchesType;
     }
-    const q = listingSearchQuery.toLowerCase();
-    const matchesSearch = p.title.toLowerCase().includes(q) ||
-      p.location.toLowerCase().includes(q) ||
+    const q = (listingSearchQuery || '').toLowerCase();
+    const matchesSearch = (p.title || '').toLowerCase().includes(q) ||
+      (p.location || '').toLowerCase().includes(q) ||
       (p.compound || '').toLowerCase().includes(q) ||
       (p.developer || '').toLowerCase().includes(q);
     return matchesSearch && matchesPrice && matchesType;
@@ -4731,7 +4739,7 @@ export default function App() {
       type="button"
       onClick={() => handleNav(page)} 
       aria-current={currentPage === page ? 'page' : undefined}
-      className={`text-sm font-bold transition-all cursor-pointer relative group py-2 focus:outline-none focus:ring-2 focus:ring-brand-500 rounded-lg px-2
+      className={`text-xs xl:text-sm font-bold transition-all cursor-pointer relative group py-1.5 focus:outline-none focus:ring-2 focus:ring-brand-500 rounded-lg px-1.5 xl:px-2.5 whitespace-nowrap
         ${currentPage === page ? 'text-brand-600 dark:text-brand-400' : 'text-slate-600 dark:text-slate-400 hover:text-brand-600 dark:hover:text-brand-400'}`}
     >
       {label}
@@ -4752,8 +4760,8 @@ export default function App() {
         <SplashScreen onFinish={() => setShowSplash(false)} />
       ) : (
         <>
-      <nav className="sticky top-0 z-50 bg-white/95 dark:bg-slate-900/95 backdrop-blur-xl border-none text-slate-900 dark:text-white shadow-sm dark:shadow-slate-950 transition-all duration-500">
-        <div className="w-full px-3 sm:px-5 lg:px-6 xl:px-8 h-20 flex items-center justify-between max-w-full">
+      <nav className="sticky top-0 z-50 bg-white/95 dark:bg-slate-900/95 backdrop-blur-xl border-none text-slate-900 dark:text-white shadow-sm dark:shadow-slate-950 transition-all duration-500 w-full max-w-full overflow-x-clip">
+        <div className="w-full px-3 sm:px-5 lg:px-6 xl:px-8 h-20 flex items-center justify-between max-w-full min-w-0">
           {/* Logo Group - Left side */}
           <div className="flex items-center shrink-0">
             <button 
@@ -4769,7 +4777,7 @@ export default function App() {
           {/* Menu & Actions Group - Right side (Opposite to logo) */}
           <div className="flex items-center gap-2 sm:gap-3 lg:gap-4 xl:gap-6 shrink-0">
             {/* Desktop Menu */}
-            <div className="hidden lg:flex items-center gap-1 xl:gap-3 2xl:gap-6 text-xs xl:text-sm">
+            <div className="hidden lg:flex items-center gap-0.5 xl:gap-2.5 2xl:gap-5 text-xs xl:text-sm min-w-0 flex-nowrap whitespace-nowrap">
               <NavLink page="home" label={t.nav_home} />
               <NavLink page="listings" label={t.nav_listings} />
               <NavLink page="yalla-sahel" label={isRtl ? '🌊 ساحل حتتي' : '🌊 Sahel Hettety'} />
@@ -5078,7 +5086,7 @@ export default function App() {
             <div className="mb-8 flex flex-col gap-6 w-full min-w-0">
                <h1 className="text-3xl lg:text-4xl font-heading font-black text-slate-900 dark:text-white uppercase tracking-tight">{t.prop_avail}</h1>
                <div className="flex flex-col sm:flex-row flex-wrap gap-3.5 w-full min-w-0 items-stretch sm:items-center">
-                 <div className="relative flex-1 min-w-[280px] sm:min-w-[320px] lg:min-w-[360px] flex gap-2">
+                 <div className="relative flex-1 min-w-[240px] sm:min-w-[280px] lg:min-w-[320px] flex gap-2">
                    <div className="relative flex-1 min-w-0">
                      <Search className={"absolute top-3 text-slate-400 w-4 h-4 start-3 pointer-events-none"} />
                      <input 
@@ -5089,19 +5097,19 @@ export default function App() {
                          setAiFilteredIds(null);
                        }}
                        onKeyDown={(e) => e.key === 'Enter' && handleAiSearch()}
-                       className={`w-full py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 focus:ring-2 focus:ring-brand-500 outline-none text-black dark:text-white ps-9 pe-4 text-sm font-medium`} 
+                       className={`w-full py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 focus:ring-2 focus:ring-brand-500 outline-none text-black dark:text-white ps-9 pe-4 text-xs sm:text-sm font-medium`} 
                      />
                    </div>
                    <button 
                      onClick={handleAiSearch}
                      disabled={isAiSearching || !listingSearchQuery.trim()}
-                     className="bg-brand-600 hover:bg-brand-700 text-white px-4 py-2.5 rounded-xl flex items-center gap-2 transition-colors disabled:opacity-50 disabled:cursor-not-allowed shrink-0"
+                     className="bg-brand-600 hover:bg-brand-700 text-white px-3.5 sm:px-4 py-2.5 rounded-xl flex items-center gap-1.5 transition-colors disabled:opacity-50 disabled:cursor-not-allowed shrink-0"
                      title={isRtl ? 'بحث بالذكاء الاصطناعي' : 'AI Search'}
                    >
                      {isAiSearching ? <Loader2 className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4" />}
                    </button>
                  </div>
-                 <div className="relative flex-1 sm:flex-initial sm:w-40 md:w-44 min-w-[150px]">
+                 <div className="relative flex-1 sm:flex-initial sm:w-44 md:w-48 min-w-[145px]">
                    <DollarSign className={"absolute top-3 text-slate-400 w-4 h-4 start-3 pointer-events-none"} />
                    <input 
                      type="number"
@@ -5113,10 +5121,10 @@ export default function App() {
                        if (val === '') setMinPrice('');
                        else if (Number(val) >= 0) setMinPrice(Number(val));
                      }}
-                     className={`w-full py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 focus:ring-2 focus:ring-brand-500 outline-none text-black dark:text-white ps-9 pe-3 text-sm font-medium`} 
+                     className={`w-full py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 focus:ring-2 focus:ring-brand-500 outline-none text-black dark:text-white ps-9 pe-3 text-xs sm:text-sm font-medium`} 
                    />
                  </div>
-                 <div className="relative flex-1 sm:flex-initial sm:w-40 md:w-44 min-w-[150px]">
+                 <div className="relative flex-1 sm:flex-initial sm:w-44 md:w-48 min-w-[145px]">
                    <DollarSign className={"absolute top-3 text-slate-400 w-4 h-4 start-3 pointer-events-none"} />
                    <input 
                      type="number"
@@ -5128,13 +5136,13 @@ export default function App() {
                        if (val === '') setMaxPrice('');
                        else if (Number(val) >= 0) setMaxPrice(Number(val));
                      }}
-                     className={`w-full py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 focus:ring-2 focus:ring-brand-500 outline-none text-black dark:text-white ps-9 pe-3 text-sm font-medium`} 
+                     className={`w-full py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 focus:ring-2 focus:ring-brand-500 outline-none text-black dark:text-white ps-9 pe-3 text-xs sm:text-sm font-medium`} 
                    />
                  </div>
                  <select
                    value={typeFilter}
                    onChange={(e) => setTypeFilter(e.target.value)}
-                   className="py-2.5 px-3.5 sm:px-4 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 focus:ring-2 focus:ring-brand-500 outline-none text-black dark:text-white flex-1 sm:flex-none sm:min-w-[150px] text-sm font-medium"
+                   className="py-2.5 px-3 sm:px-4 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 focus:ring-2 focus:ring-brand-500 outline-none text-black dark:text-white flex-1 sm:flex-none sm:min-w-[140px] text-xs sm:text-sm font-medium"
                  >
                    <option value="all">{isRtl ? 'كل الأنواع' : 'All Types'}</option>
                    {PROPERTY_TYPES.map(o => <option key={o.value} value={o.value}>{isRtl ? o.ar : o.en}</option>)}
@@ -5142,7 +5150,7 @@ export default function App() {
                  <select
                    value={sortBy}
                    onChange={(e) => setSortBy(e.target.value as any)}
-                   className="py-2.5 px-3.5 sm:px-4 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 focus:ring-2 focus:ring-brand-500 outline-none text-black dark:text-white flex-1 sm:flex-none sm:min-w-[170px] text-sm font-medium"
+                   className="py-2.5 px-3 sm:px-4 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 focus:ring-2 focus:ring-brand-500 outline-none text-black dark:text-white flex-1 sm:flex-none sm:min-w-[160px] text-xs sm:text-sm font-medium"
                  >
                    <option value="default">{isRtl ? 'الترتيب الافتراضي' : 'Default Sort'}</option>
                    <option value="newest">{isRtl ? 'الأحدث' : 'Newest'}</option>

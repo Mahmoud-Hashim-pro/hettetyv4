@@ -357,6 +357,41 @@ export const PREMIER_LANDMARK_PROPERTIES: Property[] = [
     masterPlanUrl: '/media/sodic-east-masterplan.jpg',
     videoUrl: '/media/sodic-east-walkthrough-1.mp4',
     digitalTwinUrl: 'https://my.matterport.com/show/?m=sodic_east_sample',
+    threeDTour: {
+      status: 'ready',
+      provider: 'hettety',
+      source: 'hettety_capture',
+      format: 'spz',
+      assetUrl: 'https://cdn.hettety.com/tours/sodic-east-1br/scene.spz',
+      representation: {
+        gaussianSplat: {
+          format: 'spz',
+          url: 'https://cdn.hettety.com/tours/sodic-east-1br/scene.spz',
+          sizeBytes: 8_200_000,
+          splatCount: 1_180_000,
+          isCalibratedMetric: true,
+        },
+        mesh: {
+          format: 'glb',
+          url: 'https://cdn.hettety.com/tours/sodic-east-1br/mesh.glb',
+          sizeBytes: 11_400_000,
+          isCalibratedMetric: true,
+        },
+      },
+      bounds: { min: [-4.5, 0, -5.5], max: [4.5, 3.2, 5.5] },
+      rooms: [
+        { id: 'reception', name: 'Reception & Living Salon', nameAr: 'صالون الاستقبال والمعيشة', position: [0, 1.5, 0], dimensions: { width: 5.2, length: 6.2, height: 3.0 } },
+        { id: 'master_bed', name: 'Master Bedroom', nameAr: 'غرفة النوم الرئيسية', position: [3.2, 1.5, -2.5], dimensions: { width: 4.2, length: 4.8, height: 3.0 } },
+        { id: 'kitchen', name: 'Open American Kitchen', nameAr: 'المطبخ الأمريكي المفتوح', position: [-2.8, 1.5, 1.5], dimensions: { width: 3.0, length: 3.8, height: 3.0 } },
+        { id: 'terrace', name: 'Landscaped View Terrace', nameAr: 'تراس بإطلالة خضراء', position: [0.2, 1.2, -4.5], dimensions: { width: 2.2, length: 3.6, height: 3.0 } }
+      ],
+      qualityReport: {
+        passed: true,
+        status: 'READY',
+        overallScore: 98,
+        certification: { visualReady: true, metricCertified: true }
+      }
+    },
     panoramas: ['/media/sodic-east-masterplan.jpg'],
     amenities: ['Sports Club', 'Camping Area', 'Retail Strip', 'International Schools', 'Medical Clinics', '24/7 Security'],
     paymentPlans: [
@@ -375,100 +410,6 @@ export const PREMIER_LANDMARK_PROPERTIES: Property[] = [
     courtSignatureValidity: true,
     isResale: false,
     paymentMethods: ['Installments'],
-    publishDate: '2026-11-08'
-  },
-  {
-    id: 'sodic-east-mf-launch-3br-duplex',
-    isDemo: true,
-    source: 'fixture',
-    title: 'SODIC East New MF Phase — 3BR Duplex',
-    description: 'Signature 3 Bedroom Duplex (200 sqm) in the new 65-feddan MF launch at SODIC East. Flexi Finishing, 1.5% DP over 10 Years. Delivery in 4 Years. EOIs now collected (50K EGP). Contact: Ahmed Nasr (+201114583529).',
-    price: 17_700_000,
-    currency: 'EGP',
-    location: 'El Shorouk / New Heliopolis, East Cairo',
-    bedrooms: 3,
-    bathrooms: 3,
-    area: 200,
-    propertyType: 'Duplex',
-    compound: 'SODIC East',
-    developer: 'SODIC',
-    deliveryDate: '2030-10-31',
-    deliveryTimeline: '3+years',
-    finishing: 'Flexi Finishing',
-    floor: 'Duplex (G+1)',
-    view: 'Central Green Spine & Private Courtyard',
-    furnished: false,
-    contactPhone: '+201114583529',
-    phase: '65-Feddan Multi-Family Phase',
-    projectAreaFeddan: 655,
-    masterPlanUrl: '/media/sodic-east-masterplan.jpg',
-    videoUrl: '/media/sodic-east-walkthrough-duplex.mp4',
-    digitalTwinUrl: 'https://my.matterport.com/show/?m=sodic_east_duplex_sample',
-    panoramas: ['/media/sodic-east-masterplan.jpg'],
-    amenities: ['Sports Club', 'Camping Area', 'Retail Strip', 'International Schools', 'Medical Clinics', '24/7 Security'],
-    paymentPlans: [
-      { downPayment: 265_500, years: 10, note: '1.5% Down Payment (265,500 EGP), Equal Installments over 10 Years. EOI 50K EGP.' }
-    ],
-    status: 'For Sale',
-    availability: 'Available',
-    isVerified: true,
-    verificationStatus: 'Verified',
-    imageUrl: '/media/sodic-east-masterplan.jpg',
-    images: [
-      '/media/sodic-east-masterplan.jpg'
-    ],
-    unitCode: 'SD-EAST-DPX-204',
-    registrationNumber: 'SDC-EST-2026/90',
-    courtSignatureValidity: true,
-    isResale: false,
-    paymentMethods: ['Installments'],
-    publishDate: '2026-11-08'
-  },
-  {
-    id: 'mv-1-1-signature-villa',
-    isDemo: true,
-    source: 'fixture',
-    title: 'Mountain View 1.1 Signature Living — Ready Villa',
-    description: 'Ready to Deliver Signature Villas & iVillas in Mountain View 1.1 New Cairo. Immediate handover with signature classic American architecture, private landscaped garden. Contact: Ahmed Nasr (+201114583529).',
-    price: 28_500_000,
-    currency: 'EGP',
-    location: 'New Cairo, Egypt',
-    bedrooms: 4,
-    bathrooms: 4,
-    area: 385,
-    gardenArea: 220,
-    propertyType: 'Villa',
-    compound: 'Mountain View 1.1',
-    developer: 'Mountain View',
-    deliveryDate: 'Ready',
-    deliveryTimeline: 'ready',
-    finishing: 'Fully Finished',
-    floor: 'G+2',
-    view: 'Signature Lake & Landscaped Parks',
-    furnished: false,
-    contactPhone: '+201114583529',
-    digitalTwinUrl: 'https://my.matterport.com/show/?m=mv11_signature_sample',
-    panoramas: ['/media/mv-1-1-villa.jpg'],
-    amenities: ['Clubhouse', 'Swimming Pools', 'Kids Play Area', 'Sports Courts', '24/7 Security'],
-    paymentPlans: [
-      { downPayment: 2_850_000, years: 7, note: '10% Down Payment (2,850,000 EGP), Ready for Immediate Delivery, 7 Years Installments' }
-    ],
-    status: 'For Sale',
-    availability: 'Available',
-    isVerified: true,
-    verificationStatus: 'Verified',
-    imageUrl: '/media/mv-1-1-villa.jpg',
-    images: [
-      '/media/mv-1-1-villa.jpg',
-      '/media/mv-1-1-ivillas.jpg',
-      '/media/mv-1-1-signature.jpg',
-      '/media/mv-1-1-banner.jpg'
-    ],
-    unitCode: 'MV-1.1-V04',
-    registrationNumber: 'MV-NC-2024/11',
-    courtSignatureValidity: true,
-    isResale: false,
-    paymentMethods: ['Cash', 'Installments'],
     publishDate: '2026-11-08'
   },
   {
@@ -498,6 +439,42 @@ export const PREMIER_LANDMARK_PROPERTIES: Property[] = [
     masterPlanUrl: '/media/sodic-east-masterplan.jpg',
     videoUrl: '/media/sodic-east-walkthrough-2.mp4',
     digitalTwinUrl: 'https://my.matterport.com/show/?m=sodic_east_2br_sample',
+    threeDTour: {
+      status: 'ready',
+      provider: 'hettety',
+      source: 'hettety_capture',
+      format: 'spz',
+      assetUrl: 'https://cdn.hettety.com/tours/sodic-east-2br/scene.spz',
+      representation: {
+        gaussianSplat: {
+          format: 'spz',
+          url: 'https://cdn.hettety.com/tours/sodic-east-2br/scene.spz',
+          sizeBytes: 9_600_000,
+          splatCount: 1_420_000,
+          isCalibratedMetric: true,
+        },
+        mesh: {
+          format: 'glb',
+          url: 'https://cdn.hettety.com/tours/sodic-east-2br/mesh.glb',
+          sizeBytes: 13_800_000,
+          isCalibratedMetric: true,
+        },
+      },
+      bounds: { min: [-6.0, 0, -6.5], max: [6.0, 3.2, 6.5] },
+      rooms: [
+        { id: 'reception', name: 'Grand Living & Dining Room', nameAr: 'صالون الاستقبال والسفرة', position: [0, 1.5, 0], dimensions: { width: 6.5, length: 7.2, height: 3.0 } },
+        { id: 'master_suite', name: 'Master Suite with Ensuite Bath', nameAr: 'جناح الماستر مع حمام خاص', position: [4.2, 1.5, -2.8], dimensions: { width: 4.5, length: 5.2, height: 3.0 } },
+        { id: 'bedroom_2', name: 'Second Bedroom', nameAr: 'غرفة النوم الثانية', position: [-3.8, 1.5, -2.2], dimensions: { width: 3.8, length: 4.5, height: 3.0 } },
+        { id: 'kitchen', name: 'Contemporary Kitchen', nameAr: 'المطبخ الحديث', position: [-2.8, 1.5, 2.8], dimensions: { width: 3.2, length: 4.0, height: 3.0 } },
+        { id: 'balcony', name: 'Green Spine Balcony', nameAr: 'بلكونة بإطلالة الممشى الأخضر', position: [0.5, 1.2, -5.2], dimensions: { width: 2.5, length: 4.8, height: 3.0 } }
+      ],
+      qualityReport: {
+        passed: true,
+        status: 'READY',
+        overallScore: 98,
+        certification: { visualReady: true, metricCertified: true }
+      }
+    },
     panoramas: ['/media/sodic-east-masterplan.jpg'],
     amenities: ['Sports Club', 'Camping Area', 'Retail Strip', 'International Schools', 'Medical Clinics', '24/7 Security'],
     paymentPlans: [
@@ -543,6 +520,43 @@ export const PREMIER_LANDMARK_PROPERTIES: Property[] = [
     masterPlanUrl: '/media/sodic-east-masterplan.jpg',
     videoUrl: '/media/sodic-east-walkthrough-3.mp4',
     digitalTwinUrl: 'https://my.matterport.com/show/?m=sodic_east_2brn_sample',
+    threeDTour: {
+      status: 'ready',
+      provider: 'hettety',
+      source: 'hettety_capture',
+      format: 'spz',
+      assetUrl: 'https://cdn.hettety.com/tours/sodic-east-2brn/scene.spz',
+      representation: {
+        gaussianSplat: {
+          format: 'spz',
+          url: 'https://cdn.hettety.com/tours/sodic-east-2brn/scene.spz',
+          sizeBytes: 10_200_000,
+          splatCount: 1_540_000,
+          isCalibratedMetric: true,
+        },
+        mesh: {
+          format: 'glb',
+          url: 'https://cdn.hettety.com/tours/sodic-east-2brn/mesh.glb',
+          sizeBytes: 14_200_000,
+          isCalibratedMetric: true,
+        },
+      },
+      bounds: { min: [-6.2, 0, -6.8], max: [6.2, 3.2, 6.8] },
+      rooms: [
+        { id: 'reception', name: 'Reception & Dining Hall', nameAr: 'صالة الاستقبال والسفرة', position: [0, 1.5, 0], dimensions: { width: 6.8, length: 7.0, height: 3.0 } },
+        { id: 'master_suite', name: 'Master Bedroom Suite', nameAr: 'جناح غرفة النوم الرئيسية', position: [4.4, 1.5, -2.8], dimensions: { width: 4.6, length: 5.2, height: 3.0 } },
+        { id: 'bedroom_2', name: 'Second Bedroom', nameAr: 'غرفة النوم الثانية', position: [-3.8, 1.5, -2.4], dimensions: { width: 4.0, length: 4.4, height: 3.0 } },
+        { id: 'kitchen', name: 'Kitchen & Utility Area', nameAr: 'المطبخ ومنطقة الخدمات', position: [-2.6, 1.5, 2.6], dimensions: { width: 3.4, length: 4.2, height: 3.0 } },
+        { id: 'nanny_room', name: "Maid's Quarters & Private Bath", nameAr: 'غرفة المربية بحمام مستقل', position: [-4.6, 1.5, 3.8], dimensions: { width: 2.6, length: 3.0, height: 3.0 } },
+        { id: 'balcony', name: 'Club S Park Balcony', nameAr: 'بلكونة مطلة على حديقة كلوب إس', position: [0.6, 1.2, -5.4], dimensions: { width: 2.4, length: 4.6, height: 3.0 } }
+      ],
+      qualityReport: {
+        passed: true,
+        status: 'READY',
+        overallScore: 98,
+        certification: { visualReady: true, metricCertified: true }
+      }
+    },
     panoramas: ['/media/sodic-east-masterplan.jpg'],
     amenities: ['Sports Club', 'Camping Area', 'Retail Strip', 'International Schools', 'Medical Clinics', '24/7 Security'],
     paymentPlans: [
@@ -588,6 +602,43 @@ export const PREMIER_LANDMARK_PROPERTIES: Property[] = [
     masterPlanUrl: '/media/sodic-east-masterplan.jpg',
     videoUrl: '/media/sodic-east-walkthrough-1.mp4',
     digitalTwinUrl: 'https://my.matterport.com/show/?m=sodic_east_3br_sample',
+    threeDTour: {
+      status: 'ready',
+      provider: 'hettety',
+      source: 'hettety_capture',
+      format: 'spz',
+      assetUrl: 'https://cdn.hettety.com/tours/sodic-east-3br/scene.spz',
+      representation: {
+        gaussianSplat: {
+          format: 'spz',
+          url: 'https://cdn.hettety.com/tours/sodic-east-3br/scene.spz',
+          sizeBytes: 11_100_000,
+          splatCount: 1_680_000,
+          isCalibratedMetric: true,
+        },
+        mesh: {
+          format: 'glb',
+          url: 'https://cdn.hettety.com/tours/sodic-east-3br/mesh.glb',
+          sizeBytes: 15_600_000,
+          isCalibratedMetric: true,
+        },
+      },
+      bounds: { min: [-7.0, 0, -7.2], max: [7.0, 3.2, 7.2] },
+      rooms: [
+        { id: 'reception', name: 'Spacious Family Reception', nameAr: 'ريسبشن عائلي فسيح', position: [0, 1.5, 0], dimensions: { width: 7.2, length: 7.8, height: 3.0 } },
+        { id: 'master_suite', name: 'Master Suite & Dressing', nameAr: 'جناح الماستر مع دريسنج', position: [4.8, 1.5, -3.0], dimensions: { width: 4.8, length: 5.6, height: 3.0 } },
+        { id: 'bedroom_2', name: 'Bedroom 2', nameAr: 'غرفة النوم الثانية', position: [-4.0, 1.5, -2.6], dimensions: { width: 4.2, length: 4.6, height: 3.0 } },
+        { id: 'bedroom_3', name: 'Bedroom 3 / Study', nameAr: 'غرفة النوم الثالثة / مكتب', position: [-4.2, 1.5, 1.2], dimensions: { width: 3.8, length: 4.2, height: 3.0 } },
+        { id: 'kitchen', name: 'Open Kitchen & Dining Bar', nameAr: 'المطبخ المفتوح مع بار طعام', position: [2.6, 1.5, 3.2], dimensions: { width: 3.6, length: 4.4, height: 3.0 } },
+        { id: 'terrace', name: 'Parkview Terrace', nameAr: 'تراس بإطلالة الحديقة', position: [0.5, 1.2, -5.8], dimensions: { width: 2.6, length: 5.2, height: 3.0 } }
+      ],
+      qualityReport: {
+        passed: true,
+        status: 'READY',
+        overallScore: 98,
+        certification: { visualReady: true, metricCertified: true }
+      }
+    },
     panoramas: ['/media/sodic-east-masterplan.jpg'],
     amenities: ['Sports Club', 'Camping Area', 'Retail Strip', 'International Schools', 'Medical Clinics', '24/7 Security'],
     paymentPlans: [
@@ -633,6 +684,44 @@ export const PREMIER_LANDMARK_PROPERTIES: Property[] = [
     masterPlanUrl: '/media/sodic-east-masterplan.jpg',
     videoUrl: '/media/sodic-east-walkthrough-2.mp4',
     digitalTwinUrl: 'https://my.matterport.com/show/?m=sodic_east_3brn_sample',
+    threeDTour: {
+      status: 'ready',
+      provider: 'hettety',
+      source: 'hettety_capture',
+      format: 'spz',
+      assetUrl: 'https://cdn.hettety.com/tours/sodic-east-3brn/scene.spz',
+      representation: {
+        gaussianSplat: {
+          format: 'spz',
+          url: 'https://cdn.hettety.com/tours/sodic-east-3brn/scene.spz',
+          sizeBytes: 11_800_000,
+          splatCount: 1_790_000,
+          isCalibratedMetric: true,
+        },
+        mesh: {
+          format: 'glb',
+          url: 'https://cdn.hettety.com/tours/sodic-east-3brn/mesh.glb',
+          sizeBytes: 16_400_000,
+          isCalibratedMetric: true,
+        },
+      },
+      bounds: { min: [-7.2, 0, -7.5], max: [7.2, 3.2, 7.5] },
+      rooms: [
+        { id: 'reception', name: 'Executive Living Salon', nameAr: 'صالون الاستقبال التنفيذي', position: [0, 1.5, 0], dimensions: { width: 7.5, length: 8.2, height: 3.0 } },
+        { id: 'master_suite', name: 'Master Suite with Walk-In Closet', nameAr: 'جناح الماستر مع دريسنج روم', position: [5.0, 1.5, -3.2], dimensions: { width: 5.0, length: 5.8, height: 3.0 } },
+        { id: 'bedroom_2', name: 'Junior Suite Bedroom 2', nameAr: 'غرفة النوم الثانية', position: [-4.2, 1.5, -2.8], dimensions: { width: 4.4, length: 4.8, height: 3.0 } },
+        { id: 'bedroom_3', name: 'Children Bedroom 3', nameAr: 'غرفة النوم الثالثة', position: [-4.4, 1.5, 1.4], dimensions: { width: 4.0, length: 4.4, height: 3.0 } },
+        { id: 'kitchen', name: 'Gourmet Kitchen', nameAr: 'المطبخ العائلي المتكامل', position: [2.8, 1.5, 3.4], dimensions: { width: 3.8, length: 4.6, height: 3.0 } },
+        { id: 'nanny_quarters', name: "Maid's Room & Ensuite", nameAr: 'غرفة المربية بحمام ملحق', position: [-5.2, 1.5, 4.0], dimensions: { width: 2.8, length: 3.2, height: 3.0 } },
+        { id: 'terrace', name: 'Dual Aspect Panoramic Terrace', nameAr: 'تراس بانورامي مزدوج الواجهة', position: [0.8, 1.2, -6.0], dimensions: { width: 2.8, length: 5.6, height: 3.0 } }
+      ],
+      qualityReport: {
+        passed: true,
+        status: 'READY',
+        overallScore: 98,
+        certification: { visualReady: true, metricCertified: true }
+      }
+    },
     panoramas: ['/media/sodic-east-masterplan.jpg'],
     amenities: ['Sports Club', 'Camping Area', 'Retail Strip', 'International Schools', 'Medical Clinics', '24/7 Security'],
     paymentPlans: [
@@ -646,6 +735,90 @@ export const PREMIER_LANDMARK_PROPERTIES: Property[] = [
     images: ['/media/sodic-east-masterplan.jpg'],
     unitCode: 'SD-EAST-3BRN-202',
     registrationNumber: 'SDC-EST-2026/94',
+    courtSignatureValidity: true,
+    isResale: false,
+    paymentMethods: ['Installments'],
+    publishDate: '2026-11-08'
+  },
+  {
+    id: 'sodic-east-mf-launch-3br-duplex',
+    isDemo: true,
+    source: 'fixture',
+    title: 'SODIC East New MF Phase — 3BR Duplex',
+    description: 'Signature 3 Bedroom Duplex (200 sqm) in the new 65-feddan MF launch at SODIC East. Flexi Finishing, 1.5% DP over 10 Years. Delivery in 4 Years. EOIs now collected (50K EGP). Contact: Ahmed Nasr (+201114583529).',
+    price: 17_700_000,
+    currency: 'EGP',
+    location: 'El Shorouk / New Heliopolis, East Cairo',
+    bedrooms: 3,
+    bathrooms: 3,
+    area: 200,
+    propertyType: 'Duplex',
+    compound: 'SODIC East',
+    developer: 'SODIC',
+    deliveryDate: '2030-10-31',
+    deliveryTimeline: '3+years',
+    finishing: 'Flexi Finishing',
+    floor: 'Duplex (G+1)',
+    view: 'Central Green Spine & Private Courtyard',
+    furnished: false,
+    contactPhone: '+201114583529',
+    phase: '65-Feddan Multi-Family Phase',
+    projectAreaFeddan: 655,
+    masterPlanUrl: '/media/sodic-east-masterplan.jpg',
+    videoUrl: '/media/sodic-east-walkthrough-duplex.mp4',
+    digitalTwinUrl: 'https://my.matterport.com/show/?m=sodic_east_duplex_sample',
+    threeDTour: {
+      status: 'ready',
+      provider: 'hettety',
+      source: 'hettety_capture',
+      format: 'spz',
+      assetUrl: 'https://cdn.hettety.com/tours/sodic-east-duplex/scene.spz',
+      representation: {
+        gaussianSplat: {
+          format: 'spz',
+          url: 'https://cdn.hettety.com/tours/sodic-east-duplex/scene.spz',
+          sizeBytes: 14_500_000,
+          splatCount: 2_150_000,
+          isCalibratedMetric: true,
+        },
+        mesh: {
+          format: 'glb',
+          url: 'https://cdn.hettety.com/tours/sodic-east-duplex/mesh.glb',
+          sizeBytes: 19_800_000,
+          isCalibratedMetric: true,
+        },
+      },
+      bounds: { min: [-8.0, 0, -8.0], max: [8.0, 6.4, 8.0] },
+      rooms: [
+        { id: 'lower_salon', name: 'Lower Level Grand Reception & Dining', nameAr: 'الدور الأرضي: صالون الاستقبال الملكي', position: [0, 1.5, 0], dimensions: { width: 8.2, length: 8.8, height: 3.2 } },
+        { id: 'lower_kitchen', name: 'Chef Kitchen & Storage Pantry', nameAr: 'المطبخ الرئيسي ومخزن المؤن', position: [-3.8, 1.5, 3.2], dimensions: { width: 4.2, length: 4.8, height: 3.2 } },
+        { id: 'garden_terrace', name: 'Private Garden Terrace', nameAr: 'تراس الحديقة الخاصة', position: [0.5, 0.4, -6.8], dimensions: { width: 4.5, length: 7.5, height: 3.2 } },
+        { id: 'upper_living', name: 'Upper Level Family Living Room', nameAr: 'الدور الأول: صالة المعيشة العائلية', position: [0, 4.6, 0], dimensions: { width: 5.8, length: 6.5, height: 3.0 } },
+        { id: 'upper_master', name: 'Duplex Master Suite with Private Bath', nameAr: 'جناح الماستر الملكي مع حمام خاص', position: [5.2, 4.6, -3.0], dimensions: { width: 5.4, length: 6.0, height: 3.0 } },
+        { id: 'upper_bed2', name: 'Upper Floor Bedroom 2 & 3', nameAr: 'غرفتا النوم الإضافيتان بالدور العلوي', position: [-4.4, 4.6, -2.2], dimensions: { width: 5.0, length: 7.2, height: 3.0 } }
+      ],
+      qualityReport: {
+        passed: true,
+        status: 'READY',
+        overallScore: 98,
+        certification: { visualReady: true, metricCertified: true }
+      }
+    },
+    panoramas: ['/media/sodic-east-masterplan.jpg'],
+    amenities: ['Sports Club', 'Camping Area', 'Retail Strip', 'International Schools', 'Medical Clinics', '24/7 Security'],
+    paymentPlans: [
+      { downPayment: 265_500, years: 10, note: '1.5% Down Payment (265,500 EGP), Equal Installments over 10 Years. EOI 50K EGP.' }
+    ],
+    status: 'For Sale',
+    availability: 'Available',
+    isVerified: true,
+    verificationStatus: 'Verified',
+    imageUrl: '/media/sodic-east-masterplan.jpg',
+    images: [
+      '/media/sodic-east-masterplan.jpg'
+    ],
+    unitCode: 'SD-EAST-DPX-204',
+    registrationNumber: 'SDC-EST-2026/90',
     courtSignatureValidity: true,
     isResale: false,
     paymentMethods: ['Installments'],
@@ -678,6 +851,44 @@ export const PREMIER_LANDMARK_PROPERTIES: Property[] = [
     masterPlanUrl: '/media/sodic-east-masterplan.jpg',
     videoUrl: '/media/sodic-east-walkthrough-3.mp4',
     digitalTwinUrl: 'https://my.matterport.com/show/?m=sodic_east_4brn_sample',
+    threeDTour: {
+      status: 'ready',
+      provider: 'hettety',
+      source: 'hettety_capture',
+      format: 'spz',
+      assetUrl: 'https://cdn.hettety.com/tours/sodic-east-4brn/scene.spz',
+      representation: {
+        gaussianSplat: {
+          format: 'spz',
+          url: 'https://cdn.hettety.com/tours/sodic-east-4brn/scene.spz',
+          sizeBytes: 13_900_000,
+          splatCount: 2_050_000,
+          isCalibratedMetric: true,
+        },
+        mesh: {
+          format: 'glb',
+          url: 'https://cdn.hettety.com/tours/sodic-east-4brn/mesh.glb',
+          sizeBytes: 18_400_000,
+          isCalibratedMetric: true,
+        },
+      },
+      bounds: { min: [-7.8, 0, -8.0], max: [7.8, 3.2, 8.0] },
+      rooms: [
+        { id: 'reception', name: 'Triple Reception Hall', nameAr: 'صالة استقبال ثلاثية فسيحة', position: [0, 1.5, 0], dimensions: { width: 8.5, length: 9.0, height: 3.0 } },
+        { id: 'master_suite', name: 'Royal Master Suite & Bath', nameAr: 'جناح الماستر الملكي والحمام الخاص', position: [5.2, 1.5, -3.2], dimensions: { width: 5.5, length: 6.2, height: 3.0 } },
+        { id: 'bedroom_2', name: 'Second Bedroom Ensuite', nameAr: 'غرفة النوم الثانية بحمام مستقل', position: [-4.2, 1.5, -3.0], dimensions: { width: 4.6, length: 5.0, height: 3.0 } },
+        { id: 'bedrooms_3_4', name: 'Bedrooms 3 & 4', nameAr: 'غرفتا النوم الثالثة والرابعة', position: [-4.6, 1.5, 1.8], dimensions: { width: 5.2, length: 7.0, height: 3.0 } },
+        { id: 'kitchen', name: 'Family Kitchen & Breakfast Nook', nameAr: 'المطبخ العائلي مع ركن إفطار', position: [3.2, 1.5, 3.4], dimensions: { width: 4.0, length: 4.8, height: 3.0 } },
+        { id: 'maid_suite', name: "Maid's Room & Laundry Area", nameAr: 'غرفة المربية وغرفة الغسيل', position: [-5.4, 1.5, 4.2], dimensions: { width: 3.0, length: 3.6, height: 3.0 } },
+        { id: 'sunset_terrace', name: 'Penthouse Sunset Terrace', nameAr: 'تراس بإطلالة الغروب والبحيرة', position: [0.8, 1.2, -6.5], dimensions: { width: 3.0, length: 6.0, height: 3.0 } }
+      ],
+      qualityReport: {
+        passed: true,
+        status: 'READY',
+        overallScore: 98,
+        certification: { visualReady: true, metricCertified: true }
+      }
+    },
     panoramas: ['/media/sodic-east-masterplan.jpg'],
     amenities: ['Sports Club', 'Camping Area', 'Retail Strip', 'International Schools', 'Medical Clinics', '24/7 Security'],
     paymentPlans: [
@@ -694,6 +905,91 @@ export const PREMIER_LANDMARK_PROPERTIES: Property[] = [
     courtSignatureValidity: true,
     isResale: false,
     paymentMethods: ['Installments'],
+    publishDate: '2026-11-08'
+  },
+  {
+    id: 'mv-1-1-signature-villa',
+    isDemo: true,
+    source: 'fixture',
+    title: 'Mountain View 1.1 Signature Living — Ready Villa',
+    description: 'Ready to Deliver Signature Villas & iVillas in Mountain View 1.1 New Cairo. Immediate handover with signature classic American architecture, private landscaped garden. Contact: Ahmed Nasr (+201114583529).',
+    price: 28_500_000,
+    currency: 'EGP',
+    location: 'New Cairo, Egypt',
+    bedrooms: 4,
+    bathrooms: 4,
+    area: 385,
+    gardenArea: 220,
+    propertyType: 'Villa',
+    compound: 'Mountain View 1.1',
+    developer: 'Mountain View',
+    deliveryDate: 'Ready',
+    deliveryTimeline: 'ready',
+    finishing: 'Fully Finished',
+    floor: 'G+2',
+    view: 'Signature Lake & Landscaped Parks',
+    furnished: false,
+    contactPhone: '+201114583529',
+    videoUrl: '/media/sodic-east-walkthrough-duplex.mp4',
+    digitalTwinUrl: 'https://my.matterport.com/show/?m=mv11_signature_sample',
+    threeDTour: {
+      status: 'ready',
+      provider: 'hettety',
+      source: 'hettety_capture',
+      format: 'spz',
+      assetUrl: 'https://cdn.hettety.com/tours/mv11-villa/scene.spz',
+      representation: {
+        gaussianSplat: {
+          format: 'spz',
+          url: 'https://cdn.hettety.com/tours/mv11-villa/scene.spz',
+          sizeBytes: 16_200_000,
+          splatCount: 2_450_000,
+          isCalibratedMetric: true,
+        },
+        mesh: {
+          format: 'glb',
+          url: 'https://cdn.hettety.com/tours/mv11-villa/mesh.glb',
+          sizeBytes: 22_500_000,
+          isCalibratedMetric: true,
+        },
+      },
+      bounds: { min: [-10.0, 0, -10.0], max: [10.0, 9.0, 10.0] },
+      rooms: [
+        { id: 'grand_foyer', name: 'Double-Height Grand Foyer & Salon', nameAr: 'البهو الملكي المزدوج وصالون الاستقبال', position: [0, 1.6, 0], dimensions: { width: 9.5, length: 10.5, height: 6.0 } },
+        { id: 'island_kitchen', name: 'Formal Dining & Island Chef Kitchen', nameAr: 'غرفة الطعام الفاخرة والمطبخ الأمريكي', position: [-4.8, 1.6, 2.5], dimensions: { width: 5.5, length: 7.5, height: 3.4 } },
+        { id: 'garden_pool', name: 'Private Landscaped Garden & Pool Deck', nameAr: 'الحديقة الخاصة المزروعة وحمام السباحة', position: [0.5, 0.2, -7.8], dimensions: { width: 12.0, length: 18.0, height: 3.0 } },
+        { id: 'family_lounge', name: 'First Floor Family Lounge & Terrace', nameAr: 'الدور الأول: صالة المعيشة والتراس', position: [0, 4.8, 0], dimensions: { width: 6.5, length: 7.5, height: 3.2 } },
+        { id: 'royal_master', name: 'Royal Master Bedroom & Dressing Room', nameAr: 'جناح الماستر الملكي وغرفة الملابس الفاخرة', position: [5.5, 4.8, -3.2], dimensions: { width: 6.5, length: 8.5, height: 3.2 } },
+        { id: 'sky_roof', name: 'Penthouse Sky Roof Lounge', nameAr: 'روف البنتهاوس مع جلسة السماء البانورامية', position: [0, 8.2, -1.2], dimensions: { width: 7.0, length: 9.0, height: 3.0 } }
+      ],
+      qualityReport: {
+        passed: true,
+        status: 'READY',
+        overallScore: 99,
+        certification: { visualReady: true, metricCertified: true }
+      }
+    },
+    panoramas: ['/media/mv-1-1-villa.jpg', '/media/mv-1-1-banner.jpg'],
+    amenities: ['Clubhouse', 'Swimming Pools', 'Kids Play Area', 'Sports Courts', '24/7 Security'],
+    paymentPlans: [
+      { downPayment: 2_850_000, years: 7, note: '10% Down Payment (2,850,000 EGP), Ready for Immediate Delivery, 7 Years Installments' }
+    ],
+    status: 'For Sale',
+    availability: 'Available',
+    isVerified: true,
+    verificationStatus: 'Verified',
+    imageUrl: '/media/mv-1-1-villa.jpg',
+    images: [
+      '/media/mv-1-1-villa.jpg',
+      '/media/mv-1-1-ivillas.jpg',
+      '/media/mv-1-1-signature.jpg',
+      '/media/mv-1-1-banner.jpg'
+    ],
+    unitCode: 'MV-1.1-V04',
+    registrationNumber: 'MV-NC-2024/11',
+    courtSignatureValidity: true,
+    isResale: false,
+    paymentMethods: ['Cash', 'Installments'],
     publishDate: '2026-11-08'
   },
   {
@@ -719,8 +1015,45 @@ export const PREMIER_LANDMARK_PROPERTIES: Property[] = [
     view: 'Landscaped Boulevard & Water Features',
     furnished: false,
     contactPhone: '+201114583529',
+    videoUrl: '/media/sodic-east-walkthrough-1.mp4',
     digitalTwinUrl: 'https://my.matterport.com/show/?m=mv11_ivilla_sample',
-    panoramas: ['/media/mv-1-1-ivillas.jpg'],
+    threeDTour: {
+      status: 'ready',
+      provider: 'hettety',
+      source: 'hettety_capture',
+      format: 'spz',
+      assetUrl: 'https://cdn.hettety.com/tours/mv11-ivilla/scene.spz',
+      representation: {
+        gaussianSplat: {
+          format: 'spz',
+          url: 'https://cdn.hettety.com/tours/mv11-ivilla/scene.spz',
+          sizeBytes: 13_800_000,
+          splatCount: 1_980_000,
+          isCalibratedMetric: true,
+        },
+        mesh: {
+          format: 'glb',
+          url: 'https://cdn.hettety.com/tours/mv11-ivilla/mesh.glb',
+          sizeBytes: 18_200_000,
+          isCalibratedMetric: true,
+        },
+      },
+      bounds: { min: [-7.5, 0, -8.0], max: [7.5, 6.2, 8.0] },
+      rooms: [
+        { id: 'reception', name: 'American Style Living & Dining Salon', nameAr: 'صالون الاستقبال والمعيشة الأمريكي', position: [0, 1.5, 0], dimensions: { width: 7.5, length: 8.5, height: 3.2 } },
+        { id: 'garden', name: 'Private Landscaped Garden', nameAr: 'الحديقة الخاصة المزروعة', position: [0.2, 0.2, -6.5], dimensions: { width: 8.0, length: 10.0, height: 3.0 } },
+        { id: 'kitchen', name: 'Open Kitchen with Granite Countertops', nameAr: 'المطبخ الأمريكي المفتوح', position: [-3.8, 1.5, 2.5], dimensions: { width: 3.8, length: 4.8, height: 3.2 } },
+        { id: 'upper_living', name: 'Upper Floor Living Space', nameAr: 'الدور العلوي: صالة المعيشة', position: [0, 4.6, 0], dimensions: { width: 5.5, length: 6.5, height: 3.0 } },
+        { id: 'master_suite', name: 'Master Suite with Balcony View', nameAr: 'جناح الماستر مع بلكونة بإطلالة الحدائق', position: [4.5, 4.6, -2.5], dimensions: { width: 5.0, length: 6.0, height: 3.0 } }
+      ],
+      qualityReport: {
+        passed: true,
+        status: 'READY',
+        overallScore: 98,
+        certification: { visualReady: true, metricCertified: true }
+      }
+    },
+    panoramas: ['/media/mv-1-1-ivillas.jpg', '/media/mv-1-1-banner.jpg'],
     amenities: ['Clubhouse', 'Swimming Pools', 'Kids Play Area', 'Sports Courts', '24/7 Security'],
     paymentPlans: [
       { downPayment: 1_820_000, years: 7, note: '10% Down Payment (1,820,000 EGP), Ready for Immediate Delivery, 7 Years Installments' }

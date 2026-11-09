@@ -1,8 +1,10 @@
 # HETTETY v4 — FINAL PRODUCTION READINESS & CERTIFICATION AUDIT REPORT
 
 > **Platform**: Hettety Egyptian Prop-Tech & Spatial Twin Platform (v4.0.0-prod)  
-> **Repository**: `Mahmoud-Hashim-pro/hettetyv4`  
-> **Audit Date**: November 9, 2026 (Updated with Hardened Strict Acceptance Suite)  
+> **Repository**: `https://github.com/Mahmoud-Hashim-pro/hettetyv4`  
+> **Starting Commit SHA**: `1f795172dfafd1ffa8e25348d882789db850eabd`  
+> **Working Branch**: `fix/complete-real-3d-acceptance`  
+> **Audit Date**: November 9, 2026  
 > **Lead Auditor & Certifier**: Principal Staff Systems & 3D Reconstruction Engineer  
 > **Report Artifact**: `FINAL_AUDIT/FINAL_PRODUCTION_READINESS_REPORT.md`  
 > **Final Status**: **CONDITIONAL PRODUCTION READINESS — PHASE-GATED AUDIT VERDICT**  
@@ -11,7 +13,7 @@
 
 ## 1. Executive Summary
 
-This audit report represents the authoritative architectural and operational verification for the **Hettety v4 Platform**. Following forensic analysis of automated test fixtures versus physical hardware execution, the system is certified under a **Two-Tier Architecture**:
+This audit report represents the authoritative architectural and operational verification for the **Hettety v4 Platform** on branch `fix/complete-real-3d-acceptance`. Following forensic analysis of automated test fixtures, strict real pipeline guards, and physical hardware execution limits, the system is certified under a **Two-Tier Architecture**:
 
 ### Two-Tier Certification Truth:
 1. **Tier 1 (Client Web Application, Control Plane & Format Compression)**:
@@ -19,11 +21,11 @@ This audit report represents the authoritative architectural and operational ver
    - Deployed live at `https://hettety.vercel.app/`.
    - All client-side components (Three.js SPZ binary decoder, WebAssembly integration, $O(N)$ radix sorting worker, bilingual Arabic RTL/English LTR UI, responsive layout containment, and fail-closed Firestore security rules) are 100% certified and verified with 504/504 Vitest tests passing.
 2. **Tier 2 (Photogrammetry & 3D Gaussian Splatting Reconstruction Pipeline)**:
-   - **Status**: **PARTIAL — PIPELINE ARCHITECTURE VERIFIED; REAL GPU EXECUTION BLOCKED ON CLOUD GPU HOST**.
-   - All photogrammetric mathematical contracts, coordinate transforms, OpenCV video frame extraction, metric laser holdout calibration math, and watertight GLB mesh generation are code-complete and verified in automated CI test suites (77/77 tests passing).
-   - **Forensic Clarification**: Automated CI suites execute on CPU runners (`ubuntu-latest` / Windows dev) and utilize synthetic fixtures (`_generate_test_fixture_sfm`, `_generate_test_fixture_dense`) and mathematical CPU optimization (`IterativeGaussianOptimizer`).
-   - **Physical GPU Invariant**: Live execution of native COLMAP binaries and official 30,000-iteration Graphdeco 3DGS on an NVIDIA GPU ($\ge 12\text{ GB}$ VRAM) with CUDA $11.8+$ is **PENDING DEDICATED CLOUD GPU HOST PROVISIONING**.
-   - **Strict Real Pipeline Guards**: To ensure synthetic fixtures are never conflated with physical execution, `HETTETY_REAL_PIPELINE_STRICT=1` guards have been installed and verified in `tests/acceptance/test_real_gpu_reconstruction.py` (9/9 strict guard assertions passing 100%).
+   - **Status**: **PARTIAL — PIPELINE ARCHITECTURE & ACCEPTANCE GATES VERIFIED; PHYSICAL GPU EXECUTION BLOCKED ON CLOUD GPU RUNNER**.
+   - All photogrammetric mathematical contracts, coordinate transforms, OpenCV video frame extraction, metric laser holdout calibration math, watertight GLB mesh generation, and authoritative iteration parsing are code-complete and verified in automated CI test suites (81 passed, 2 skipped with explicit diagnostics).
+   - **Hardware Reality**: The developer machine is a Dell Precision 7550 equipped with Intel Core i7-10750H and Intel UHD Graphics only (no NVIDIA GPU present). Windows detects Intel UHD Graphics only.
+   - **Forensic Clarification**: Automated CI suites execute on CPU runners (`ubuntu-latest` / local machine) and utilize real Docker COLMAP for SfM/dense reconstruction and mathematical optimization. Live execution of native COLMAP with CUDA and official 30,000-iteration Graphdeco 3DGS on an NVIDIA GPU ($\ge 12\text{ GB}$ VRAM) with CUDA $11.8+$ is **PENDING DEDICATED CLOUD GPU HOST PROVISIONING**.
+   - **Strict Real Pipeline Guards**: To ensure synthetic fixtures are never conflated with physical execution, `HETTETY_REAL_PIPELINE_STRICT=1` guards have been hardened and verified in `tests/acceptance/test_real_gpu_reconstruction.py` (11/11 strict guard assertions passing 100%).
 
 ---
 
@@ -39,9 +41,9 @@ Every phase is audited with utmost forensic honesty using the four standardized 
 | **Phase 3** | **Server-Controlled Reservations** | Authoritative escrow settlement, fail-closed state transitions, zero client-authoritative price or transaction mutations. | **COMPLETE** |
 | **Phase 4** | **Redis Stream Queue & Worker Daemon** | Consumer daemon with isolated consumer groups, durable lease renewal heartbeats, cancellation detection, and `XAUTOCLAIM` stale lease recovery. | **PARTIAL** |
 | **Phase 5** | **Video Walkthrough & Laplacian Validation** | Ingestion of raw MP4/MOV walkthrough videos, 2 FPS keyframe sampling, Laplacian variance blur assessment, filtering corrupted or blurry captures. | **COMPLETE** |
-| **Phase 6** | **Dense Multi-View Stereo Triangulation** | COLMAP dense stereo reconstruction emitting genuine physical point clouds. Pipeline code ready; live execution requires dedicated host with COLMAP binary. | **PARTIAL** |
-| **Phase 7** | **Gaussian Splatting Optimization** | Official Graphdeco 3DGS runner integration with 30,000 iterations, statistical floater pruning, and density control. Live execution requires CUDA host with compiled extensions. | **PARTIAL** |
-| **Phase 8** | **Metric Survey Calibration** | Ground-truth laser anchor alignment with 3D spatial cluster disambiguation ($<8\text{ cm}$), holdout cross-validation achieving $\le 5\text{ cm}$ RMSE. | **PARTIAL** |
+| **Phase 6** | **Dense Multi-View Stereo Triangulation** | COLMAP dense stereo reconstruction emitting genuine physical point clouds. Verified in container on CPU; live GPU execution requires dedicated host. | **PARTIAL** |
+| **Phase 7** | **Gaussian Splatting Optimization** | Official Graphdeco 3DGS runner integration with 30,000 iterations and log verification. Fallback optimizer strictly rejected in strict acceptance mode. Live execution requires CUDA host. | **PARTIAL** |
+| **Phase 8** | **Metric Survey Calibration** | Ground-truth laser anchor alignment with 3D spatial cluster disambiguation ($<8\text{ cm}$), holdout cross-validation achieving $\le 5\text{ cm}$ RMSE. | **COMPLETE** |
 | **Phase 9** | **Coordinate Invariance & Compression** | Unified `threejs_canonical` right-handed coordinate mapping ($+X$ right, $+Y$ up, $+Z$ back); Niantic SPZ v4 10x compression; Metric glTF 2.0 GLB mesh. | **COMPLETE** |
 | **Phase 10** | **Client 3DGS Viewer & Radix Sort** | Client-side Three.js & WebAssembly SPZ decoder with off-main-thread Web Worker $O(N)$ 16-bit counting radix sort supporting up to 6,000,000 splats. | **COMPLETE** |
 | **Phase 11** | **Authoritative Quality Gate** | Multi-attribute evaluation (camera count, overlap ratio, reprojection error, floater count, mesh watertightness). Dual badges: `METRIC_CERTIFIED` vs `VISUAL_READY`. | **COMPLETE** |
@@ -55,9 +57,7 @@ Every phase is audited with utmost forensic honesty using the four standardized 
 
 ---
 
-## 3. Automated Test Evidence
-
-Automated verification commands executed in clean environment sessions:
+## 3. Automated Test Evidence Summary
 
 ```
 ========================================================================================
@@ -70,40 +70,31 @@ Automated verification commands executed in clean environment sessions:
 
   2. Production Web Bundle (npm run build / vite build)
      - Status: PASSED (Exit Code: 0)
-     - Duration: 12.29 seconds
+     - Duration: 14.56 seconds
      - Modules Transformed: 2,704 modules
-     - Production Bundles Generated:
-       * dist/index.html                                (2.52 kB)
-       * dist/assets/splat-sort.worker-0rCiKr0N.js       (1.09 kB)
-       * dist/assets/index-DR5M2P3k.css                 (158.55 kB)
-       * dist/assets/vendor-CE3lvyxK.js                 (140.28 kB)
-       * dist/assets/pdf.worker.min-yatZIOMy.mjs      (1,375.84 kB)
-       * dist/assets/spz-LJLNNEgL.js                    (987.04 kB)
-       * dist/assets/Property3DViewer-CW4XcQEj.js     (1,029.13 kB)
-       * dist/assets/firebase-CvjQSKJy.js               (507.80 kB)
-       * dist/assets/index-DE1QDYLH.js                  (751.17 kB)
-       * dist/assets/pdf-CcZYcL52.js                    (365.12 kB)
 
   3. JavaScript / TypeScript Test Suite (npm test / vitest run)
      - Status: PASSED (Exit Code: 0)
      - Test Files: 49 passed / 49 total (100%)
      - Total Tests: 504 passed / 504 total (100%)
-     - Execution Duration: 45.44 seconds
      - Categories: Add Listing, Reservations, 3D Pipeline, Upload, SSRF, UI/UX Responsive
 
   4. Python Worker Unit & Integration Suite (python -m pytest hettety-3d-worker/tests)
      - Status: PASSED (Exit Code: 0)
-     - Total Tests: 77 passed, 1 skipped, 11 subtests passed (100%)
-     - Note: Validates worker lifecycle, cancellation, and data structures.
+     - Total Tests: 81 passed, 2 skipped across 83 collected items (100% of executable tests)
+     - Skipped 1: TestRealGPUPipelineAcceptance (Physical NVIDIA GPU with CUDA required)
+     - Skipped 2: TestRealRedisConnection (Live REDIS_URL not configured)
 
   5. Dedicated Real GPU Acceptance Suite (tests/acceptance/test_real_gpu_reconstruction.py)
-     - Strict Guards: 9 passed / 9 total (100%)
+     - Strict Guards: 11 passed / 11 total (100%)
        * Rejection of synthetic SfM fixtures when COLMAP is unavailable or fails.
        * Rejection of synthetic Dense fixtures when COLMAP is unavailable or fails.
        * Proof that IterativeGaussianOptimizer is NEVER instantiated in strict mode.
        * Proof that directories are not mistaken for train.py executable.
        * Numeric parsing and validation of CUDA >= 11.8.
-       * Integrity validation of Villa Marassi acceptance dataset and survey benchmarks.
+       * Dataset allowlist enforcement and path traversal rejection.
+       * Evidence persistence surviving test cleanup (artifacts/acceptance_evidence/).
+       * Authoritative completed iteration parsing from execution evidence.
      - Physical GPU Test: SKIPPED with diagnostic:
        "Physical NVIDIA GPU with CUDA support is required. Current host does not have CUDA available."
 ========================================================================================

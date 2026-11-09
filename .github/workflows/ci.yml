@@ -2,7 +2,7 @@ name: Release Verification CI (CPU Gates)
 
 on:
   push:
-    branches: [main, audit/*]
+    branches: [main, audit/*, fix/*]
   pull_request:
     branches: [main]
   workflow_dispatch:
@@ -40,6 +40,8 @@ jobs:
   python-3d-worker-cpu:
     name: Python 3D Worker Unit & Integration Tests (CPU Fixtures)
     runs-on: ubuntu-latest
+    env:
+      HETTETY_ACCEPTANCE_EVIDENCE_DIR: ${{ github.workspace }}/artifacts/acceptance_evidence
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -59,8 +61,16 @@ jobs:
       - name: Run Worker Unit & Integration Pytest suites
         run: python -m pytest hettety-3d-worker/tests
 
-      - name: Verify Strict Real Pipeline Guards (Rejection of Fixtures)
-        run: python -m pytest hettety-3d-worker/tests/acceptance/test_real_gpu_reconstruction.py -k "TestRealReconstructionStrictGuards" -v
+      - name: Verify Strict Real Pipeline Guards & Acceptance Suite
+        run: python -m pytest hettety-3d-worker/tests/acceptance/test_real_gpu_reconstruction.py -v
 
       - name: Verify Redis Worker Lifecycle Integration
         run: python -m pytest hettety-3d-worker/tests/acceptance/test_real_redis_worker_lifecycle.py -v
+
+      - name: Archive CI Evidence Artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-acceptance-evidence
+          path: ${{ github.workspace }}/artifacts/acceptance_evidence/*
+          if-no-files-found: warn

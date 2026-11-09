@@ -1,0 +1,239 @@
+{
+  "run_id": "acc_1794215053_ebeb76af",
+  "test_name": "test_real_gpu_photogrammetry_reconstruction",
+  "timestamp_utc": "2026-11-09T09:04:13Z",
+  "environment": {
+    "cuda_available": false,
+    "device_count": 0,
+    "device_name": null,
+    "total_memory_gb": 0.0,
+    "colmap_available": true,
+    "colmap_version": null,
+    "graphdeco_available": false,
+    "graphdeco_script_path": null,
+    "pytorch_version": null,
+    "cuda_version": null,
+    "cuda_version_tuple": [
+      0,
+      0
+    ],
+    "cuda_version_sufficient": false,
+    "cuda_extensions_available": false,
+    "cuda_extensions_error": "No module named 'diff_gaussian_rasterization'"
+  },
+  "dataset": {
+    "valid": true,
+    "dataset_name": "prop_villa_marassi_01",
+    "fixture_dir": "C:\\Users\\Tie\\.gemini\\antigravity\\scratch\\hettetyv4\\tests\\fixtures\\real_properties\\prop_villa_marassi_01",
+    "is_real_data": true,
+    "image_count": 28,
+    "survey_path": "C:\\Users\\Tie\\.gemini\\antigravity\\scratch\\hettetyv4\\tests\\fixtures\\real_properties\\prop_villa_marassi_01\\survey_benchmarks.json",
+    "benchmarks_count": 4,
+    "manifest_sha256": "0ea781d44f190c73900648e01912b12cf9669080ddced77dd768b446eabe17b3",
+    "files": [
+      {
+        "name": "frame_01_dsc_0286.jpg",
+        "type": "image",
+        "sizeBytes": 282879,
+        "sha256": "6aef17db42e962c93d3e1588562eb34098baf4372f8dad3a2c89acf2923627a9"
+      },
+      {
+        "name": "frame_02_dsc_0287.jpg",
+        "type": "image",
+        "sizeBytes": 300555,
+        "sha256": "7f61f9273a9d51a0e50dc2f176d134de91ffd4a3171b0a1ce1cdcaa21d69311f"
+      },
+      {
+        "name": "frame_03_dsc_0288.jpg",
+        "type": "image",
+        "sizeBytes": 309085,
+        "sha256": "80950eb1e2df377d6e8d62d3023210c7fedbda5903fe3f7864ed72b89c4f8e46"
+      },
+      {
+        "name": "frame_04_dsc_0289.jpg",
+        "type": "image",
+        "sizeBytes": 307684,
+        "sha256": "32679fd5eafae2435b9375a16c7f86a50b557e7d1faae19f7bb9069986e986ff"
+      },
+      {
+        "name": "frame_05_dsc_0290.jpg",
+        "type": "image",
+        "sizeBytes": 304484,
+        "sha256": "be82eb4c2d385ada56a358f3fb03c8318b13e7abd7f7202e7c40447eef0bc313"
+      },
+      {
+        "name": "frame_06_dsc_0291.jpg",
+        "type": "image",
+        "sizeBytes": 302018,
+        "sha256": "ae93fc44d92799492de3e1ab7f4be6ad7f61eafd29f121f992fa71807454af2e"
+      },
+      {
+        "name": "frame_07_dsc_0292.jpg",
+        "type": "image",
+        "sizeBytes": 304414,
+        "sha256": "c92e1024c9563393af079a0064dcecd761d9d7deadb4dd3265f8d401747443ed"
+      },
+      {
+        "name": "frame_08_dsc_0293.jpg",
+        "type": "image",
+        "sizeBytes": 303586,
+        "sha256": "4d63ba61e5695744a64291facc19e603e1b54b0cd88c71f9e63d19a84cd77667"
+      },
+      {
+        "name": "frame_09_dsc_0294.jpg",
+        "type": "image",
+        "sizeBytes": 304703,
+        "sha256": "32ff34ee8a359c9ff013dfd7883f7b14b1fb3a8dc2cf04148de4a2ed3004178b"
+      },
+      {
+        "name": "frame_10_dsc_0295.jpg",
+        "type": "image",
+        "sizeBytes": 306973,
+        "sha256": "a326b9c4b3c72bc77fe78b86b0af00465aef9e51d51912033299e3b200afcb93"
+      },
+      {
+        "name": "frame_11_dsc_0296.jpg",
+        "type": "image",
+        "sizeBytes": 310897,
+        "sha256": "65ac40deff01d6f5030015516dd37f7be1ecdcb6fc0c691bc1e22bbd5020ab2e"
+      },
+      {
+        "name": "frame_12_dsc_0297.jpg",
+        "type": "image",
+        "sizeBytes": 300507,
+        "sha256": "46bb5d301e85251ce44a2902a7c96921dd619d52e16c60637bcfed86df9ef687"
+      },
+      {
+        "name": "frame_13_dsc_0298.jpg",
+        "type": "image",
+        "sizeBytes": 294441,
+        "sha256": "9fb65bc59521282e5795fbeca855941a84e588ca899d4afad8ccca56138f56b0"
+      },
+      {
+        "name": "frame_14_dsc_0299.jpg",
+        "type": "image",
+        "sizeBytes": 318103,
+        "sha256": "5920810f019327685be386ebfa0fdbaf47302cb5c6cb5eabdd31e499790c1f98"
+      },
+      {
+        "name": "frame_15_dsc_0300.jpg",
+        "type": "image",
+        "sizeBytes": 274156,
+        "sha256": "e7de7823e9f7d8fc1ddc3d4e4ce9388b3a93fe112539f9df2b150757c337be55"
+      },
+      {
+        "name": "frame_16_dsc_0301.jpg",
+        "type": "image",
+        "sizeBytes": 224305,
+        "sha256": "6644cf97237d37e3bb8fd28ca2faba5083ce41ca1a4283b407ab95fe58dcc864"
+      },
+      {
+        "name": "frame_17_dsc_0302.jpg",
+        "type": "image",
+        "sizeBytes": 313584,
+        "sha256": "930ee6892de5e737b834d68db93888570ea6a0cacfc1b15fff5d51e89b8a5ea6"
+      },
+      {
+        "name": "frame_18_dsc_0303.jpg",
+        "type": "image",
+        "sizeBytes": 283267,
+        "sha256": "315c1658471f516cfb2fc235f13f3efa27f95ab98929095ee52311fda4d90c72"
+      },
+      {
+        "name": "frame_19_dsc_0304.jpg",
+        "type": "image",
+        "sizeBytes": 267253,
+        "sha256": "1c802e8736c3f4962e710948630302cf1a31e248fe454cfd0556df31688e9ec3"
+      },
+      {
+        "name": "frame_20_dsc_0305.jpg",
+        "type": "image",
+        "sizeBytes": 247776,
+        "sha256": "eb4ae0d605dbe3a4921d69c96ab7a8f674701ee5cd24840cd953a9fbc9d34d28"
+      },
+      {
+        "name": "frame_21_dsc_0306.jpg",
+        "type": "image",
+        "sizeBytes": 243641,
+        "sha256": "121e787f4fd4fa6dd2992219c3ac2beeedbb1a92c12b020e521aa3c8e3ea4186"
+      },
+      {
+        "name": "frame_22_dsc_0307.jpg",
+        "type": "image",
+        "sizeBytes": 249743,
+        "sha256": "4521b86799cb32a876843972a4cd5c8a6a697e6714ef8fa70f5de62769049841"
+      },
+      {
+        "name": "frame_23_dsc_0308.jpg",
+        "type": "image",
+        "sizeBytes": 243058,
+        "sha256": "e1c30f3f5785cf9035355f8138b2812c3ce8646a4a898dfa526e2f49b8bc87ac"
+      },
+      {
+        "name": "frame_24_dsc_0309.jpg",
+        "type": "image",
+        "sizeBytes": 321370,
+        "sha256": "5aa117197e254131d5a93e7bee9988b3718460bc9a12ee9b4d13240c120d4b06"
+      },
+      {
+        "name": "frame_25_dsc_0310.jpg",
+        "type": "image",
+        "sizeBytes": 335260,
+        "sha256": "8f9fed94b033be8a7dfd24a02ce392a0eaf65db66f9350910c6209e2e9f503dc"
+      },
+      {
+        "name": "frame_26_dsc_0311.jpg",
+        "type": "image",
+        "sizeBytes": 345259,
+        "sha256": "577c54ea907598fbed7ae750708ac873b4d3ef3708f4ea7a9b64ca9898c21a3d"
+      },
+      {
+        "name": "frame_27_dsc_0312.jpg",
+        "type": "image",
+        "sizeBytes": 395816,
+        "sha256": "81f7afc631d56260fc970257032fd9b8e679ad7617bf61137e6603aca0b29262"
+      },
+      {
+        "name": "frame_28_dsc_0313.jpg",
+        "type": "image",
+        "sizeBytes": 413067,
+        "sha256": "796faddfaa3ebc4ff95b4f4c91cc244c7da55b0c2e4546476a6a297a7e98d1ab"
+      },
+      {
+        "name": "survey_benchmarks.json",
+        "type": "survey_benchmarks",
+        "sizeBytes": 4776,
+        "sha256": "31c7fb37fa843b4b15346b2fc6806db5a10bc68d731f1d77971e7afa13a173e3"
+      }
+    ]
+  },
+  "status": "BLOCKED",
+  "blocking_reason": "Physical NVIDIA GPU with CUDA support is required. Current host does not have CUDA available.",
+  "stages": {},
+  "acceptance_criteria": {
+    "STRICT_COLMAP": {
+      "status": "PENDING",
+      "details": "Real COLMAP binary verification"
+    },
+    "DENSE_MVS": {
+      "status": "PENDING",
+      "details": "Multi-view stereo point cloud"
+    },
+    "GRAPHDECO_3DGS": {
+      "status": "BLOCKED",
+      "details": "Host lacks physical NVIDIA GPU with CUDA."
+    },
+    "METRIC_CALIBRATION": {
+      "status": "PENDING",
+      "details": "Laser holdout RMSE <= 0.05m"
+    },
+    "SPZ_EXPORT": {
+      "status": "PENDING",
+      "details": "Niantic SPZ v4 container"
+    },
+    "GLB_EXPORT": {
+      "status": "PENDING",
+      "details": "Watertight glTF 2.0 binary"
+    }
+  }
+}

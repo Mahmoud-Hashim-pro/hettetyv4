@@ -300,8 +300,11 @@ def retain_deliverables(
                 "sha256": dir_hasher.hexdigest(),
             }
         else:
+            orig_h, orig_s = _hash_file(src_path)
             shutil.copy2(src_path, dest_path)
             h, s = _hash_file(dest_path)
+            if h != orig_h or s != orig_s:
+                raise ValueError(f"COPY_INTEGRITY_VIOLATION: Retained file '{dest_name}' hash {h} != source hash {orig_h}")
             return {
                 "path": dest_path,
                 "sizeBytes": s,
@@ -424,16 +427,15 @@ def write_acceptance_evidence(
     ])
 
     if artifacts:
-        md_lines.extend([
-            f"- **SPZ Gaussian Splats**: {artifacts.get('spz', {}).get('splatCount', 0):,} splats "
-            f"({artifacts.get('spz', {}).get('sizeBytes', 0):,} bytes) "
-            f"SHA-256: `{artifacts.get('spz', {}).get('sha256', 'N/A')}`",
-            f"- **GLB Watertight Mesh**: Valid glTF 2.0 binary "
-            f"({artifacts.get('glb', {}).get('sizeBytes', 0):,} bytes) "
-            f"SHA-256: `{artifacts.get('glb', {}).get('sha256', 'N/A')}`",
-            f"- **Metric Laser Calibration**: Scale Factor = {artifacts.get('calibration', {}).get('scaleFactor', 'N/A')}, "
-            f"Holdout RMSE = {artifacts.get('calibration', {}).get('holdoutRmse', 'N/A')} m",
-        ])
+        for art_key, art_val in sorted(artifacts.items()):
+            if isinstance(art_val, dict) and "path" in art_val:
+                sha_str = art_val.get("sha256", "N/A")
+                size_str = f"{art_val.get('sizeBytes', 0):,} bytes" if "sizeBytes" in art_val else "N/A"
+                extra = f", {art_val.get('splatCount'):,} splats" if "splatCount" in art_val else ""
+                md_lines.append(f"- **{art_key.upper()}**: `{art_val['path']}` ({size_str}{extra}) SHA-256: `{sha_str}`")
+        if "calibration" in artifacts and isinstance(artifacts["calibration"], dict):
+            calib = artifacts["calibration"]
+            md_lines.append(f"- **METRIC CALIBRATION**: Scale Factor = {calib.get('scaleFactor', 'N/A')}, Holdout RMSE = {calib.get('holdoutRmse', 'N/A')} m")
     else:
         md_lines.append(f"- *No artifacts produced* (Reconstruction not completed)")
 

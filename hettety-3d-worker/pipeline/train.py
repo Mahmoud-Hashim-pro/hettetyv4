@@ -28,7 +28,7 @@ import subprocess
 
 import numpy as np
 
-from typing import Dict, Any, Optional, Tuple, List, Callable
+from typing import Dict, Any, Optional, Tuple, List, Callable, Set, Union
 
 
 
@@ -498,39 +498,190 @@ class IterativeGaussianOptimizer:
 
 
 
-def validate_graphdeco_runner_provenance(script_path: Optional[str]) -> Tuple[bool, str]:
+DEFAULT_ALLOWED_GRAPHDECO_REMOTES: Set[str] = {
+    "https://github.com/graphdeco-inria/gaussian-splatting",
+    "https://github.com/graphdeco-inria/gaussian-splatting.git",
+    "git@github.com:graphdeco-inria/gaussian-splatting.git",
+    "graphdeco-inria/gaussian-splatting",
+}
+
+
+def find_enclosing_git_repo(path: str) -> Optional[str]:
+    """Traverses upward from path to locate an enclosing directory containing .git."""
+    curr = os.path.abspath(path)
+    if os.path.isfile(curr):
+        curr = os.path.dirname(curr)
+    while True:
+        if os.path.isdir(os.path.join(curr, ".git")) or os.path.isfile(os.path.join(curr, ".git")):
+            return curr
+        parent = os.path.dirname(curr)
+        if parent == curr:
+            break
+        curr = parent
+    return None
+
+
+def get_allowed_graphdeco_remotes() -> Set[str]:
+    """Retrieves allowed upstream Graphdeco git remotes, respecting environment overrides."""
+    custom = os.environ.get("HETTETY_GRAPHDECO_ALLOWED_REMOTES")
+    if custom:
+        return {r.strip().lower() for r in custom.split(",") if r.strip()}
+    return {r.lower() for r in DEFAULT_ALLOWED_GRAPHDECO_REMOTES}
+
+
+def validate_graphdeco_runner_provenance(
+    script_path: Optional[str],
+    allowed_remotes: Optional[Set[str]] = None,
+    allowed_commits: Optional[Set[str]] = None,
+    return_details: bool = False
+) -> Any:
     """
-    Validates that a training runner script is an authentic official Graphdeco
-    3D Gaussian Splatting implementation.
-    Checks AST / token signatures for official Graphdeco structures:
-      - Scene and GaussianModel abstractions
-      - gaussian_renderer rendering interfaces
-      - iteration and spherical harmonics degrees parameters
-    Strictly rejects dummy scripts, wrappers, or mock implementations.
+    Authoritative Git Provenance and Supply Chain Verification for Graphdeco 3DGS runner:
+    1. Validates script exists, is named 'train.py', and resides inside an enclosing Git repository (.git).
+    2. Verifies the git remote matches an approved official upstream repository (graphdeco-inria/gaussian-splatting).
+    3. Records the checked-out commit SHA and repository version.
+    4. Proves train.py matches the HEAD tree object without uncommitted modifications (git status & hash-object).
+    5. Validates official repository directory structure (scene, gaussian_renderer).
+    6. Strictly rejects modified, arbitrary, dummy, or unknown sources.
+
+    Returns (is_valid, reason) or (is_valid, reason, provenance_details) if return_details is True.
     """
+    details: Dict[str, Any] = {
+        "verified": False,
+        "script_path": script_path,
+        "repo_root": None,
+        "remote_url": None,
+        "commit_sha": None,
+        "blob_sha": None,
+        "is_clean": False,
+    }
+
     if not script_path or not os.path.isfile(script_path):
-        return False, "Script path is empty or file does not exist on disk."
+        reason = "PROVENANCE_REJECTED: Script path is empty or file does not exist on disk."
+        return (False, reason, details) if return_details else (False, reason)
 
     if os.path.basename(script_path) != "train.py":
-        return False, f"Filename must be 'train.py', got '{os.path.basename(script_path)}'."
+        reason = f"PROVENANCE_REJECTED: Filename must be 'train.py', got '{os.path.basename(script_path)}'."
+        return (False, reason, details) if return_details else (False, reason)
 
+    # 1. Enclosing Git Repository Verification
+    repo_root = find_enclosing_git_repo(script_path)
+    if not repo_root:
+        reason = f"PROVENANCE_REJECTED: Script '{script_path}' does not reside in an enclosing Git repository (missing .git)."
+        return (False, reason, details) if return_details else (False, reason)
+
+    details["repo_root"] = repo_root
+
+    # 2. Remote URL Verification
+    approved_remotes = allowed_remotes or get_allowed_graphdeco_remotes()
+    try:
+        res_remote = subprocess.run(
+            ["git", "-C", repo_root, "remote", "-v"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=5
+        )
+        remote_output = res_remote.stdout.strip().lower()
+        if not remote_output:
+            reason = f"PROVENANCE_REJECTED: Repository at '{repo_root}' has no configured git remotes."
+            return (False, reason, details) if return_details else (False, reason)
+
+        matched_remote = None
+        for cand in approved_remotes:
+            if cand in remote_output:
+                matched_remote = cand
+                break
+
+        if not matched_remote:
+            reason = (
+                f"PROVENANCE_REJECTED: Repository remote at '{repo_root}' is not in approved Graphdeco remotes. "
+                f"Configured: {remote_output[:200]}... Required: {sorted(list(approved_remotes))}"
+            )
+            return (False, reason, details) if return_details else (False, reason)
+
+        details["remote_url"] = matched_remote
+    except Exception as e:
+        reason = f"PROVENANCE_REJECTED: Failed to inspect git remotes at '{repo_root}': {e}"
+        return (False, reason, details) if return_details else (False, reason)
+
+    # 3. Commit SHA extraction & verification
+    try:
+        res_rev = subprocess.run(
+            ["git", "-C", repo_root, "rev-parse", "HEAD"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=5
+        )
+        commit_sha = res_rev.stdout.strip()
+        if len(commit_sha) != 40 or not all(c in "0123456789abcdefABCDEF" for c in commit_sha):
+            reason = f"PROVENANCE_REJECTED: Invalid or corrupt git commit SHA at '{repo_root}': {commit_sha}"
+            return (False, reason, details) if return_details else (False, reason)
+
+        details["commit_sha"] = commit_sha
+
+        # Configurable allowed commit list verification
+        env_allowed_commits = os.environ.get("HETTETY_GRAPHDECO_ALLOWED_COMMITS")
+        target_allowed_commits = allowed_commits or ({c.strip().lower() for c in env_allowed_commits.split(",") if c.strip()} if env_allowed_commits else None)
+        if target_allowed_commits and commit_sha.lower() not in target_allowed_commits:
+            reason = f"PROVENANCE_REJECTED: Commit '{commit_sha}' is not in approved Graphdeco commit whitelist."
+            return (False, reason, details) if return_details else (False, reason)
+    except Exception as e:
+        reason = f"PROVENANCE_REJECTED: Failed to resolve git commit SHA: {e}"
+        return (False, reason, details) if return_details else (False, reason)
+
+    # 4. Working Tree Cleanliness & Blob Hash Verification
+    try:
+        rel_script = os.path.relpath(script_path, repo_root)
+        res_status = subprocess.run(
+            ["git", "-C", repo_root, "status", "--porcelain", rel_script],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=5
+        )
+        status_out = res_status.stdout.strip()
+        if status_out:
+            reason = f"PROVENANCE_REJECTED: '{rel_script}' contains uncommitted local modifications ({status_out})."
+            return (False, reason, details) if return_details else (False, reason)
+
+        details["is_clean"] = True
+
+        res_hash = subprocess.run(
+            ["git", "-C", repo_root, "hash-object", rel_script],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=5
+        )
+        blob_sha = res_hash.stdout.strip()
+        details["blob_sha"] = blob_sha
+    except Exception as e:
+        reason = f"PROVENANCE_REJECTED: Failed to verify git object hashes: {e}"
+        return (False, reason, details) if return_details else (False, reason)
+
+    # 5. Directory structure & source code verification
+    has_scene_dir = os.path.isdir(os.path.join(repo_root, "scene"))
+    has_renderer_dir = os.path.isdir(os.path.join(repo_root, "gaussian_renderer"))
+    if not (has_scene_dir and has_renderer_dir):
+        reason = "PROVENANCE_REJECTED: Repository lacks official Graphdeco directory structure (scene, gaussian_renderer)."
+        return (False, reason, details) if return_details else (False, reason)
+
+    # 6. Content signature verification
     try:
         with open(script_path, "r", encoding="utf-8", errors="ignore") as f:
-            code = f.read(131072)
-
-        required_patterns = [
-            re.compile(r"(from\s+scene\s+import|import\s+scene|Scene|GaussianModel)"),
-            re.compile(r"(from\s+gaussian_renderer\s+import|gaussian_renderer|render)"),
-            re.compile(r"(iterations|sh_degree|opt\.(iterations|densify_until_iter)|GaussianModel)"),
-        ]
-
-        matches = [bool(p.search(code)) for p in required_patterns]
-        if sum(matches) >= 2:
-            return True, "Authentic Graphdeco 3DGS signatures verified."
-        else:
-            return False, "Script lacks official Graphdeco 3DGS signatures (Scene, GaussianModel, gaussian_renderer)."
+            code = f.read(65536)
+        if "GaussianModel" not in code or "render" not in code:
+            reason = "PROVENANCE_REJECTED: train.py lacks official Graphdeco symbol definitions (GaussianModel, render)."
+            return (False, reason, details) if return_details else (False, reason)
     except Exception as e:
-        return False, f"Failed to read or parse script: {e}"
+        reason = f"PROVENANCE_REJECTED: Failed reading train.py content: {e}"
+        return (False, reason, details) if return_details else (False, reason)
+
+    details["verified"] = True
+    msg = f"Authentic official Graphdeco 3DGS repository verified at commit {commit_sha} ({details['remote_url']})."
+    return (True, msg, details) if return_details else (True, msg)
 
 
 def validate_gaussian_ply_schema(ply_path: str) -> Dict[str, Any]:

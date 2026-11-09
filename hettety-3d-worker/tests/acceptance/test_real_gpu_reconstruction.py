@@ -35,7 +35,7 @@ from typing import Dict, Any, Optional, Tuple, List
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
 
 from pipeline.validate import validate_keyframes
-from pipeline.colmap import run_sfm, run_dense_stereo, is_colmap_available, exec_colmap
+from pipeline.colmap import run_sfm, run_dense_stereo, _generate_test_fixture_dense, is_colmap_available, exec_colmap, extract_ply_vertex_count, validate_reprojection_metric
 from pipeline.train import (
     run_gaussian_training,
     resolve_graphdeco_script_path,
@@ -523,10 +523,151 @@ class TestRealReconstructionStrictGuards(unittest.TestCase):
         degraded_rmse = 0.082
         self.assertGreater(degraded_rmse, profile_marassi["max_holdout_rmse"])
 
+    def test_dense_mvs_return_schema_and_ply_count_extraction(self):
+        """
+        Defect 1 Verification: Proves that PLY vertex count extraction strictly parses
+        real PLY headers, rejects malformed point clouds, and dense stereo returns dense_point_count.
+        """
+        # Valid ASCII PLY
+        ascii_ply = os.path.join(self.temp_dir, "test_dense_ascii.ply")
+        with open(ascii_ply, "w", encoding="ascii") as f:
+            f.write("ply\nformat ascii 1.0\nelement vertex 42\nproperty float x\nproperty float y\nproperty float z\nend_header\n")
+            for i in range(42):
+                f.write(f"{i} {i} {i}\n")
+
+        count_ascii = extract_ply_vertex_count(ascii_ply)
+        self.assertEqual(count_ascii, 42)
+
+        # Valid binary PLY
+        binary_ply = os.path.join(self.temp_dir, "test_dense_binary.ply")
+        with open(binary_ply, "wb") as f:
+            f.write(b"ply\nformat binary_little_endian 1.0\nelement vertex 150\nproperty float x\nproperty float y\nproperty float z\nend_header\n" + b"\x00" * (150 * 12))
+
+        count_bin = extract_ply_vertex_count(binary_ply)
+        self.assertEqual(count_bin, 150)
+
+        # Malformed: missing format
+        bad_fmt_ply = os.path.join(self.temp_dir, "bad_fmt.ply")
+        with open(bad_fmt_ply, "w") as f:
+            f.write("ply\nelement vertex 10\nend_header\n" + "0 0 0\n" * 10)
+        with self.assertRaises(ValueError) as ctx:
+            extract_ply_vertex_count(bad_fmt_ply)
+        self.assertIn("format", str(ctx.exception).lower())
+
+        # Malformed: truncated / too small (< 100 bytes)
+        trunc_ply = os.path.join(self.temp_dir, "trunc.ply")
+        with open(trunc_ply, "w") as f:
+            f.write("ply\nformat ascii 1.0\nelement vertex 10\n")
+        with self.assertRaises(ValueError) as ctx:
+            extract_ply_vertex_count(trunc_ply)
+        self.assertIn("truncated or too small", str(ctx.exception))
+
+        # Malformed: zero vertex count with full header
+        zero_ply = os.path.join(self.temp_dir, "zero.ply")
+        with open(zero_ply, "w") as f:
+            f.write("ply\nformat ascii 1.0\ncomment " + "padding_" * 20 + "\nelement vertex 0\nend_header\n")
+        with self.assertRaises(ValueError) as ctx:
+            extract_ply_vertex_count(zero_ply)
+        self.assertIn("must be > 0", str(ctx.exception))
+
+        # Contract verification on dense test fixture
+        fake_sparse = os.path.join(self.temp_dir, "fake_sparse")
+        os.makedirs(fake_sparse, exist_ok=True)
+        with open(os.path.join(fake_sparse, "points3D.txt"), "w") as f:
+            f.write("1 0.1 0.2 0.3 255 0 0 0.1\n2 0.4 0.5 0.6 0 255 0 0.2\n")
+
+        dense_out = os.path.join(self.temp_dir, "out_dense_test")
+        dense_res = _generate_test_fixture_dense(fake_sparse, dense_out)
+        self.assertTrue(dense_res["success"])
+        self.assertIn("dense_point_count", dense_res)
+        self.assertEqual(dense_res["dense_point_count"], 2)
+        self.assertEqual(extract_ply_vertex_count(dense_res["fused_ply"]), 2)
+
+    def test_splat_optimizer_interface_supports_opacity_threshold_and_min_opacity(self):
+        """
+        Defect 2 Verification: Proves that optimize_splat_cloud accepts opacity_threshold
+        as passed by the acceptance pipeline, as well as min_opacity, and prunes floaters.
+        """
+        import struct
+        raw_ply = os.path.join(self.temp_dir, "raw_for_opt.ply")
+        with open(raw_ply, "wb") as f:
+            f.write(
+                b"ply\nformat binary_little_endian 1.0\n"
+                b"element vertex 12\n"
+                b"property float x\nproperty float y\nproperty float z\n"
+                b"property float opacity\n"
+                b"property float scale_0\nproperty float scale_1\nproperty float scale_2\n"
+                b"property float rot_0\nproperty float rot_1\nproperty float rot_2\nproperty float rot_3\n"
+                b"end_header\n"
+            )
+            # 10 valid Gaussians (raw_op = 2.0 -> sigmoid = 0.88 > 0.01)
+            for i in range(10):
+                f.write(struct.pack("<fff f fff ffff", float(i), float(i), float(i), 2.0, -1.0, -1.0, -1.0, 1.0, 0.0, 0.0, 0.0))
+            # 2 low-opacity floaters (raw_op = -8.0 -> sigmoid = 0.0003 < 0.01)
+            for i in range(2):
+                f.write(struct.pack("<fff f fff ffff", float(i), float(i), float(i), -8.0, -1.0, -1.0, -1.0, 1.0, 0.0, 0.0, 0.0))
+
+        # Call with opacity_threshold (exact acceptance caller argument)
+        out_ply_1 = os.path.join(self.temp_dir, "opt_thresh.ply")
+        res1 = optimize_splat_cloud(raw_ply, out_ply_1, opacity_threshold=0.01)
+        self.assertTrue(res1["success"])
+        self.assertEqual(res1["splat_count"], 10)
+        self.assertEqual(res1["floaters_pruned"], 2)
+
+        # Call with min_opacity
+        out_ply_2 = os.path.join(self.temp_dir, "opt_min.ply")
+        res2 = optimize_splat_cloud(raw_ply, out_ply_2, min_opacity=0.01)
+        self.assertTrue(res2["success"])
+        self.assertEqual(res2["splat_count"], 10)
+        self.assertEqual(res2["floaters_pruned"], 2)
+
+    def test_reprojection_metric_validation_gates(self):
+        """
+        Defect 4 Verification: Proves that validate_reprojection_metric strictly
+        rejects missing (None), zero (0.0), non-finite (NaN, Inf), and excessive errors.
+        """
+        import math
+        threshold = 1.80
+
+        # None -> rejected
+        ok, reason = validate_reprojection_metric(None, threshold)
+        self.assertFalse(ok)
+        self.assertIn("REPROJECTION_ERROR_MISSING", reason)
+
+        # 0.0 -> rejected (unmeasured / failed triangulation error)
+        ok, reason = validate_reprojection_metric(0.0, threshold)
+        self.assertFalse(ok)
+        self.assertIn("REPROJECTION_ERROR_UNMEASURED", reason)
+
+        # -0.5 -> rejected
+        ok, reason = validate_reprojection_metric(-0.5, threshold)
+        self.assertFalse(ok)
+        self.assertIn("REPROJECTION_ERROR_UNMEASURED", reason)
+
+        # NaN -> rejected
+        ok, reason = validate_reprojection_metric(float("nan"), threshold)
+        self.assertFalse(ok)
+        self.assertIn("REPROJECTION_ERROR_INVALID", reason)
+
+        # Inf -> rejected
+        ok, reason = validate_reprojection_metric(float("inf"), threshold)
+        self.assertFalse(ok)
+        self.assertIn("REPROJECTION_ERROR_INVALID", reason)
+
+        # Excessive error (2.45px > 1.80px) -> rejected
+        ok, reason = validate_reprojection_metric(2.45, threshold)
+        self.assertFalse(ok)
+        self.assertIn("REPROJECTION_ERROR_EXCEEDED", reason)
+
+        # Valid measurement within gate (0.92px <= 1.80px) -> approved
+        ok, reason = validate_reprojection_metric(0.92, threshold)
+        self.assertTrue(ok)
+        self.assertIn("satisfies gate", reason)
+
     def test_graphdeco_provenance_validation(self):
         """
-        Defect D Verification: Proves that arbitrary scripts without official
-        Graphdeco signatures are rejected, while authentic Graphdeco code is verified.
+        Defect 3 Verification: Proves that git provenance verification strictly enforces
+        official upstream repository identity, commit recording, and clean working tree.
         """
         # Case 1: Wrong filename
         wrong_name_script = os.path.join(self.temp_dir, "not_train.py")
@@ -536,28 +677,65 @@ class TestRealReconstructionStrictGuards(unittest.TestCase):
         self.assertFalse(valid_name)
         self.assertIn("Filename must be 'train.py'", reason_name)
 
-        # Case 2: Named train.py but lacks Graphdeco signatures
-        fake_repo_dir = os.path.join(self.temp_dir, "fake_graphdeco")
-        os.makedirs(fake_repo_dir, exist_ok=True)
-        dummy_script = os.path.join(fake_repo_dir, "train.py")
+        # Case 2: Named train.py but lacks enclosing git repository
+        no_git_dir = os.path.join(self.temp_dir, "no_git_repo")
+        os.makedirs(no_git_dir, exist_ok=True)
+        dummy_script = os.path.join(no_git_dir, "train.py")
         with open(dummy_script, "w") as f:
-            f.write("# Dummy script with no Graphdeco code\nprint('hello world')\n")
-        valid, reason = validate_graphdeco_runner_provenance(dummy_script)
-        self.assertFalse(valid)
-        self.assertIn("lacks official Graphdeco", reason)
+            f.write("from scene import Scene, GaussianModel\nfrom gaussian_renderer import render\nGaussianModel()\n")
+        valid_nogit, reason_nogit = validate_graphdeco_runner_provenance(dummy_script)
+        self.assertFalse(valid_nogit)
+        self.assertIn("missing .git", reason_nogit)
 
-        # Case 3: Authentic Graphdeco signatures
-        real_script = os.path.join(self.temp_dir, "train.py")
-        with open(real_script, "w") as f:
-            f.write(
-                "from scene import Scene, GaussianModel\n"
-                "from gaussian_renderer import render\n"
-                "def training(dataset, opt, pipe, testing_iterations, saving_iterations):\n"
-                "    gaussians = GaussianModel(dataset.sh_degree)\n"
-            )
-        valid_real, reason_real = validate_graphdeco_runner_provenance(real_script)
-        self.assertTrue(valid_real)
-        self.assertIn("Authentic Graphdeco", reason_real)
+        # Case 3: Git repo with unapproved remote URL
+        unapproved_dir = os.path.join(self.temp_dir, "unapproved_repo")
+        os.makedirs(unapproved_dir, exist_ok=True)
+        subprocess.run(["git", "init"], cwd=unapproved_dir, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        subprocess.run(["git", "config", "user.name", "Tester"], cwd=unapproved_dir, check=True)
+        subprocess.run(["git", "config", "user.email", "tester@test.com"], cwd=unapproved_dir, check=True)
+        subprocess.run(["git", "remote", "add", "origin", "https://github.com/attacker/fake-gaussian-splatting"], cwd=unapproved_dir, check=True)
+        os.makedirs(os.path.join(unapproved_dir, "scene"), exist_ok=True)
+        os.makedirs(os.path.join(unapproved_dir, "gaussian_renderer"), exist_ok=True)
+        unapproved_script = os.path.join(unapproved_dir, "train.py")
+        with open(unapproved_script, "w") as f:
+            f.write("from scene import Scene, GaussianModel\nfrom gaussian_renderer import render\nGaussianModel()\n")
+        subprocess.run(["git", "add", "."], cwd=unapproved_dir, check=True)
+        subprocess.run(["git", "commit", "-m", "init"], cwd=unapproved_dir, check=True)
+
+        valid_unapp, reason_unapp = validate_graphdeco_runner_provenance(unapproved_script)
+        self.assertFalse(valid_unapp)
+        self.assertIn("not in approved Graphdeco remotes", reason_unapp)
+
+        # Case 4: Git repo with official remote but uncommitted modifications
+        official_mock_dir = os.path.join(self.temp_dir, "official_mock_repo")
+        os.makedirs(official_mock_dir, exist_ok=True)
+        subprocess.run(["git", "init"], cwd=official_mock_dir, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        subprocess.run(["git", "config", "user.name", "Tester"], cwd=official_mock_dir, check=True)
+        subprocess.run(["git", "config", "user.email", "tester@test.com"], cwd=official_mock_dir, check=True)
+        subprocess.run(["git", "remote", "add", "origin", "https://github.com/graphdeco-inria/gaussian-splatting"], cwd=official_mock_dir, check=True)
+        os.makedirs(os.path.join(official_mock_dir, "scene"), exist_ok=True)
+        os.makedirs(os.path.join(official_mock_dir, "gaussian_renderer"), exist_ok=True)
+        official_script = os.path.join(official_mock_dir, "train.py")
+        with open(official_script, "w") as f:
+            f.write("from scene import Scene, GaussianModel\nfrom gaussian_renderer import render\nGaussianModel()\n")
+        subprocess.run(["git", "add", "."], cwd=official_mock_dir, check=True)
+        subprocess.run(["git", "commit", "-m", "Official release commit"], cwd=official_mock_dir, check=True)
+
+        # Modify script without committing
+        with open(official_script, "a") as f:
+            f.write("# Modified local code\n")
+
+        valid_mod, reason_mod = validate_graphdeco_runner_provenance(official_script)
+        self.assertFalse(valid_mod)
+        self.assertIn("uncommitted local modifications", reason_mod)
+
+        # Case 5: Clean official repository
+        subprocess.run(["git", "checkout", "--", "train.py"], cwd=official_mock_dir, check=True)
+        valid_clean, reason_clean, details_clean = validate_graphdeco_runner_provenance(official_script, return_details=True)
+        self.assertTrue(valid_clean)
+        self.assertIn("Authentic official Graphdeco", reason_clean)
+        self.assertEqual(len(details_clean["commit_sha"]), 40)
+        self.assertTrue(details_clean["is_clean"])
 
     def test_gaussian_ply_schema_validation(self):
         """
@@ -759,9 +937,9 @@ class TestRealGPUPipelineAcceptance(unittest.TestCase):
             self.assertTrue(sfm_res["success"], f"Real COLMAP SfM failed: {sfm_res}")
             self.assertGreaterEqual(sfm_res["registered_images"], profile["min_registered_cameras"], f"SfM registered fewer cameras than required by profile {profile['min_registered_cameras']}")
             self.assertGreaterEqual(sfm_res["points_count"], profile["min_sparse_points"])
-            mean_reproj = sfm_res.get("mean_reprojection_error", 0.0)
-            if mean_reproj > 0.0:
-                self.assertLessEqual(mean_reproj, profile["max_reprojection_error"], f"Reprojection error {mean_reproj} exceeds threshold {profile['max_reprojection_error']}")
+            mean_reproj = sfm_res.get("mean_reprojection_error")
+            is_valid_reproj, reproj_msg = validate_reprojection_metric(mean_reproj, profile["max_reprojection_error"])
+            self.assertTrue(is_valid_reproj, f"COLMAP reprojection error gate failed: {reproj_msg}")
             evidence["stages"]["SFM"] = {
                 "durationSec": round(time.time() - t1, 2),
                 "registeredImages": sfm_res["registered_images"],
@@ -908,9 +1086,16 @@ class TestRealGPUPipelineAcceptance(unittest.TestCase):
                 "trained_ply": {"path": trained_ply, "sizeBytes": os.path.getsize(trained_ply)},
                 "optimized_ply": {"path": opt_ply, "sizeBytes": os.path.getsize(opt_ply)},
                 "metric_ply": {"path": metric_ply, "sizeBytes": os.path.getsize(metric_ply)},
+                "dense_ply": {"path": dense_res["fused_ply"], "sizeBytes": os.path.getsize(dense_res["fused_ply"])},
                 "sparse_sfm": {"path": sfm_out},
                 "calibration": {"scaleFactor": scale_k, "holdoutRmse": eval_res["rmse"]}
             }
+            colmap_log = os.path.join(self.temp_dir, "colmap.log")
+            if os.path.exists(colmap_log):
+                raw_artifacts["colmap_log"] = {"path": colmap_log, "sizeBytes": os.path.getsize(colmap_log)}
+            training_log = os.path.join(model_out, "training_stdout.log")
+            if os.path.exists(training_log):
+                raw_artifacts["training_log"] = {"path": training_log, "sizeBytes": os.path.getsize(training_log)}
             retained_manifest = retain_deliverables(
                 run_id=self.run_id,
                 source_artifacts=raw_artifacts,

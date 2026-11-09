@@ -71,7 +71,7 @@ jobs:
         if: always()
         run: |
           python -c "
-          import os, json, sys
+          import os, json, sys, hashlib
           evidence_dir = os.environ.get('HETTETY_ACCEPTANCE_EVIDENCE_DIR', 'artifacts/acceptance_evidence')
           evidence_file = os.path.join(evidence_dir, 'acceptance_evidence.json')
           if not os.path.exists(evidence_file):
@@ -94,7 +94,7 @@ jobs:
                   print(f'CRITICAL_FAILURE: Criterion \"{crit_name}\" is not PASSED: {crit_data}')
                   sys.exit(1)
 
-          # Defect A: Verify persistent retained 3D deliverables exist on disk and are non-empty
+          # Defect A & 5: Verify persistent retained 3D deliverables exist on disk, are non-empty, and verify SHA-256
           artifacts = ev.get('artifacts', {})
           for key, art_meta in artifacts.items():
               if isinstance(art_meta, dict) and 'path' in art_meta:
@@ -105,7 +105,17 @@ jobs:
                   if os.path.getsize(p) == 0:
                       print(f'CRITICAL_FAILURE: Retained artifact \"{key}\" is empty at \"{p}\"!')
                       sys.exit(1)
-          print('All acceptance criteria and retained 3D deliverables verified successfully.')
+                  expected_sha = art_meta.get('sha256')
+                  if expected_sha and not art_meta.get('isDirectory'):
+                      hasher = hashlib.sha256()
+                      with open(p, 'rb') as f:
+                          while chunk := f.read(65536):
+                              hasher.update(chunk)
+                      actual_sha = hasher.hexdigest()
+                      if actual_sha != expected_sha:
+                          print(f'CRITICAL_FAILURE: Hash mismatch on \"{key}\": expected {expected_sha}, got {actual_sha}!')
+                          sys.exit(1)
+          print('All acceptance criteria and retained 3D deliverables verified successfully with matching SHA-256 checksums.')
           "
 
       - name: Archive Machine-Readable Acceptance Evidence & 3D Deliverables

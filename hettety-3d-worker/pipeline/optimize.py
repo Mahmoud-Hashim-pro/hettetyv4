@@ -10,7 +10,7 @@ import re
 import math
 import struct
 import logging
-from typing import Dict, Any, Tuple, List
+from typing import Dict, Any, Tuple, List, Optional
 
 logger = logging.getLogger("hettety-3d-worker.optimize")
 
@@ -147,17 +147,23 @@ def optimize_splat_cloud(
     input_ply: str,
     output_ply: str,
     min_opacity: float = 0.05,
-    max_scale: float = 2.5
+    max_scale: float = 2.5,
+    opacity_threshold: Optional[float] = None
 ) -> Dict[str, Any]:
     """
     Genuine Gaussian Splatting post-processing & floater pruning engine:
     1. Parses PLY schema and dynamic attribute offsets.
-    2. Prunes low-opacity floaters (opacity < min_opacity).
+    2. Prunes low-opacity floaters (opacity < min_opacity or opacity_threshold).
     3. Prunes degenerate oversized splats (scale > max_scale).
     4. Eliminates non-finite coordinates (NaN / Inf).
     5. Computes exact bounding box from surviving pruned geometry.
     6. Updates PLY header with exact surviving vertex count.
+
+    Backward compatibility:
+    - opacity_threshold: maps directly to min_opacity if provided.
     """
+    if opacity_threshold is not None:
+        min_opacity = opacity_threshold
     if not os.path.exists(input_ply):
         return {
             "success": False,

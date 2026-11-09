@@ -6,6 +6,8 @@ Optimizes matching strategy: sequential for video captures, exhaustive for <=50 
 
 import subprocess
 import os
+import re
+import math
 import shutil
 import logging
 from typing import Optional, Tuple, Dict, Any, List, Callable
@@ -497,6 +499,7 @@ def _generate_test_fixture_dense(sparse_dir: str, dense_dir: str) -> Dict[str, A
         "success": True,
         "fused_ply": fused_ply,
         "dense_dir": dense_dir,
+        "dense_point_count": len(points),
         "size_bytes": os.path.getsize(fused_ply)
     }
 
@@ -662,6 +665,64 @@ def run_sfm(
         **metrics
     })
 
+
+
+def extract_ply_vertex_count(ply_path: str) -> int:
+    """
+    Extracts the actual declared vertex count from a binary or ASCII PLY header.
+    Rejects malformed, truncated, or empty point clouds.
+    """
+    if not os.path.exists(ply_path) or not os.path.isfile(ply_path):
+        raise FileNotFoundError(f"PLY file does not exist: {ply_path}")
+
+    file_size = os.path.getsize(ply_path)
+    if file_size < 100:
+        raise ValueError(f"PLY file is truncated or too small ({file_size} bytes)")
+
+    with open(ply_path, "rb") as f:
+        header_bytes = f.read(8192)
+
+    header_end_idx = header_bytes.find(b"end_header")
+    if header_end_idx == -1:
+        raise ValueError("Invalid PLY file: 'end_header' tag not found in initial 8KB.")
+
+    header_text = header_bytes[:header_end_idx].decode("ascii", errors="ignore")
+
+    # Format check
+    if not any(fmt in header_text for fmt in ["format binary_little_endian", "format binary_big_endian", "format ascii"]):
+        raise ValueError("Invalid PLY file: missing or unrecognized format declaration.")
+
+    vertex_match = re.search(r"element\s+vertex\s+(\d+)", header_text)
+    if not vertex_match:
+        raise ValueError("Invalid PLY file: missing 'element vertex <count>' in header.")
+
+    count = int(vertex_match.group(1))
+    if count <= 0:
+        raise ValueError(f"Invalid PLY file: declared vertex count is {count} (must be > 0).")
+
+    return count
+
+
+def validate_reprojection_metric(mean_reproj: Any, max_threshold: float) -> Tuple[bool, str]:
+    """
+    Strictly validates that the COLMAP mean reprojection error is:
+    1. Present (not None).
+    2. Finite numeric float/int (not NaN or Inf).
+    3. Strictly positive (> 0.0px, since real photogrammetric triangulation always has non-zero error).
+    4. Within the selected dataset's quality profile threshold (<= max_threshold).
+    """
+    if mean_reproj is None:
+        return False, "REPROJECTION_ERROR_MISSING: Mean reprojection error is not recorded."
+    if not isinstance(mean_reproj, (int, float)):
+        return False, f"REPROJECTION_ERROR_INVALID: Value must be numeric, got {type(mean_reproj)}."
+    if not math.isfinite(mean_reproj):
+        return False, f"REPROJECTION_ERROR_INVALID: Value is not finite ({mean_reproj})."
+    if mean_reproj <= 0.0:
+        return False, f"REPROJECTION_ERROR_UNMEASURED: Value is {mean_reproj} <= 0.0 (error must be strictly positive and measurable)."
+    if mean_reproj > max_threshold:
+        return False, f"REPROJECTION_ERROR_EXCEEDED: Value {mean_reproj:.3f}px exceeds dataset threshold {max_threshold:.3f}px."
+    return True, f"Reprojection error {mean_reproj:.3f}px satisfies gate <= {max_threshold:.3f}px."
+
 def run_dense_stereo(
     sparse_dir: str,
     image_dir: str,
@@ -754,11 +815,22 @@ def run_dense_stereo(
                 "message": "COLMAP stereo fusion produced an empty or missing fused.ply point cloud."
             }
 
-        logger.info(f"Dense stereo reconstruction completed successfully: {fused_ply} ({os.path.getsize(fused_ply)} bytes)")
+        try:
+            dense_point_count = extract_ply_vertex_count(fused_ply)
+        except Exception as e:
+            logger.error(f"Failed to parse dense fused.ply vertex count: {e}")
+            return {
+                "success": False,
+                "error_code": "INVALID_DENSE_PLY",
+                "message": f"COLMAP stereo fusion produced an invalid or unparseable fused.ply: {e}"
+            }
+
+        logger.info(f"Dense stereo reconstruction completed successfully: {fused_ply} ({dense_point_count} vertices, {os.path.getsize(fused_ply)} bytes)")
         return {
             "success": True,
             "fused_ply": fused_ply,
             "dense_dir": dense_dir,
+            "dense_point_count": dense_point_count,
             "size_bytes": os.path.getsize(fused_ply)
         }
 

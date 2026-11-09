@@ -19,6 +19,22 @@ class JobCancelledException(Exception):
     """Raised when a managed subprocess is terminated due to an explicit cancellation signal."""
     pass
 
+
+class LogPersistenceError(RuntimeError):
+    """
+    Raised when a managed subprocess completes (or finishes without an unhandled error)
+    but its required execution log file cannot be persisted to disk.
+    Preserves the full CompletedProcess object, stdout, stderr, and return code.
+    """
+    def __init__(self, message: str, completed_process: subprocess.CompletedProcess):
+        super().__init__(message)
+        self.completed_process = completed_process
+        self.cmd = completed_process.args
+        self.returncode = completed_process.returncode
+        self.stdout = completed_process.stdout
+        self.stderr = completed_process.stderr
+        self.output = completed_process.stdout
+
 _PROCESS_LOCK = threading.Lock()
 ACTIVE_PROCESSES: Set[subprocess.Popen] = set()
 
@@ -121,9 +137,10 @@ def run_managed_process(
     stdout: Optional[bytes] = None
     stderr: Optional[bytes] = None
     _log_persisted = False
+    _log_error: Optional[Exception] = None
 
     def _persist_log():
-        nonlocal _log_persisted, stdout, stderr
+        nonlocal _log_persisted, _log_error, stdout, stderr
         if _log_persisted or not log_path:
             return
         try:
@@ -143,7 +160,9 @@ def run_managed_process(
                 exit_str = proc.returncode if proc.returncode is not None else "KILLED"
                 f.write(f"=== EXIT CODE: {exit_str} ===\n")
             _log_persisted = True
+            _log_error = None
         except Exception as ex:
+            _log_error = ex
             logger.warning(f"Failed writing process output log to '{log_path}': {ex}")
 
     try:
@@ -157,7 +176,10 @@ def run_managed_process(
                 except Exception:
                     pass
                 _persist_log()
-                raise JobCancelledException(f"Subprocess (PID {proc.pid}) was terminated due to job cancellation.")
+                cancel_err = JobCancelledException(f"Subprocess (PID {proc.pid}) was terminated due to job cancellation.")
+                if _log_error is not None:
+                    setattr(cancel_err, "log_error", _log_error)
+                raise cancel_err
 
             # 2. Check timeout
             if timeout and (time.time() - start_time) > timeout:
@@ -168,7 +190,10 @@ def run_managed_process(
                 except Exception:
                     pass
                 _persist_log()
-                raise subprocess.TimeoutExpired(cmd, timeout)
+                timeout_err = subprocess.TimeoutExpired(cmd, timeout, output=stdout, stderr=stderr)
+                if _log_error is not None:
+                    setattr(timeout_err, "log_error", _log_error)
+                raise timeout_err
 
             # 3. Read output chunks with timeout without blocking pipe buffer
             try:
@@ -183,9 +208,19 @@ def run_managed_process(
             err_msg = stderr.decode("utf-8", errors="ignore") if stderr else ""
             out_msg = stdout.decode("utf-8", errors="ignore") if stdout else ""
             logger.error(f"Managed process exited with code {proc.returncode}: {err_msg[:500]}")
-            raise subprocess.CalledProcessError(proc.returncode, cmd, output=stdout, stderr=stderr)
+            proc_err = subprocess.CalledProcessError(proc.returncode, cmd, output=stdout, stderr=stderr)
+            if _log_error is not None:
+                setattr(proc_err, "log_error", _log_error)
+            raise proc_err
 
-        return subprocess.CompletedProcess(cmd, proc.returncode, stdout, stderr)
+        completed = subprocess.CompletedProcess(cmd, proc.returncode, stdout, stderr)
+        if _log_error is not None:
+            raise LogPersistenceError(
+                f"Subprocess PID {proc.pid} exited with code {proc.returncode} but failed persisting required log to '{log_path}': {_log_error}",
+                completed_process=completed
+            )
+
+        return completed
 
     finally:
         try:

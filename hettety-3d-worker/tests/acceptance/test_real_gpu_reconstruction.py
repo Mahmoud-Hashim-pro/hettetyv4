@@ -1387,6 +1387,40 @@ class TestRealReconstructionStrictGuards(unittest.TestCase):
         except (OSError, NotImplementedError):
             pass
 
+        # 22. Security Boundary: forged top-level evidence_dir is rejected
+        m_forged_top = json.loads(json.dumps(base_manifest))
+        m_forged_top["evidence_dir"] = outside_dir
+        ok, errs = verify_retained_deliverables(m_forged_top, base_dir=evidence_dir)
+        self.assertFalse(ok)
+        self.assertTrue(any("SECURITY_VIOLATION: Evidence manifest evidence_dir" in e for e in errs))
+
+        # 23. Security Boundary: in-memory dictionary with no configured root fails closed
+        saved_ev_env = os.environ.pop("HETTETY_ACCEPTANCE_EVIDENCE_DIR", None)
+        try:
+            ok, errs = verify_retained_deliverables(m_valid_meta, base_dir=None)
+            self.assertFalse(ok)
+            self.assertTrue(any("In-memory evidence manifest missing explicit trusted root boundary" in e for e in errs))
+        finally:
+            if saved_ev_env is not None:
+                os.environ["HETTETY_ACCEPTANCE_EVIDENCE_DIR"] = saved_ev_env
+
+        # 24. Authoritative configured environment root permits valid artifacts
+        saved_ev_env = os.environ.get("HETTETY_ACCEPTANCE_EVIDENCE_DIR")
+        os.environ["HETTETY_ACCEPTANCE_EVIDENCE_DIR"] = evidence_dir
+        try:
+            ok, errs = verify_retained_deliverables(m_valid_meta, base_dir=None)
+            self.assertTrue(ok, f"Manifest should pass when HETTETY_ACCEPTANCE_EVIDENCE_DIR is configured: {errs}")
+
+            # 25. Forged top-level evidence_dir rejected even when environment root is configured
+            ok, errs = verify_retained_deliverables(m_forged_top, base_dir=None)
+            self.assertFalse(ok)
+            self.assertTrue(any("SECURITY_VIOLATION: Evidence manifest evidence_dir" in e for e in errs))
+        finally:
+            if saved_ev_env is not None:
+                os.environ["HETTETY_ACCEPTANCE_EVIDENCE_DIR"] = saved_ev_env
+            else:
+                os.environ.pop("HETTETY_ACCEPTANCE_EVIDENCE_DIR", None)
+
     def test_managed_process_persists_failure_cancellation_and_timeout_logs(self):
         """
         Task Verification: Proves that run_managed_process guarantees that available
@@ -1454,6 +1488,72 @@ class TestRealReconstructionStrictGuards(unittest.TestCase):
             timeout_content = f.read()
         self.assertIn("Pre-timeout message", timeout_content)
         self.assertIn("EXIT CODE:", timeout_content)
+
+    def test_managed_process_log_persistence_failure_explicit(self):
+        """
+        TASK 1 Verification: Proves that run_managed_process surfaces log persistence failures
+        as an explicit LogPersistenceError on successful process execution, while preserving
+        the primary subprocess exception (CalledProcessError, JobCancelledException, TimeoutExpired)
+        when process execution itself fails, attaching diagnostic log_error.
+        """
+        from pipeline.process_manager import run_managed_process, LogPersistenceError, JobCancelledException
+        import threading
+        import builtins
+        from unittest.mock import patch
+
+        real_open = builtins.open
+
+        def mock_open_unwritable(file, *args, **kwargs):
+            if "unwritable" in str(file):
+                raise PermissionError(f"Mocked Permission Denied on log write: {file}")
+            return real_open(file, *args, **kwargs)
+
+        success_cmd = [sys.executable, "-c", "print('Command executed cleanly', flush=True)"]
+        fail_cmd = [sys.executable, "-c", "import sys; print('Process failure', file=sys.stderr, flush=True); sys.exit(77)"]
+
+        # 1. Successful subprocess (returncode 0) with unwritable log_path raises LogPersistenceError
+        with patch("builtins.open", side_effect=mock_open_unwritable):
+            with self.assertRaises(LogPersistenceError) as ctx:
+                run_managed_process(success_cmd, log_path=os.path.join(self.temp_dir, "unwritable_success.log"), check=True)
+            self.assertEqual(ctx.exception.returncode, 0)
+            self.assertEqual(ctx.exception.completed_process.returncode, 0)
+            self.assertIn(b"Command executed cleanly", ctx.exception.stdout)
+            self.assertIn("failed persisting required log", str(ctx.exception))
+
+        # 2. Failed subprocess (returncode 77) with unwritable log_path preserves CalledProcessError
+        with patch("builtins.open", side_effect=mock_open_unwritable):
+            with self.assertRaises(subprocess.CalledProcessError) as ctx:
+                run_managed_process(fail_cmd, log_path=os.path.join(self.temp_dir, "unwritable_fail.log"), check=True)
+            self.assertEqual(ctx.exception.returncode, 77)
+            self.assertIsNotNone(getattr(ctx.exception, "log_error", None))
+            self.assertIsInstance(ctx.exception.log_error, PermissionError)
+
+        # 3. Cancelled subprocess with unwritable log_path preserves JobCancelledException
+        cancel_cmd = [sys.executable, "-c", "import time; print('Starting slow job', flush=True); time.sleep(10)"]
+        cancel_state = {"cancelled": False}
+        def cancel_check():
+            return cancel_state["cancelled"]
+
+        def delayed_cancel():
+            time.sleep(0.15)
+            cancel_state["cancelled"] = True
+
+        th = threading.Thread(target=delayed_cancel)
+        th.start()
+        with patch("builtins.open", side_effect=mock_open_unwritable):
+            with self.assertRaises(JobCancelledException) as ctx:
+                run_managed_process(cancel_cmd, log_path=os.path.join(self.temp_dir, "unwritable_cancel.log"), cancel_check=cancel_check, poll_interval=0.05)
+            self.assertIsNotNone(getattr(ctx.exception, "log_error", None))
+            self.assertIsInstance(ctx.exception.log_error, PermissionError)
+        th.join()
+
+        # 4. Timed out subprocess with unwritable log_path preserves TimeoutExpired
+        timeout_cmd = [sys.executable, "-c", "import time; time.sleep(10)"]
+        with patch("builtins.open", side_effect=mock_open_unwritable):
+            with self.assertRaises(subprocess.TimeoutExpired) as ctx:
+                run_managed_process(timeout_cmd, log_path=os.path.join(self.temp_dir, "unwritable_timeout.log"), timeout=0.25, poll_interval=0.05)
+            self.assertIsNotNone(getattr(ctx.exception, "log_error", None))
+            self.assertIsInstance(ctx.exception.log_error, PermissionError)
 
     def test_log_persistence_failure_surfaced_as_diagnostic_failure(self):
         """

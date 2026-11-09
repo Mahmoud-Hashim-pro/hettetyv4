@@ -463,17 +463,34 @@ def verify_retained_deliverables(
             if req not in artifacts:
                 errors.append(f"Retained evidence manifest is missing required deliverable '{req}'.")
 
-    # Determine the authoritative trusted evidence root boundary
+    # Authoritative trusted evidence root boundary determination:
+    # 1. Prefer explicit base_dir argument.
+    # 2. Otherwise for a JSON file path, use its containing directory.
+    # 3. Otherwise use trusted HETTETY_ACCEPTANCE_EVIDENCE_DIR from environment.
+    # 4. In-memory dictionary with no explicit base_dir and no configured environment root must FAIL CLOSED.
+    # NEVER trust evidence["evidence_dir"] as the root boundary.
+    trusted_root: Optional[str] = None
     if base_dir:
         trusted_root = os.path.realpath(os.path.abspath(base_dir))
     elif isinstance(evidence_json_or_dict, str):
         trusted_root = os.path.realpath(os.path.abspath(os.path.dirname(evidence_json_or_dict)))
     elif os.environ.get("HETTETY_ACCEPTANCE_EVIDENCE_DIR"):
         trusted_root = os.path.realpath(os.path.abspath(os.environ["HETTETY_ACCEPTANCE_EVIDENCE_DIR"]))
-    elif evidence.get("evidence_dir"):
-        trusted_root = os.path.realpath(os.path.abspath(evidence["evidence_dir"]))
-    else:
-        trusted_root = os.path.realpath(os.path.abspath(get_evidence_directory()))
+
+    if not trusted_root:
+        return False, ["SECURITY_VIOLATION: In-memory evidence manifest missing explicit trusted root boundary."]
+
+    # Top-level evidence_dir validation: if present in manifest, it MUST match trusted_root
+    manifest_ev_dir = evidence.get("evidence_dir")
+    if manifest_ev_dir is not None:
+        if not isinstance(manifest_ev_dir, str) or not manifest_ev_dir.strip():
+            errors.append("SECURITY_VIOLATION: Evidence manifest declares invalid 'evidence_dir'.")
+        else:
+            canonical_manifest_dir = os.path.realpath(os.path.abspath(manifest_ev_dir))
+            if os.path.normcase(canonical_manifest_dir) != os.path.normcase(trusted_root):
+                errors.append(
+                    f"SECURITY_VIOLATION: Evidence manifest evidence_dir '{manifest_ev_dir}' does not match trusted evidence root '{trusted_root}'."
+                )
 
     for key, art_meta in artifacts.items():
         if not isinstance(art_meta, dict):
@@ -498,15 +515,15 @@ def verify_retained_deliverables(
                 errors.append(f"SECURITY_VIOLATION: Deliverable '{key}' evidence_dir is invalid.")
                 continue
             canonical_meta_dir = os.path.realpath(os.path.abspath(meta_ev_dir))
-            if canonical_meta_dir != trusted_root:
+            if os.path.normcase(canonical_meta_dir) != os.path.normcase(trusted_root):
                 errors.append(
                     f"SECURITY_VIOLATION: Deliverable '{key}' evidence_dir '{meta_ev_dir}' does not match trusted evidence root '{trusted_root}'."
                 )
                 continue
 
         # Check deliverable path containment strictly inside trusted_root
-        if base_dir and not os.path.isabs(p):
-            resolved_p = os.path.join(base_dir, p)
+        if not os.path.isabs(p):
+            resolved_p = os.path.join(trusted_root, p)
         else:
             resolved_p = p
 
@@ -514,7 +531,7 @@ def verify_retained_deliverables(
 
         try:
             common = os.path.commonpath([trusted_root, canonical_p])
-            if common != trusted_root:
+            if os.path.normcase(common) != os.path.normcase(trusted_root):
                 errors.append(f"SECURITY_VIOLATION: Deliverable '{key}' path '{p}' escapes trusted evidence directory '{trusted_root}'.")
                 continue
         except Exception as ve:

@@ -36,7 +36,7 @@ ENV GAUSSIAN_SPLATTING_PATH=/opt/gaussian-splatting
 # Clone and pin verified 3D Gaussian Splatting repository
 RUN git clone --recursive https://github.com/graphdeco-inria/gaussian-splatting /opt/gaussian-splatting \
     && cd /opt/gaussian-splatting \
-    && git checkout 2eee0e26d2f1a00e1312e0145ac507fb0837fb4c \
+    && git checkout 54c035f7834b564019656c3e3fcc3646292f727d \
     && mkdir -p /app/submodules \
     && ln -s /opt/gaussian-splatting /app/submodules/gaussian-splatting
 

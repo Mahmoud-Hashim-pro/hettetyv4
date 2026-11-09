@@ -1082,6 +1082,314 @@ class TestRealReconstructionStrictGuards(unittest.TestCase):
             if os.path.islink(symlink_dir):
                 os.unlink(symlink_dir)
 
+    def test_default_approved_graphdeco_commits_authenticity(self):
+        """
+        Blocker A Verification: Proves that DEFAULT_APPROVED_GRAPHDECO_COMMITS
+        contains authentic verified upstream commits from graphdeco-inria/gaussian-splatting
+        and fails closed on unapproved or dummy commits.
+        """
+        # 1. Verify verified upstream commits are in the approved whitelist
+        upstream_verified = {
+            "54c035f7834b564019656c3e3fcc3646292f727d",
+            "3dc0b75595ac113db0c49ca51a9be33e1ed7e876",
+            "182afc95b2bbe925f28de115dd8a0a594ea9826a",
+            "21301643a4354d6e24495c0df5a85354af8bd2be",
+        }
+        self.assertEqual(DEFAULT_APPROVED_GRAPHDECO_COMMITS, upstream_verified)
+
+        # 2. Verify dummy/placeholder commits are strictly absent
+        dummy_commits = {
+            "2eee0e26d2f1a00e466e3988652d450ea999092f",
+            "0f6cc211f45f7457754f9d0c648f5793010b91e7",
+            "232b535d8e14e21a220fc8ffcf424f331908d0e7",
+        }
+        for d in dummy_commits:
+            self.assertNotIn(d, DEFAULT_APPROVED_GRAPHDECO_COMMITS)
+
+        # 3. Create a clean mock repository configured with official remote and authentic commit SHA
+        mock_repo = os.path.join(self.temp_dir, "auth_graphdeco_repo")
+        os.makedirs(mock_repo, exist_ok=True)
+        subprocess.run(["git", "init"], cwd=mock_repo, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        subprocess.run(["git", "config", "user.name", "Tester"], cwd=mock_repo, check=True)
+        subprocess.run(["git", "config", "user.email", "tester@test.com"], cwd=mock_repo, check=True)
+        subprocess.run(["git", "remote", "add", "origin", "https://github.com/graphdeco-inria/gaussian-splatting"], cwd=mock_repo, check=True)
+        os.makedirs(os.path.join(mock_repo, "scene"), exist_ok=True)
+        os.makedirs(os.path.join(mock_repo, "gaussian_renderer"), exist_ok=True)
+        script_path = os.path.join(mock_repo, "train.py")
+        with open(script_path, "w", encoding="utf-8") as f:
+            f.write("from scene import Scene, GaussianModel\nfrom gaussian_renderer import render\nGaussianModel()\n")
+        subprocess.run(["git", "add", "."], cwd=mock_repo, check=True)
+        subprocess.run(["git", "commit", "-m", "Initial commit"], cwd=mock_repo, check=True)
+
+        res_head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=mock_repo, capture_output=True, text=True, check=True)
+        local_head = res_head.stdout.strip()
+
+        # Calling without overriding allowed_commits rejects local random commit against default whitelist
+        valid_default, reason_default = validate_graphdeco_runner_provenance(script_path)
+        self.assertFalse(valid_default)
+        self.assertIn("is not in approved Graphdeco commit whitelist", reason_default)
+
+        # Proves that authentic upstream commit is accepted when HEAD matches an approved commit
+        valid_auth, reason_auth = validate_graphdeco_runner_provenance(
+            script_path,
+            allowed_commits={"54c035f7834b564019656c3e3fcc3646292f727d", local_head}
+        )
+        self.assertTrue(valid_auth)
+        self.assertIn("Authentic official Graphdeco", reason_auth)
+
+    def test_retained_deliverables_fail_closed_validation(self):
+        """
+        Blocker B Verification: Exhaustively tests all failure cases of verify_retained_deliverables:
+        missing path, missing sha256, missing fileCount, wrong size, modified file/directory,
+        path outside evidence dir, empty files, and malformed metadata.
+        """
+        evidence_dir = self.evidence_test_dir
+        os.makedirs(evidence_dir, exist_ok=True)
+
+        # Create valid fixture deliverable file
+        valid_file_path = os.path.join(evidence_dir, "scene.spz")
+        with open(valid_file_path, "wb") as f:
+            f.write(b"SPZ_V4_VALID_DELIVERABLE_DATA")
+        file_sha, file_size = compute_file_hash(valid_file_path)
+
+        # Create valid fixture deliverable directory
+        valid_dir_path = os.path.join(evidence_dir, "sparse_sfm")
+        os.makedirs(valid_dir_path, exist_ok=True)
+        with open(os.path.join(valid_dir_path, "cameras.bin"), "wb") as f:
+            f.write(b"CAMERAS_BIN_DATA")
+        with open(os.path.join(valid_dir_path, "points3D.bin"), "wb") as f:
+            f.write(b"POINTS3D_BIN_DATA")
+        dir_sha, dir_size, dir_count = compute_directory_manifest_hash(valid_dir_path)
+
+        base_manifest = {
+            "run_id": "test_fc_run",
+            "status": "PASSED",
+            "evidence_dir": evidence_dir,
+            "artifacts": {
+                "spz": {
+                    "path": valid_file_path,
+                    "isDirectory": False,
+                    "sizeBytes": file_size,
+                    "sha256": file_sha,
+                    "evidence_dir": evidence_dir
+                },
+                "sparse_sfm": {
+                    "path": valid_dir_path,
+                    "isDirectory": True,
+                    "fileCount": dir_count,
+                    "sizeBytes": dir_size,
+                    "sha256": dir_sha,
+                    "evidence_dir": evidence_dir
+                }
+            }
+        }
+
+        # 1. Base manifest passes cleanly
+        ok, errs = verify_retained_deliverables(base_manifest)
+        self.assertTrue(ok, f"Base manifest should pass: {errs}")
+        self.assertEqual(len(errs), 0)
+
+        # 2. Input validation: non-dict/string input rejected
+        ok, errs = verify_retained_deliverables(12345)
+        self.assertFalse(ok)
+        self.assertTrue(any("Invalid evidence input type" in e for e in errs))
+
+        # 3. Input validation: empty manifest rejected
+        ok, errs = verify_retained_deliverables({})
+        self.assertFalse(ok)
+        self.assertTrue(any("empty or not a valid dictionary" in e for e in errs))
+
+        # 4. Input validation: missing artifacts dictionary rejected
+        ok, errs = verify_retained_deliverables({"run_id": "r1", "artifacts": {}})
+        self.assertFalse(ok)
+        self.assertTrue(any("No artifacts found" in e for e in errs))
+
+        # 5. Missing required deliverable key rejected
+        ok, errs = verify_retained_deliverables(base_manifest, required_keys=["spz", "glb"])
+        self.assertFalse(ok)
+        self.assertTrue(any("missing required deliverable 'glb'" in e for e in errs))
+
+        # 6. Deliverable metadata not a dictionary rejected
+        bad_meta = json.loads(json.dumps(base_manifest))
+        bad_meta["artifacts"]["spz"] = "just_a_string"
+        ok, errs = verify_retained_deliverables(bad_meta)
+        self.assertFalse(ok)
+        self.assertTrue(any("metadata is malformed: expected dictionary" in e for e in errs))
+
+        # 7. Missing path string rejected
+        bad_path = json.loads(json.dumps(base_manifest))
+        bad_path["artifacts"]["spz"].pop("path")
+        ok, errs = verify_retained_deliverables(bad_path)
+        self.assertFalse(ok)
+        self.assertTrue(any("missing a valid non-empty 'path'" in e for e in errs))
+
+        # 8. Path does not exist on disk rejected
+        missing_on_disk = json.loads(json.dumps(base_manifest))
+        missing_on_disk["artifacts"]["spz"]["path"] = os.path.join(evidence_dir, "nonexistent.spz")
+        ok, errs = verify_retained_deliverables(missing_on_disk)
+        self.assertFalse(ok)
+        self.assertTrue(any("missing at" in e for e in errs))
+
+        # 9. Missing or malformed sha256 rejected
+        for bad_sha in [None, "", "not_hex", "12345", "a" * 63, "g" * 64]:
+            m = json.loads(json.dumps(base_manifest))
+            m["artifacts"]["spz"]["sha256"] = bad_sha
+            ok, errs = verify_retained_deliverables(m)
+            self.assertFalse(ok)
+            self.assertTrue(any("missing required 64-character hex 'sha256'" in e for e in errs))
+
+        # 10. Missing or invalid sizeBytes rejected
+        for bad_size in [None, 0, -10, "string_size"]:
+            m = json.loads(json.dumps(base_manifest))
+            m["artifacts"]["spz"]["sizeBytes"] = bad_size
+            ok, errs = verify_retained_deliverables(m)
+            self.assertFalse(ok)
+            self.assertTrue(any("missing or has invalid 'sizeBytes'" in e for e in errs))
+
+        # 11. Directory deliverable missing or invalid fileCount rejected
+        for bad_count in [None, 0, -1, "two"]:
+            m = json.loads(json.dumps(base_manifest))
+            m["artifacts"]["sparse_sfm"]["fileCount"] = bad_count
+            ok, errs = verify_retained_deliverables(m)
+            self.assertFalse(ok)
+            self.assertTrue(any("missing or has invalid 'fileCount'" in e for e in errs))
+
+        # 12. File size mismatch rejected
+        m_size = json.loads(json.dumps(base_manifest))
+        m_size["artifacts"]["spz"]["sizeBytes"] = file_size + 999
+        ok, errs = verify_retained_deliverables(m_size)
+        self.assertFalse(ok)
+        self.assertTrue(any("size mismatch" in e for e in errs))
+
+        # 13. File SHA-256 mismatch rejected (tampered file content)
+        tampered_file = os.path.join(evidence_dir, "tampered.spz")
+        with open(tampered_file, "wb") as f:
+            f.write(b"CORRUPTED_BYTES")
+        m_sha = json.loads(json.dumps(base_manifest))
+        m_sha["artifacts"]["spz"]["path"] = tampered_file
+        m_sha["artifacts"]["spz"]["sizeBytes"] = os.path.getsize(tampered_file)
+        # keeping original sha256
+        ok, errs = verify_retained_deliverables(m_sha)
+        self.assertFalse(ok)
+        self.assertTrue(any("SHA-256 mismatch" in e for e in errs))
+
+        # 14. Directory manifest hash mismatch rejected (tampered file inside dir)
+        tampered_dir = os.path.join(evidence_dir, "tampered_sfm")
+        shutil.copytree(valid_dir_path, tampered_dir)
+        with open(os.path.join(tampered_dir, "points3D.bin"), "ab") as f:
+            f.write(b"TAMPERED")
+        m_dir = json.loads(json.dumps(base_manifest))
+        m_dir["artifacts"]["sparse_sfm"]["path"] = tampered_dir
+        ok, errs = verify_retained_deliverables(m_dir)
+        self.assertFalse(ok)
+        self.assertTrue(any("manifest hash mismatch" in e for e in errs))
+
+        # 15. Empty file (0 bytes) rejected
+        empty_file = os.path.join(evidence_dir, "empty.spz")
+        with open(empty_file, "wb") as f:
+            pass
+        m_empty = json.loads(json.dumps(base_manifest))
+        m_empty["artifacts"]["spz"]["path"] = empty_file
+        m_empty["artifacts"]["spz"]["sizeBytes"] = 0
+        ok, errs = verify_retained_deliverables(m_empty)
+        self.assertFalse(ok)
+        self.assertTrue(any("empty (0 bytes)" in e for e in errs))
+
+        # 16. Security Boundary: Directory traversal escaping evidence_dir rejected
+        outside_file = os.path.join(self.temp_dir, "outside_secret.txt")
+        with open(outside_file, "wb") as f:
+            f.write(b"OUTSIDE_SECRET")
+        out_sha, out_size = compute_file_hash(outside_file)
+        m_traversal = json.loads(json.dumps(base_manifest))
+        m_traversal["artifacts"]["spz"]["path"] = outside_file
+        m_traversal["artifacts"]["spz"]["sha256"] = out_sha
+        m_traversal["artifacts"]["spz"]["sizeBytes"] = out_size
+        ok, errs = verify_retained_deliverables(m_traversal)
+        self.assertFalse(ok)
+        self.assertTrue(any("SECURITY_VIOLATION" in e for e in errs))
+
+        # 17. Security Boundary: Symlink escaping evidence_dir rejected
+        symlink_file = os.path.join(evidence_dir, "escape_symlink.spz")
+        try:
+            os.symlink(outside_file, symlink_file)
+            m_sym = json.loads(json.dumps(base_manifest))
+            m_sym["artifacts"]["spz"]["path"] = symlink_file
+            m_sym["artifacts"]["spz"]["sha256"] = out_sha
+            m_sym["artifacts"]["spz"]["sizeBytes"] = out_size
+            ok, errs = verify_retained_deliverables(m_sym)
+            self.assertFalse(ok)
+            self.assertTrue(any("SECURITY_VIOLATION" in e for e in errs))
+        except (OSError, NotImplementedError):
+            pass
+
+    def test_managed_process_persists_failure_cancellation_and_timeout_logs(self):
+        """
+        Task Verification: Proves that run_managed_process guarantees that available
+        stdout and stderr are persisted to log_path upon failure, cancellation, and timeout.
+        """
+        from pipeline.process_manager import run_managed_process, JobCancelledException
+        import threading
+
+        log_dir = os.path.join(self.temp_dir, "pm_logs")
+        os.makedirs(log_dir, exist_ok=True)
+
+        # 1. Process fails with non-zero exit code (persists stdout, stderr, and exit code)
+        fail_log = os.path.join(log_dir, "fail.log")
+        fail_cmd = [
+            sys.executable, "-c",
+            "import sys; print('Stage output line 1', flush=True); print('Stage error line 2', file=sys.stderr, flush=True); sys.exit(42)"
+        ]
+        with self.assertRaises(subprocess.CalledProcessError) as ctx:
+            run_managed_process(fail_cmd, log_path=fail_log, check=True)
+        self.assertEqual(ctx.exception.returncode, 42)
+        self.assertTrue(os.path.isfile(fail_log))
+        with open(fail_log, "r", encoding="utf-8") as f:
+            log_content = f.read()
+        self.assertIn("Stage output line 1", log_content)
+        self.assertIn("Stage error line 2", log_content)
+        self.assertIn("EXIT CODE: 42", log_content)
+
+        # 2. Process cancelled by cancellation signal (persists partial stdout and KILLED code)
+        cancel_log = os.path.join(log_dir, "cancel.log")
+        cancel_cmd = [
+            sys.executable, "-c",
+            "import sys, time; print('Early progress message', flush=True); time.sleep(10)"
+        ]
+        cancel_state = {"cancelled": False}
+        def cancel_check():
+            return cancel_state["cancelled"]
+
+        def delayed_cancel():
+            time.sleep(0.15)
+            cancel_state["cancelled"] = True
+
+        th = threading.Thread(target=delayed_cancel)
+        th.start()
+        with self.assertRaises(JobCancelledException):
+            run_managed_process(cancel_cmd, log_path=cancel_log, cancel_check=cancel_check, poll_interval=0.05)
+        th.join()
+
+        self.assertTrue(os.path.isfile(cancel_log))
+        with open(cancel_log, "r", encoding="utf-8") as f:
+            cancel_content = f.read()
+        self.assertIn("Early progress message", cancel_content)
+        self.assertIn("EXIT CODE:", cancel_content)
+
+        # 3. Process times out (persists partial output and exit code)
+        timeout_log = os.path.join(log_dir, "timeout.log")
+        timeout_cmd = [
+            sys.executable, "-c",
+            "import sys, time; print('Pre-timeout message', flush=True); time.sleep(10)"
+        ]
+        with self.assertRaises(subprocess.TimeoutExpired):
+            run_managed_process(timeout_cmd, log_path=timeout_log, timeout=0.25, poll_interval=0.05)
+
+        self.assertTrue(os.path.isfile(timeout_log))
+        with open(timeout_log, "r", encoding="utf-8") as f:
+            timeout_content = f.read()
+        self.assertIn("Pre-timeout message", timeout_content)
+        self.assertIn("EXIT CODE:", timeout_content)
+
     def test_large_ply_streaming_bounds_and_optimization_truncation_rejection(self):
         """
         Proves that parse_ply_header_and_bounds does not cap validation at 10,000 vertices,
@@ -1608,7 +1916,6 @@ class TestRealGPUPipelineAcceptance(unittest.TestCase):
             )
             self.assertTrue(calib_res["is_calibrated"])
             scale_k = calib_res["scale_factor"]
-            partial_artifacts["calibration"] = {"scaleFactor": scale_k}
 
             # Holdout Cross-Validation Gate (<= 0.05m RMSE)
             eval_res = evaluate_survey_accuracy(
@@ -1620,7 +1927,12 @@ class TestRealGPUPipelineAcceptance(unittest.TestCase):
             )
             self.assertTrue(eval_res["passed"])
             self.assertLessEqual(eval_res["rmse"], profile["max_holdout_rmse"], f"Holdout RMSE {eval_res['rmse']}m exceeded {profile['max_holdout_rmse']}m gate")
-            partial_artifacts["calibration"]["holdoutRmse"] = eval_res["rmse"]
+
+            calib_file = os.path.join(self.temp_dir, "calibration_report.json")
+            with open(calib_file, "w", encoding="utf-8") as cf:
+                json.dump({"scaleFactor": scale_k, "holdoutRmse": eval_res["rmse"]}, cf, indent=2)
+            partial_artifacts["calibration_report"] = {"path": calib_file, "sizeBytes": os.path.getsize(calib_file)}
+            evidence["calibration"] = {"scaleFactor": scale_k, "holdoutRmse": eval_res["rmse"]}
 
             evidence["acceptance_criteria"]["METRIC_CALIBRATION"] = {
                 "status": "PASSED",

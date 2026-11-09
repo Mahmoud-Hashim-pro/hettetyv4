@@ -120,9 +120,11 @@ def run_managed_process(
 
     stdout: Optional[bytes] = None
     stderr: Optional[bytes] = None
+    _log_persisted = False
 
     def _persist_log():
-        if not log_path:
+        nonlocal _log_persisted, stdout, stderr
+        if _log_persisted or not log_path:
             return
         try:
             os.makedirs(os.path.dirname(os.path.abspath(log_path)), exist_ok=True)
@@ -140,6 +142,7 @@ def run_managed_process(
                         f.write("\n")
                 exit_str = proc.returncode if proc.returncode is not None else "KILLED"
                 f.write(f"=== EXIT CODE: {exit_str} ===\n")
+            _log_persisted = True
         except Exception as ex:
             logger.warning(f"Failed writing process output log to '{log_path}': {ex}")
 
@@ -185,4 +188,15 @@ def run_managed_process(
         return subprocess.CompletedProcess(cmd, proc.returncode, stdout, stderr)
 
     finally:
+        try:
+            if not _log_persisted and log_path:
+                if proc.poll() is None:
+                    kill_process_tree(proc.pid)
+                    try:
+                        stdout, stderr = proc.communicate(timeout=2)
+                    except Exception:
+                        pass
+                _persist_log()
+        except Exception:
+            pass
         unregister_process(proc)

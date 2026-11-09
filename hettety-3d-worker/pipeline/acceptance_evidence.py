@@ -353,6 +353,7 @@ def retain_deliverables(
                 "fileCount": dest_count,
                 "sizeBytes": dest_size,
                 "sha256": dest_sha,
+                "evidence_dir": target_evidence_dir,
             }
         else:
             orig_h, orig_s = compute_file_hash(src_path)
@@ -365,6 +366,7 @@ def retain_deliverables(
                 "isDirectory": False,
                 "sizeBytes": s,
                 "sha256": h,
+                "evidence_dir": target_evidence_dir,
             }
 
     for art_key, art_val in source_artifacts.items():
@@ -409,27 +411,40 @@ def verify_retained_deliverables(
     required_keys: Optional[List[str]] = None
 ) -> Tuple[bool, List[str]]:
     """
-    Cryptographically verifies the presence and integrity of all retained deliverables
-    recorded in an acceptance evidence manifest.
-    Checks:
-      1. Every retained artifact exists on disk and is non-empty.
-      2. For files: recomputes SHA-256 and verifies byte-for-byte against recorded hash.
-      3. For directories: recomputes recursive deterministic manifest hash, verifies against recorded hash,
-         verifies file count and cumulative byte size.
-    Returns (is_valid, list_of_errors). Fails closed (is_valid=False) on any discrepancy.
+    Authoritative Fail-Closed Verification of Retained Acceptance Deliverables:
+    1. Rejects malformed input types or empty manifest.
+    2. Validates presence of all required deliverable keys.
+    3. Rejects missing, empty, or non-string paths.
+    4. Enforces strict boundary containment within configured evidence directory
+       (fails closed on directory traversal or symlink boundary escapes).
+    5. Proves each deliverable exists on disk and is non-empty.
+    6. Strictly requires valid 64-character hex 'sha256' and integer 'sizeBytes' (> 0).
+    7. For directories: strictly requires positive 'fileCount' (> 0) and verifies
+       recomputed recursive deterministic manifest hash, file count, and byte size.
+    8. For files: recomputes SHA-256 and byte size, proving exact match against manifest.
+    Returns (is_valid, list_of_errors). Returns (False, errors) on any discrepancy.
     """
     if isinstance(evidence_json_or_dict, str):
         if not os.path.isfile(evidence_json_or_dict):
             return False, [f"Evidence JSON file not found: {evidence_json_or_dict}"]
-        with open(evidence_json_or_dict, "r", encoding="utf-8") as f:
-            evidence = json.load(f)
+        try:
+            with open(evidence_json_or_dict, "r", encoding="utf-8") as f:
+                evidence = json.load(f)
+        except Exception as e:
+            return False, [f"Evidence JSON file malformed at '{evidence_json_or_dict}': {e}"]
     elif isinstance(evidence_json_or_dict, dict):
         evidence = evidence_json_or_dict
     else:
-        return False, [f"Invalid evidence input type: {type(evidence_json_or_dict)}"]
+        return False, [f"Invalid evidence input type: {type(evidence_json_or_dict).__name__}"]
 
-    artifacts = evidence.get("artifacts", {})
-    if not artifacts:
+    if not isinstance(evidence, dict) or not evidence:
+        return False, ["Evidence manifest is empty or not a valid dictionary."]
+
+    artifacts = evidence.get("artifacts")
+    if artifacts is None:
+        artifacts = evidence.get("retained_artifacts")
+
+    if not isinstance(artifacts, dict) or not artifacts:
         return False, ["No artifacts found in evidence manifest."]
 
     errors: List[str] = []
@@ -439,56 +454,111 @@ def verify_retained_deliverables(
             if req not in artifacts:
                 errors.append(f"Retained evidence manifest is missing required deliverable '{req}'.")
 
+    # Determine default root boundary for artifact paths
+    default_root = None
+    if base_dir:
+        default_root = os.path.realpath(os.path.abspath(base_dir))
+    elif isinstance(evidence_json_or_dict, str):
+        default_root = os.path.realpath(os.path.abspath(os.path.dirname(evidence_json_or_dict)))
+    elif evidence.get("evidence_dir"):
+        default_root = os.path.realpath(os.path.abspath(evidence["evidence_dir"]))
+    else:
+        default_root = os.path.realpath(os.path.abspath(get_evidence_directory()))
+
     for key, art_meta in artifacts.items():
         if not isinstance(art_meta, dict):
+            errors.append(f"Deliverable '{key}' metadata is malformed: expected dictionary, got {type(art_meta).__name__}")
             continue
-        p = art_meta.get("path")
-        if not p:
-            continue
-        if base_dir and not os.path.isabs(p):
-            p = os.path.join(base_dir, p)
 
-        if not os.path.exists(p):
+        p = art_meta.get("path")
+        if not p or not isinstance(p, str) or not p.strip():
+            errors.append(f"Deliverable '{key}' metadata is missing a valid non-empty 'path' string.")
+            continue
+
+        # Boundary security check
+        effective_root = default_root
+        if art_meta.get("evidence_dir") and not base_dir:
+            effective_root = os.path.realpath(os.path.abspath(art_meta["evidence_dir"]))
+
+        if base_dir and not os.path.isabs(p):
+            resolved_p = os.path.join(base_dir, p)
+        else:
+            resolved_p = p
+
+        canonical_p = os.path.realpath(os.path.abspath(resolved_p))
+
+        try:
+            common = os.path.commonpath([effective_root, canonical_p])
+            if common != effective_root:
+                errors.append(f"SECURITY_VIOLATION: Deliverable '{key}' path '{p}' escapes evidence directory boundary '{effective_root}'.")
+                continue
+        except Exception as ve:
+            errors.append(f"SECURITY_VIOLATION: Deliverable '{key}' boundary verification error for '{p}': {ve}")
+            continue
+
+        if not os.path.exists(canonical_p):
             errors.append(f"Retained artifact '{key}' missing at '{p}'")
             continue
 
-        is_dir = art_meta.get("isDirectory", False) or os.path.isdir(p)
+        # Check sha256 metadata: required, must be 64-char hex string
         expected_sha = art_meta.get("sha256")
+        if not expected_sha or not isinstance(expected_sha, str) or len(expected_sha) != 64 or not all(c in "0123456789abcdefABCDEF" for c in expected_sha):
+            errors.append(f"Deliverable '{key}' is missing required 64-character hex 'sha256'.")
+            expected_sha = None
+
+        # Check sizeBytes metadata: required, must be integer > 0
+        expected_size = art_meta.get("sizeBytes") if "sizeBytes" in art_meta else art_meta.get("size_bytes")
+        if expected_size is None or not isinstance(expected_size, int) or expected_size <= 0:
+            errors.append(f"Deliverable '{key}' is missing or has invalid 'sizeBytes' (must be integer > 0).")
+            expected_size = None
+
+        is_dir = art_meta.get("isDirectory", False) or os.path.isdir(canonical_p)
 
         if is_dir:
-            if not os.path.isdir(p):
+            if not os.path.isdir(canonical_p):
                 errors.append(f"Artifact '{key}' expected to be directory but is file at '{p}'")
                 continue
+
+            expected_count = art_meta.get("fileCount") if "fileCount" in art_meta else art_meta.get("file_count")
+            if expected_count is None or not isinstance(expected_count, int) or expected_count <= 0:
+                errors.append(f"Directory deliverable '{key}' is missing or has invalid 'fileCount' (must be integer > 0).")
+                expected_count = None
+
             try:
-                actual_sha, actual_size, actual_count = compute_directory_manifest_hash(p)
-                if expected_sha and actual_sha != expected_sha:
-                    errors.append(f"Directory '{key}' manifest hash mismatch: expected {expected_sha}, got {actual_sha}")
-                expected_count = art_meta.get("fileCount")
-                if expected_count is not None and actual_count != expected_count:
+                actual_sha, actual_size, actual_count = compute_directory_manifest_hash(canonical_p)
+                if actual_count == 0:
+                    errors.append(f"Directory deliverable '{key}' is empty on disk (0 files).")
+                elif expected_count is not None and actual_count != expected_count:
                     errors.append(f"Directory '{key}' file count mismatch: expected {expected_count}, got {actual_count}")
-                expected_size = art_meta.get("sizeBytes")
-                if expected_size is not None and actual_size != expected_size:
+
+                if actual_size == 0:
+                    errors.append(f"Directory deliverable '{key}' has 0 bytes total size.")
+                elif expected_size is not None and actual_size != expected_size:
                     errors.append(f"Directory '{key}' size mismatch: expected {expected_size}, got {actual_size}")
+
+                if expected_sha and actual_sha.lower() != expected_sha.lower():
+                    errors.append(f"Directory '{key}' manifest hash mismatch: expected {expected_sha}, got {actual_sha}")
             except Exception as e:
                 errors.append(f"Failed to audit directory '{key}' at '{p}': {e}")
         else:
-            if not os.path.isfile(p):
+            if not os.path.isfile(canonical_p):
                 errors.append(f"Artifact '{key}' expected to be file but is directory at '{p}'")
                 continue
-            actual_size = os.path.getsize(p)
+
+            actual_size = os.path.getsize(canonical_p)
             if actual_size == 0:
                 errors.append(f"Retained artifact '{key}' is empty (0 bytes) at '{p}'")
                 continue
-            expected_size = art_meta.get("sizeBytes")
+
             if expected_size is not None and actual_size != expected_size:
                 errors.append(f"Artifact '{key}' size mismatch: expected {expected_size}, got {actual_size}")
-            if expected_sha:
-                try:
-                    actual_sha, _ = compute_file_hash(p)
-                    if actual_sha != expected_sha:
-                        errors.append(f"Artifact '{key}' SHA-256 mismatch: expected {expected_sha}, got {actual_sha}")
-                except Exception as e:
-                    errors.append(f"Failed to hash file '{key}' at '{p}': {e}")
+
+            try:
+                actual_sha, _ = compute_file_hash(canonical_p)
+                if expected_sha and actual_sha.lower() != expected_sha.lower():
+                    errors.append(f"Artifact '{key}' SHA-256 mismatch: expected {expected_sha}, got {actual_sha}")
+            except Exception as e:
+                errors.append(f"Failed to hash file '{key}' at '{p}': {e}")
 
     return len(errors) == 0, errors
 
@@ -509,6 +579,7 @@ def write_acceptance_evidence(
 
     run_id = evidence.get("run_id") or generate_run_id()
     evidence["run_id"] = run_id
+    evidence["evidence_dir"] = target_dir
 
     # 1. Canonical JSON file
     json_path = os.path.join(target_dir, "acceptance_evidence.json")

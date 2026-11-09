@@ -520,9 +520,10 @@ DEFAULT_ALLOWED_GRAPHDECO_REMOTES: Set[str] = {
 
 # Explicitly approved official Graphdeco upstream commits for production acceptance
 DEFAULT_APPROVED_GRAPHDECO_COMMITS: Set[str] = {
-    "2eee0e26d2f1a00e466e3988652d450ea999092f",
-    "0f6cc211f45f7457754f9d0c648f5793010b91e7",
-    "232b535d8e14e21a220fc8ffcf424f331908d0e7",
+    "54c035f7834b564019656c3e3fcc3646292f727d",
+    "3dc0b75595ac113db0c49ca51a9be33e1ed7e876",
+    "182afc95b2bbe925f28de115dd8a0a594ea9826a",
+    "21301643a4354d6e24495c0df5a85354af8bd2be",
 }
 
 PLY_3DGS_SCALAR_TYPES: Dict[str, Tuple[int, str]] = {

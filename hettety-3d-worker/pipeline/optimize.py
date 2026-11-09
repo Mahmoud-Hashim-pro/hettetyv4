@@ -96,6 +96,16 @@ def parse_ply_header_and_bounds(ply_path: str) -> Tuple[int, Dict[str, Any]]:
 
     is_binary = "format binary_little_endian" in header_text
     is_ascii = "format ascii" in header_text
+    file_size = os.path.getsize(ply_path)
+
+    if is_binary:
+        expected_body_size = splat_count * bytes_per_vertex
+        actual_body_size = file_size - (header_end if header_end != -1 else 0)
+        if actual_body_size < expected_body_size:
+            raise ValueError(
+                f"Invalid PLY file: declared splat count is {splat_count} "
+                f"({expected_body_size} bytes body required), but body only contains {actual_body_size} bytes (truncated)."
+            )
 
     with open(ply_path, "rb") as f:
         f.seek(header_end if header_end != -1 else 0)
@@ -104,10 +114,12 @@ def parse_ply_header_and_bounds(ply_path: str) -> Tuple[int, Dict[str, Any]]:
             for _ in range(sample_count):
                 chunk = f.read(bytes_per_vertex)
                 if len(chunk) < bytes_per_vertex:
-                    break
+                    raise ValueError(f"Invalid PLY file: truncated record encountered while reading {splat_count} splats.")
                 x = struct.unpack_from("<f", chunk, x_off)[0]
                 y = struct.unpack_from("<f", chunk, y_off)[0]
                 z = struct.unpack_from("<f", chunk, z_off)[0]
+                if not (math.isfinite(x) and math.isfinite(y) and math.isfinite(z)):
+                    raise ValueError(f"CANNOT_DETERMINE_BOUNDS: Invalid PLY file: non-finite coordinate found (x={x}, y={y}, z={z}).")
                 if abs(x) < 500 and abs(y) < 500 and abs(z) < 500: # sanity filter
                     min_x, max_x = min(min_x, x), max(max_x, x)
                     min_y, max_y = min(min_y, y), max(max_y, y)
@@ -125,12 +137,19 @@ def parse_ply_header_and_bounds(ply_path: str) -> Tuple[int, Dict[str, Any]]:
                 if len(parts) >= 3:
                     try:
                         x, y, z = float(parts[0]), float(parts[1]), float(parts[2])
-                        min_x, max_x = min(min_x, x), max(max_x, x)
-                        min_y, max_y = min(min_y, y), max(max_y, y)
-                        min_z, max_z = min(min_z, z), max(max_z, z)
-                        read_count += 1
                     except ValueError:
-                        continue
+                        raise ValueError(f"CANNOT_DETERMINE_BOUNDS: Invalid PLY file: cannot parse numeric coordinate on record {read_count + 1}.")
+                    if not (math.isfinite(x) and math.isfinite(y) and math.isfinite(z)):
+                        raise ValueError(f"CANNOT_DETERMINE_BOUNDS: Invalid PLY file: non-finite coordinate found (x={x}, y={y}, z={z}).")
+                    min_x, max_x = min(min_x, x), max(max_x, x)
+                    min_y, max_y = min(min_y, y), max(max_y, y)
+                    min_z, max_z = min(min_z, z), max(max_z, z)
+                    read_count += 1
+
+            if read_count < splat_count:
+                raise ValueError(
+                    f"Invalid PLY file: declared splat count is {splat_count}, but body only contains {read_count} records (truncated)."
+                )
 
     # STRICT INVARIANT: Never synthesize fake room bounds. Fail if point cloud has no valid finite coordinates.
     if min_x == float("inf") or max_x == float("-inf"):

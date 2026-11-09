@@ -8,6 +8,7 @@ import subprocess
 import os
 import re
 import math
+import struct
 import shutil
 import logging
 from typing import Optional, Tuple, Dict, Any, List, Callable
@@ -15,6 +16,25 @@ from typing import Optional, Tuple, Dict, Any, List, Callable
 from pipeline.process_manager import run_managed_process
 
 logger = logging.getLogger("hettety-3d-worker.colmap")
+
+PLY_SCALAR_TYPES: Dict[str, Tuple[int, str]] = {
+    "char": (1, "b"),
+    "int8": (1, "b"),
+    "uchar": (1, "B"),
+    "uint8": (1, "B"),
+    "short": (2, "h"),
+    "int16": (2, "h"),
+    "ushort": (2, "H"),
+    "uint16": (2, "H"),
+    "int": (4, "i"),
+    "int32": (4, "i"),
+    "uint": (4, "I"),
+    "uint32": (4, "I"),
+    "float": (4, "f"),
+    "float32": (4, "f"),
+    "double": (8, "d"),
+    "float64": (8, "d"),
+}
 
 class SfMResult(dict):
     """Result object supporting dictionary access and boolean truthiness."""
@@ -95,7 +115,8 @@ def exec_colmap(
     cmd: List[str],
     check: bool = True,
     cancel_check: Optional[Callable[[], bool]] = None,
-    timeout: Optional[float] = None
+    timeout: Optional[float] = None,
+    log_path: Optional[str] = None
 ) -> subprocess.CompletedProcess:
     """
     Executes a COLMAP command via managed process tracking.
@@ -103,12 +124,13 @@ def exec_colmap(
     Otherwise, if docker is actively running, runs via container 'hettety-colmap:latest'
     with automatic directory volume mounting, GPU passthrough if available, and path translation.
     Terminates immediately if cancel_check() returns True.
+    Persists full subprocess logs to log_path if provided.
     """
     gpu_available = is_gpu_acceleration_available()
 
     if shutil.which("colmap"):
         # Direct COLMAP execution on host
-        return run_managed_process(cmd, check=check, cancel_check=cancel_check, timeout=timeout)
+        return run_managed_process(cmd, check=check, cancel_check=cancel_check, timeout=timeout, log_path=log_path)
 
     if is_docker_running():
         subcommand = cmd[1] if len(cmd) > 1 else ""
@@ -188,7 +210,7 @@ def exec_colmap(
             docker_cmd.append(subcommand)
         docker_cmd.extend(new_args)
 
-        return run_managed_process(docker_cmd, check=check, cancel_check=cancel_check, timeout=timeout)
+        return run_managed_process(docker_cmd, check=check, cancel_check=cancel_check, timeout=timeout, log_path=log_path)
 
     raise FileNotFoundError("COLMAP binary is not installed on PATH and Docker daemon is not running.")
 
@@ -551,6 +573,8 @@ def run_sfm(
             "message": "COLMAP binary is not installed on PATH and Docker daemon is not running."
         })
 
+    sfm_log = os.path.join(output_dir, "colmap_sfm.log")
+
     # 1. Feature extraction
     cmd_extract = [
         "colmap", "feature_extractor",
@@ -559,7 +583,7 @@ def run_sfm(
         "--ImageReader.camera_model", "OPENCV",
         "--SiftExtraction.use_gpu", "1"
     ]
-    exec_colmap(cmd_extract, check=True, cancel_check=cancel_check)
+    exec_colmap(cmd_extract, check=True, cancel_check=cancel_check, log_path=sfm_log)
 
     # 2. Adaptive matching: sequential for video captures or >100 images, exhaustive for photo clusters
     if is_video or image_count > 100:
@@ -577,7 +601,7 @@ def run_sfm(
             "--database_path", db_path,
             "--SiftMatching.use_gpu", "1"
         ]
-    exec_colmap(cmd_match, check=True, cancel_check=cancel_check)
+    exec_colmap(cmd_match, check=True, cancel_check=cancel_check, log_path=sfm_log)
 
     # 3. Mapper / Sparse Reconstruction
     cmd_mapper = [
@@ -587,7 +611,7 @@ def run_sfm(
         "--output_path", sparse_dir,
         "--Mapper.min_num_matches", "15"
     ]
-    exec_colmap(cmd_mapper, check=True, cancel_check=cancel_check)
+    exec_colmap(cmd_mapper, check=True, cancel_check=cancel_check, log_path=sfm_log)
 
     # 4. Quantitative verification of registered cameras and sparse point cloud
     registered_images, points_count, valid_sparse, metrics = parse_colmap_reconstruction_metrics(sparse_dir)
@@ -669,38 +693,196 @@ def run_sfm(
 
 def extract_ply_vertex_count(ply_path: str) -> int:
     """
-    Extracts the actual declared vertex count from a binary or ASCII PLY header.
-    Rejects malformed, truncated, or empty point clouds.
+    Authoritative PLY parser and payload integrity validator.
+    Validates:
+      1. File existence and non-empty size.
+      2. PLY magic header ('ply').
+      3. Valid end_header tag.
+      4. Supported format declaration ('ascii', 'binary_little_endian', 'binary_big_endian').
+      5. Vertex element declaration and count (count > 0).
+      6. Required vertex coordinates ('x', 'y', 'z') and supported property types.
+      7. Payload completeness and length:
+         - Binary: verifies exact vertex stride and that payload bytes >= count * stride.
+         - ASCII: verifies count complete vertex records exist in file body.
+      8. Finite numerical coordinates (rejects NaN / Inf).
     """
     if not os.path.exists(ply_path) or not os.path.isfile(ply_path):
         raise FileNotFoundError(f"PLY file does not exist: {ply_path}")
 
     file_size = os.path.getsize(ply_path)
-    if file_size < 100:
+    if file_size < 12:
         raise ValueError(f"PLY file is truncated or too small ({file_size} bytes)")
 
     with open(ply_path, "rb") as f:
-        header_bytes = f.read(8192)
+        # Read header: read in chunks up to 64KB to locate end_header
+        header_chunk = f.read(65536)
 
-    header_end_idx = header_bytes.find(b"end_header")
+    # Magic check
+    if not header_chunk.startswith(b"ply"):
+        raise ValueError("Invalid PLY file: missing 'ply' magic header.")
+
+    # Locate end_header tag
+    header_end_idx = header_chunk.find(b"end_header")
     if header_end_idx == -1:
-        raise ValueError("Invalid PLY file: 'end_header' tag not found in initial 8KB.")
+        raise ValueError(f"PLY file is truncated or too small ({file_size} bytes, 'end_header' tag not found)")
 
-    header_text = header_bytes[:header_end_idx].decode("ascii", errors="ignore")
+    # Find where binary/ascii payload starts (after newline following end_header)
+    match_end = re.search(rb"end_header[ \t]*\r?\n", header_chunk)
+    if match_end:
+        header_len = match_end.end()
+        header_text = header_chunk[:match_end.start()].decode("ascii", errors="replace")
+    else:
+        header_len = header_end_idx + len(b"end_header")
+        if header_len < len(header_chunk) and header_chunk[header_len:header_len+2] == b"\r\n":
+            header_len += 2
+        elif header_len < len(header_chunk) and header_chunk[header_len:header_len+1] in (b"\n", b"\r"):
+            header_len += 1
+        header_text = header_chunk[:header_end_idx].decode("ascii", errors="replace")
 
-    # Format check
-    if not any(fmt in header_text for fmt in ["format binary_little_endian", "format binary_big_endian", "format ascii"]):
+    # Format check: must occur before other schema/size checks to report format errors accurately
+    format_match = re.search(r"format\s+(ascii|binary_little_endian|binary_big_endian)\s+1\.0", header_text)
+    if not format_match:
         raise ValueError("Invalid PLY file: missing or unrecognized format declaration.")
+    format_type = format_match.group(1)
 
-    vertex_match = re.search(r"element\s+vertex\s+(\d+)", header_text)
-    if not vertex_match:
+    # Parse elements and properties
+    current_element = None
+    vertex_count = None
+    vertex_props: List[Tuple[str, str, int, str]] = []  # (name, type, size, format_char)
+
+    for line in header_text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("comment"):
+            continue
+        parts = line.split()
+        if parts[0] == "element":
+            if len(parts) < 3:
+                raise ValueError(f"Invalid PLY file: malformed element declaration '{line}'.")
+            current_element = parts[1]
+            if current_element == "vertex":
+                try:
+                    vertex_count = int(parts[2])
+                except ValueError:
+                    raise ValueError(f"Invalid PLY file: non-integer vertex count '{parts[2]}'.")
+        elif parts[0] == "property" and current_element == "vertex":
+            if len(parts) < 3:
+                raise ValueError(f"Invalid PLY file: malformed property declaration '{line}'.")
+            p_type = parts[1].lower()
+            p_name = parts[2]
+            if p_type == "list":
+                raise ValueError("Invalid PLY file: list properties in vertex element are not supported.")
+            if p_type not in PLY_SCALAR_TYPES:
+                raise ValueError(f"Invalid PLY file: unsupported property type '{p_type}'.")
+            size, fmt = PLY_SCALAR_TYPES[p_type]
+            vertex_props.append((p_name, p_type, size, fmt))
+
+    if vertex_count is None:
         raise ValueError("Invalid PLY file: missing 'element vertex <count>' in header.")
+    if vertex_count <= 0:
+        raise ValueError(f"Invalid PLY file: declared vertex count is {vertex_count} (must be > 0).")
 
-    count = int(vertex_match.group(1))
-    if count <= 0:
-        raise ValueError(f"Invalid PLY file: declared vertex count is {count} (must be > 0).")
+    prop_names = [p[0] for p in vertex_props]
+    for coord in ("x", "y", "z"):
+        if coord not in prop_names:
+            raise ValueError(f"Invalid PLY file: missing required coordinate property '{coord}'.")
 
-    return count
+    # Validate payload integrity
+    if format_type.startswith("binary"):
+        vertex_stride = sum(p[2] for p in vertex_props)
+        if vertex_stride <= 0:
+            raise ValueError("Invalid PLY file: calculated vertex stride is 0 bytes.")
+
+        expected_payload_bytes = vertex_count * vertex_stride
+        actual_payload_bytes = file_size - header_len
+        if actual_payload_bytes < expected_payload_bytes:
+            raise ValueError(
+                f"Invalid PLY file: declared vertex count is {vertex_count} "
+                f"({expected_payload_bytes} bytes payload required), "
+                f"but file body only contains {actual_payload_bytes} bytes (truncated or too small)."
+            )
+
+        endian = "<" if format_type == "binary_little_endian" else ">"
+        x_idx = prop_names.index("x")
+        y_idx = prop_names.index("y")
+        z_idx = prop_names.index("z")
+
+        # Build unpack offsets
+        offsets = []
+        curr = 0
+        for p in vertex_props:
+            offsets.append((curr, p[3]))
+            curr += p[2]
+
+        x_off, x_fmt = offsets[x_idx]
+        y_off, y_fmt = offsets[y_idx]
+        z_off, z_fmt = offsets[z_idx]
+        x_unpack = struct.Struct(endian + x_fmt)
+        y_unpack = struct.Struct(endian + y_fmt)
+        z_unpack = struct.Struct(endian + z_fmt)
+
+        # Stream validate coordinates for finiteness without loading whole point cloud into memory
+        with open(ply_path, "rb") as f:
+            f.seek(header_len)
+            batch_vertices = 4096
+            vertices_checked = 0
+            while vertices_checked < vertex_count:
+                to_check = min(batch_vertices, vertex_count - vertices_checked)
+                chunk = f.read(to_check * vertex_stride)
+                if len(chunk) < to_check * vertex_stride:
+                    raise ValueError(
+                        f"Invalid PLY file: unexpected EOF while reading binary vertex records "
+                        f"at vertex {vertices_checked + len(chunk) // vertex_stride} of {vertex_count}."
+                    )
+                for i in range(to_check):
+                    v_offset = i * vertex_stride
+                    x = x_unpack.unpack_from(chunk, v_offset + x_off)[0]
+                    y = y_unpack.unpack_from(chunk, v_offset + y_off)[0]
+                    z = z_unpack.unpack_from(chunk, v_offset + z_off)[0]
+                    if not (math.isfinite(x) and math.isfinite(y) and math.isfinite(z)):
+                        raise ValueError(f"Invalid PLY file: non-finite coordinate found (x={x}, y={y}, z={z}).")
+                vertices_checked += to_check
+
+    elif format_type == "ascii":
+        # ASCII verification: stream records line by line
+        x_idx = prop_names.index("x")
+        y_idx = prop_names.index("y")
+        z_idx = prop_names.index("z")
+        min_tokens = max(x_idx, y_idx, z_idx) + 1
+
+        with open(ply_path, "r", encoding="ascii", errors="replace") as f:
+            f.seek(header_len)
+            records_found = 0
+            for line in f:
+                line_str = line.strip()
+                if not line_str or line_str.startswith("#"):
+                    continue
+                parts = line_str.split()
+                if len(parts) < min_tokens:
+                    raise ValueError(
+                        f"Invalid PLY file: vertex record {records_found + 1} has insufficient properties "
+                        f"({len(parts)} found, expected >= {min_tokens})."
+                    )
+                try:
+                    x = float(parts[x_idx])
+                    y = float(parts[y_idx])
+                    z = float(parts[z_idx])
+                except ValueError as ex:
+                    raise ValueError(f"Invalid PLY file: could not parse numeric coordinates on vertex record {records_found + 1}: {ex}")
+
+                if not (math.isfinite(x) and math.isfinite(y) and math.isfinite(z)):
+                    raise ValueError(f"Invalid PLY file: non-finite coordinate found (x={x}, y={y}, z={z}).")
+
+                records_found += 1
+                if records_found == vertex_count:
+                    break
+
+            if records_found < vertex_count:
+                raise ValueError(
+                    f"Invalid PLY file: declared vertex count is {vertex_count}, "
+                    f"but file body only contains {records_found} complete vertex records (truncated or too small)."
+                )
+
+    return vertex_count
 
 
 def validate_reprojection_metric(mean_reproj: Any, max_threshold: float) -> Tuple[bool, str]:
@@ -774,6 +956,8 @@ def run_dense_stereo(
             candidate_sparse = c
             break
 
+    dense_log = os.path.join(dense_dir, "colmap_dense.log")
+
     try:
         # 1. Image Undistortion
         logger.info("Stage 1/3: Undistorting camera frames for dense stereo...")
@@ -785,7 +969,7 @@ def run_dense_stereo(
             "--output_type", "COLMAP",
             "--max_image_size", str(max_image_size)
         ]
-        exec_colmap(cmd_undistort, check=True, cancel_check=cancel_check)
+        exec_colmap(cmd_undistort, check=True, cancel_check=cancel_check, log_path=dense_log)
 
         # 2. Patch Match Stereo (Photometric + Geometric depth consistency)
         logger.info("Stage 2/3: Computing dense photometric depth maps (PatchMatchStereo)...")
@@ -795,7 +979,7 @@ def run_dense_stereo(
             "--workspace_format", "COLMAP",
             "--PatchMatchStereo.geom_consistency", "true"
         ]
-        exec_colmap(cmd_stereo, check=True, cancel_check=cancel_check)
+        exec_colmap(cmd_stereo, check=True, cancel_check=cancel_check, log_path=dense_log)
 
         # 3. Stereo Fusion (Fusing multiview depth maps into dense 3D point cloud)
         logger.info("Stage 3/3: Fusing depth maps into dense 3D point cloud (StereoFusion)...")
@@ -806,7 +990,7 @@ def run_dense_stereo(
             "--input_type", "geometric",
             "--output_path", fused_ply
         ]
-        exec_colmap(cmd_fuse, check=True, cancel_check=cancel_check)
+        exec_colmap(cmd_fuse, check=True, cancel_check=cancel_check, log_path=dense_log)
 
         if not os.path.exists(fused_ply) or os.path.getsize(fused_ply) < 100:
             return {

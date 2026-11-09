@@ -15,22 +15,14 @@ Strictly rejects 0-vertex proxy fallbacks and static constant formulas.
 
 
 import os
-
 import re
-
 import sys
-
 import math
-
+import struct
 import logging
-
 import subprocess
-
 import numpy as np
-
 from typing import Dict, Any, Optional, Tuple, List, Callable, Set, Union
-
-
 
 from pipeline.process_manager import run_managed_process
 
@@ -498,11 +490,58 @@ class IterativeGaussianOptimizer:
 
 
 
+def normalize_git_remote_url(raw_url: str) -> str:
+    """
+    Normalizes Git remote URLs to canonical string format:
+    e.g. 'github.com/graphdeco-inria/gaussian-splatting'
+    Safely eliminates scheme differences (https, ssh, git) and .git extensions.
+    """
+    url = raw_url.strip()
+    if url.startswith("git@"):
+        url = url[4:].replace(":", "/", 1)
+    elif "://" in url:
+        url = url.split("://", 1)[1]
+        if "@" in url:
+            url = url.split("@", 1)[1]
+    url = url.rstrip("/")
+    if url.endswith(".git"):
+        url = url[:-4]
+    return url.lower()
+
+
+OFFICIAL_GRAPHDECO_REMOTE = "github.com/graphdeco-inria/gaussian-splatting"
+
 DEFAULT_ALLOWED_GRAPHDECO_REMOTES: Set[str] = {
     "https://github.com/graphdeco-inria/gaussian-splatting",
     "https://github.com/graphdeco-inria/gaussian-splatting.git",
     "git@github.com:graphdeco-inria/gaussian-splatting.git",
     "graphdeco-inria/gaussian-splatting",
+}
+
+# Explicitly approved official Graphdeco upstream commits for production acceptance
+DEFAULT_APPROVED_GRAPHDECO_COMMITS: Set[str] = {
+    "2eee0e26d2f1a00e466e3988652d450ea999092f",
+    "0f6cc211f45f7457754f9d0c648f5793010b91e7",
+    "232b535d8e14e21a220fc8ffcf424f331908d0e7",
+}
+
+PLY_3DGS_SCALAR_TYPES: Dict[str, Tuple[int, str]] = {
+    "char": (1, "b"),
+    "int8": (1, "b"),
+    "uchar": (1, "B"),
+    "uint8": (1, "B"),
+    "short": (2, "h"),
+    "int16": (2, "h"),
+    "ushort": (2, "H"),
+    "uint16": (2, "H"),
+    "int": (4, "i"),
+    "int32": (4, "i"),
+    "uint": (4, "I"),
+    "uint32": (4, "I"),
+    "float": (4, "f"),
+    "float32": (4, "f"),
+    "double": (8, "d"),
+    "float64": (8, "d"),
 }
 
 
@@ -529,6 +568,14 @@ def get_allowed_graphdeco_remotes() -> Set[str]:
     return {r.lower() for r in DEFAULT_ALLOWED_GRAPHDECO_REMOTES}
 
 
+def get_allowed_graphdeco_commits() -> Set[str]:
+    """Retrieves approved Graphdeco commit SHAs, respecting environment overrides."""
+    custom = os.environ.get("HETTETY_GRAPHDECO_ALLOWED_COMMITS")
+    if custom:
+        return {c.strip().lower() for c in custom.split(",") if c.strip()}
+    return {c.lower() for c in DEFAULT_APPROVED_GRAPHDECO_COMMITS}
+
+
 def validate_graphdeco_runner_provenance(
     script_path: Optional[str],
     allowed_remotes: Optional[Set[str]] = None,
@@ -538,11 +585,13 @@ def validate_graphdeco_runner_provenance(
     """
     Authoritative Git Provenance and Supply Chain Verification for Graphdeco 3DGS runner:
     1. Validates script exists, is named 'train.py', and resides inside an enclosing Git repository (.git).
-    2. Verifies the git remote matches an approved official upstream repository (graphdeco-inria/gaussian-splatting).
-    3. Records the checked-out commit SHA and repository version.
-    4. Proves train.py matches the HEAD tree object without uncommitted modifications (git status & hash-object).
-    5. Validates official repository directory structure (scene, gaussian_renderer).
-    6. Strictly rejects modified, arbitrary, dummy, or unknown sources.
+    2. Verifies the git remote matches the official upstream repository (graphdeco-inria/gaussian-splatting) via normalized URL comparison.
+    3. Verifies that checked-out commit SHA is in the explicitly approved whitelist (fails closed on unapproved or dummy commits).
+    4. Proves train.py is tracked by Git in the repository.
+    5. Proves train.py matches the HEAD tree object without uncommitted modifications (git status & hash-object).
+    6. Validates official repository directory structure (scene, gaussian_renderer).
+    7. Validates content symbols (GaussianModel, render).
+    8. Records remote URL, commit SHA, script path, blob SHA, and verification status.
 
     Returns (is_valid, reason) or (is_valid, reason, provenance_details) if return_details is True.
     """
@@ -572,8 +621,11 @@ def validate_graphdeco_runner_provenance(
 
     details["repo_root"] = repo_root
 
-    # 2. Remote URL Verification
-    approved_remotes = allowed_remotes or get_allowed_graphdeco_remotes()
+    # 2. Remote URL Verification (Exact normalized URL match - eliminates spoofing / substring bypass)
+    norm_official = OFFICIAL_GRAPHDECO_REMOTE
+    approved_norms = {normalize_git_remote_url(r) for r in (allowed_remotes or get_allowed_graphdeco_remotes())}
+    approved_norms.add(norm_official)
+
     try:
         res_remote = subprocess.run(
             ["git", "-C", repo_root, "remote", "-v"],
@@ -582,21 +634,27 @@ def validate_graphdeco_runner_provenance(
             text=True,
             timeout=5
         )
-        remote_output = res_remote.stdout.strip().lower()
+        remote_output = res_remote.stdout.strip()
         if not remote_output:
             reason = f"PROVENANCE_REJECTED: Repository at '{repo_root}' has no configured git remotes."
             return (False, reason, details) if return_details else (False, reason)
 
         matched_remote = None
-        for cand in approved_remotes:
-            if cand in remote_output:
-                matched_remote = cand
-                break
+        found_remotes = []
+        for line in remote_output.splitlines():
+            tokens = line.strip().split()
+            if len(tokens) >= 2:
+                remote_url = tokens[1]
+                found_remotes.append(remote_url)
+                norm_cand = normalize_git_remote_url(remote_url)
+                if norm_cand in approved_norms:
+                    matched_remote = remote_url
+                    break
 
         if not matched_remote:
             reason = (
                 f"PROVENANCE_REJECTED: Repository remote at '{repo_root}' is not in approved Graphdeco remotes. "
-                f"Configured: {remote_output[:200]}... Required: {sorted(list(approved_remotes))}"
+                f"Configured: {found_remotes} Required: https://github.com/graphdeco-inria/gaussian-splatting"
             )
             return (False, reason, details) if return_details else (False, reason)
 
@@ -605,7 +663,64 @@ def validate_graphdeco_runner_provenance(
         reason = f"PROVENANCE_REJECTED: Failed to inspect git remotes at '{repo_root}': {e}"
         return (False, reason, details) if return_details else (False, reason)
 
-    # 3. Commit SHA extraction & verification
+    # 3. File Tracking, Working Tree Cleanliness & Blob Hash Verification
+    try:
+        rel_script = os.path.relpath(script_path, repo_root).replace("\\", "/")
+
+        # Check train.py is tracked by git
+        res_tracked = subprocess.run(
+            ["git", "-C", repo_root, "ls-files", "--error-unmatch", rel_script],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=5
+        )
+        if res_tracked.returncode != 0:
+            reason = f"PROVENANCE_REJECTED: '{rel_script}' is untracked or not committed in repository at '{repo_root}'."
+            return (False, reason, details) if return_details else (False, reason)
+
+        # Check clean working tree
+        res_status = subprocess.run(
+            ["git", "-C", repo_root, "status", "--porcelain", rel_script],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=5
+        )
+        status_out = res_status.stdout.strip()
+        if status_out:
+            reason = f"PROVENANCE_REJECTED: '{rel_script}' contains uncommitted local modifications ({status_out})."
+            return (False, reason, details) if return_details else (False, reason)
+
+        details["is_clean"] = True
+
+        # Check blob hash matches HEAD tree object
+        res_hash = subprocess.run(
+            ["git", "-C", repo_root, "hash-object", rel_script],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=5
+        )
+        blob_sha = res_hash.stdout.strip()
+        details["blob_sha"] = blob_sha
+
+        res_tree = subprocess.run(
+            ["git", "-C", repo_root, "rev-parse", f"HEAD:{rel_script}"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=5
+        )
+        committed_blob_sha = res_tree.stdout.strip()
+        if res_tree.returncode != 0 or blob_sha != committed_blob_sha:
+            reason = f"PROVENANCE_REJECTED: Blob hash mismatch on '{rel_script}': working {blob_sha} != committed {committed_blob_sha}."
+            return (False, reason, details) if return_details else (False, reason)
+    except Exception as e:
+        reason = f"PROVENANCE_REJECTED: Failed to verify git object hashes: {e}"
+        return (False, reason, details) if return_details else (False, reason)
+
+    # 4. Commit SHA extraction & verification against approved whitelist
     try:
         res_rev = subprocess.run(
             ["git", "-C", repo_root, "rev-parse", "HEAD"],
@@ -622,43 +737,18 @@ def validate_graphdeco_runner_provenance(
         details["commit_sha"] = commit_sha
 
         # Configurable allowed commit list verification
-        env_allowed_commits = os.environ.get("HETTETY_GRAPHDECO_ALLOWED_COMMITS")
-        target_allowed_commits = allowed_commits or ({c.strip().lower() for c in env_allowed_commits.split(",") if c.strip()} if env_allowed_commits else None)
-        if target_allowed_commits and commit_sha.lower() not in target_allowed_commits:
+        target_allowed_commits = allowed_commits if allowed_commits is not None else get_allowed_graphdeco_commits()
+        target_allowed_lower = {c.lower() for c in target_allowed_commits}
+
+        if not target_allowed_lower:
+            reason = "PROVENANCE_REJECTED: No approved Graphdeco commits configured in trusted commit policy."
+            return (False, reason, details) if return_details else (False, reason)
+
+        if commit_sha.lower() not in target_allowed_lower:
             reason = f"PROVENANCE_REJECTED: Commit '{commit_sha}' is not in approved Graphdeco commit whitelist."
             return (False, reason, details) if return_details else (False, reason)
     except Exception as e:
         reason = f"PROVENANCE_REJECTED: Failed to resolve git commit SHA: {e}"
-        return (False, reason, details) if return_details else (False, reason)
-
-    # 4. Working Tree Cleanliness & Blob Hash Verification
-    try:
-        rel_script = os.path.relpath(script_path, repo_root)
-        res_status = subprocess.run(
-            ["git", "-C", repo_root, "status", "--porcelain", rel_script],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            timeout=5
-        )
-        status_out = res_status.stdout.strip()
-        if status_out:
-            reason = f"PROVENANCE_REJECTED: '{rel_script}' contains uncommitted local modifications ({status_out})."
-            return (False, reason, details) if return_details else (False, reason)
-
-        details["is_clean"] = True
-
-        res_hash = subprocess.run(
-            ["git", "-C", repo_root, "hash-object", rel_script],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            timeout=5
-        )
-        blob_sha = res_hash.stdout.strip()
-        details["blob_sha"] = blob_sha
-    except Exception as e:
-        reason = f"PROVENANCE_REJECTED: Failed to verify git object hashes: {e}"
         return (False, reason, details) if return_details else (False, reason)
 
     # 5. Directory structure & source code verification
@@ -686,27 +776,50 @@ def validate_graphdeco_runner_provenance(
 
 def validate_gaussian_ply_schema(ply_path: str) -> Dict[str, Any]:
     """
-    Validates that a PLY file conforms to the official 3D Gaussian Splatting schema.
+    Validates that a PLY file conforms to the official 3D Gaussian Splatting schema
+    and that its payload body completely and faithfully contains all declared vertices.
     Verifies:
-      1. Binary or ASCII PLY header with 'element vertex <N>' (N > 0).
-      2. Required 3DGS properties: x, y, z, opacity, scale_0, scale_1, scale_2, rot_0, rot_1, rot_2, rot_3.
-      3. Physical file size is non-empty and has plausible minimum byte size.
+      1. File existence and valid header.
+      2. Binary or ASCII PLY header with 'element vertex <N>' (N > 0).
+      3. Required 3DGS properties: x, y, z, opacity, scale_0, scale_1, scale_2, rot_0, rot_1, rot_2, rot_3.
+      4. Actual vertex payload length:
+         - Binary: calculates total stride from property types and proves file body contains all N records.
+         - ASCII: proves N complete records exist with valid floating point attributes.
+      5. Numerical validity: coordinates and opacity are finite floats (rejects NaN / Inf).
     """
     if not os.path.isfile(ply_path):
         raise FileNotFoundError(f"PLY file does not exist: {ply_path}")
 
     file_size = os.path.getsize(ply_path)
-    if file_size < 100:
+    if file_size < 12:
         raise ValueError(f"PLY file is corrupted or too small ({file_size} bytes)")
 
     with open(ply_path, "rb") as f:
-        header_bytes = f.read(8192)
+        header_chunk = f.read(65536)
 
-    header_end_idx = header_bytes.find(b"end_header")
+    if not header_chunk.startswith(b"ply"):
+        raise ValueError("Invalid PLY file: missing 'ply' magic header.")
+
+    header_end_idx = header_chunk.find(b"end_header")
     if header_end_idx == -1:
-        raise ValueError("Invalid PLY file: 'end_header' tag not found in initial 8KB.")
+        raise ValueError(f"Invalid PLY file: 'end_header' tag not found (file size {file_size} bytes).")
 
-    header_text = header_bytes[:header_end_idx].decode("ascii", errors="ignore")
+    match_end = re.search(rb"end_header[ \t]*\r?\n", header_chunk)
+    if match_end:
+        header_len = match_end.end()
+        header_text = header_chunk[:match_end.start()].decode("ascii", errors="replace")
+    else:
+        header_len = header_end_idx + len(b"end_header")
+        if header_len < len(header_chunk) and header_chunk[header_len:header_len+2] == b"\r\n":
+            header_len += 2
+        elif header_len < len(header_chunk) and header_chunk[header_len:header_len+1] in (b"\n", b"\r"):
+            header_len += 1
+        header_text = header_chunk[:header_end_idx].decode("ascii", errors="replace")
+
+    format_match = re.search(r"format\s+(ascii|binary_little_endian|binary_big_endian)\s+1\.0", header_text)
+    if not format_match:
+        raise ValueError("Invalid PLY file: missing or unrecognized format declaration.")
+    format_type = format_match.group(1)
 
     vertex_match = re.search(r"element\s+vertex\s+(\d+)", header_text)
     if not vertex_match:
@@ -718,16 +831,128 @@ def validate_gaussian_ply_schema(ply_path: str) -> Dict[str, Any]:
 
     required_props = ["x", "y", "z", "opacity", "scale_0", "scale_1", "scale_2", "rot_0", "rot_1", "rot_2", "rot_3"]
     properties = []
+    prop_specs: List[Tuple[str, str, int, str]] = []
+    current_element = None
+
     for line in header_text.splitlines():
         line = line.strip()
-        if line.startswith("property "):
-            parts = line.split()
+        if not line or line.startswith("comment"):
+            continue
+        parts = line.split()
+        if parts[0] == "element":
+            current_element = parts[1]
+        elif parts[0] == "property" and current_element == "vertex":
             if len(parts) >= 3:
-                properties.append(parts[2])
+                p_type = parts[1].lower()
+                p_name = parts[2]
+                properties.append(p_name)
+                if p_type in PLY_3DGS_SCALAR_TYPES:
+                    s, f_ch = PLY_3DGS_SCALAR_TYPES[p_type]
+                    prop_specs.append((p_name, p_type, s, f_ch))
+                else:
+                    prop_specs.append((p_name, p_type, 4, "f"))
 
     missing = [p for p in required_props if p not in properties]
     if missing:
         raise ValueError(f"Invalid 3DGS PLY schema: missing required properties {missing}.")
+
+    # Validate payload body completeness
+    if format_type.startswith("binary"):
+        vertex_stride = sum(p[2] for p in prop_specs)
+        expected_body_size = vertex_count * vertex_stride
+        actual_body_size = file_size - header_len
+        if actual_body_size < expected_body_size:
+            raise ValueError(
+                f"Invalid 3DGS PLY schema: payload truncated. Declared {vertex_count} vertices "
+                f"({expected_body_size} bytes payload required), but file body only contains {actual_body_size} bytes."
+            )
+
+        endian = "<" if format_type == "binary_little_endian" else ">"
+        prop_names = [p[0] for p in prop_specs]
+        x_idx = prop_names.index("x")
+        y_idx = prop_names.index("y")
+        z_idx = prop_names.index("z")
+        op_idx = prop_names.index("opacity")
+
+        offsets = []
+        curr = 0
+        for p in prop_specs:
+            offsets.append((curr, p[3]))
+            curr += p[2]
+
+        x_off, x_fmt = offsets[x_idx]
+        y_off, y_fmt = offsets[y_idx]
+        z_off, z_fmt = offsets[z_idx]
+        op_off, op_fmt = offsets[op_idx]
+
+        x_unpack = struct.Struct(endian + x_fmt)
+        y_unpack = struct.Struct(endian + y_fmt)
+        z_unpack = struct.Struct(endian + z_fmt)
+        op_unpack = struct.Struct(endian + op_fmt)
+
+        with open(ply_path, "rb") as f:
+            f.seek(header_len)
+            batch_vertices = 4096
+            vertices_checked = 0
+            while vertices_checked < vertex_count:
+                to_check = min(batch_vertices, vertex_count - vertices_checked)
+                chunk = f.read(to_check * vertex_stride)
+                if len(chunk) < to_check * vertex_stride:
+                    raise ValueError(
+                        f"Invalid 3DGS PLY schema: unexpected EOF while reading binary Gaussian vertex records "
+                        f"at vertex {vertices_checked + len(chunk) // vertex_stride} of {vertex_count}."
+                    )
+                for i in range(to_check):
+                    v_offset = i * vertex_stride
+                    x = x_unpack.unpack_from(chunk, v_offset + x_off)[0]
+                    y = y_unpack.unpack_from(chunk, v_offset + y_off)[0]
+                    z = z_unpack.unpack_from(chunk, v_offset + z_off)[0]
+                    op = op_unpack.unpack_from(chunk, v_offset + op_off)[0]
+                    if not (math.isfinite(x) and math.isfinite(y) and math.isfinite(z) and math.isfinite(op)):
+                        raise ValueError(f"Invalid 3DGS PLY schema: non-finite attribute found (x={x}, y={y}, z={z}, opacity={op}).")
+                vertices_checked += to_check
+
+    elif format_type == "ascii":
+        prop_names = [p[0] for p in prop_specs]
+        x_idx = prop_names.index("x")
+        y_idx = prop_names.index("y")
+        z_idx = prop_names.index("z")
+        op_idx = prop_names.index("opacity")
+        min_tokens = max(x_idx, y_idx, z_idx, op_idx) + 1
+
+        with open(ply_path, "r", encoding="ascii", errors="replace") as f:
+            f.seek(header_len)
+            records_found = 0
+            for line in f:
+                line_str = line.strip()
+                if not line_str or line_str.startswith("#"):
+                    continue
+                parts = line_str.split()
+                if len(parts) < min_tokens:
+                    raise ValueError(
+                        f"Invalid 3DGS PLY schema: vertex record {records_found + 1} has insufficient properties "
+                        f"({len(parts)} found, expected >= {min_tokens})."
+                    )
+                try:
+                    x = float(parts[x_idx])
+                    y = float(parts[y_idx])
+                    z = float(parts[z_idx])
+                    op = float(parts[op_idx])
+                except ValueError as ex:
+                    raise ValueError(f"Invalid 3DGS PLY schema: could not parse numeric attribute on record {records_found + 1}: {ex}")
+
+                if not (math.isfinite(x) and math.isfinite(y) and math.isfinite(z) and math.isfinite(op)):
+                    raise ValueError(f"Invalid 3DGS PLY schema: non-finite attribute found (x={x}, y={y}, z={z}, opacity={op}).")
+
+                records_found += 1
+                if records_found == vertex_count:
+                    break
+
+            if records_found < vertex_count:
+                raise ValueError(
+                    f"Invalid 3DGS PLY schema: declared vertex count is {vertex_count}, "
+                    f"but file body only contains {records_found} complete vertex records (truncated)."
+                )
 
     return {
         "valid": True,
@@ -1142,16 +1367,29 @@ def run_gaussian_training(
 
 
 
+    training_log = os.path.join(output_model_dir, "training_stdout.log")
+    training_err = os.path.join(output_model_dir, "training_stderr.log")
+
     try:
         process = run_managed_process(
             cmd,
             check=True,
-            cancel_check=cancel_check
+            cancel_check=cancel_check,
+            log_path=training_log
         )
         logger.info("3DGS training process exited cleanly. Parsing execution evidence...")
 
         stdout_str = process.stdout.decode("utf-8", errors="ignore") if isinstance(process.stdout, bytes) else str(process.stdout or "")
         stderr_str = process.stderr.decode("utf-8", errors="ignore") if isinstance(process.stderr, bytes) else str(process.stderr or "")
+
+        try:
+            with open(training_log, "w", encoding="utf-8") as f:
+                f.write(stdout_str)
+            if stderr_str:
+                with open(training_err, "w", encoding="utf-8") as f:
+                    f.write(stderr_str)
+        except Exception as log_ex:
+            logger.warning(f"Could not write training log files: {log_ex}")
 
         from pipeline.training_log_parser import parse_graphdeco_training_log
         log_parse = parse_graphdeco_training_log(
@@ -1239,6 +1477,14 @@ def run_gaussian_training(
     except subprocess.CalledProcessError as e:
         err_msg = e.stderr.decode("utf-8", errors="ignore") if isinstance(e.stderr, bytes) else str(e)
         out_msg = e.stdout.decode("utf-8", errors="ignore") if isinstance(e.stdout, bytes) else ""
+        try:
+            with open(training_log, "w", encoding="utf-8") as f:
+                f.write(out_msg)
+            if err_msg:
+                with open(training_err, "w", encoding="utf-8") as f:
+                    f.write(err_msg)
+        except Exception:
+            pass
         from pipeline.training_log_parser import parse_graphdeco_training_log
         log_parse = parse_graphdeco_training_log(
             stdout_text=out_msg,

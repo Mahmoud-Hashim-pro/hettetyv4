@@ -40,7 +40,9 @@ from pipeline.train import (
     run_gaussian_training,
     resolve_graphdeco_script_path,
     validate_graphdeco_runner_provenance,
-    validate_gaussian_ply_schema
+    validate_gaussian_ply_schema,
+    DEFAULT_APPROVED_GRAPHDECO_COMMITS,
+    normalize_git_remote_url
 )
 from pipeline.optimize import parse_ply_header_and_bounds, optimize_splat_cloud
 from pipeline.calibrate import (
@@ -67,7 +69,10 @@ from pipeline.acceptance_evidence import (
     get_evidence_directory,
     generate_run_id,
     retain_deliverables,
-    write_acceptance_evidence
+    write_acceptance_evidence,
+    compute_file_hash,
+    compute_directory_manifest_hash,
+    verify_retained_deliverables
 )
 from pipeline.training_log_parser import parse_graphdeco_training_log
 
@@ -526,9 +531,12 @@ class TestRealReconstructionStrictGuards(unittest.TestCase):
     def test_dense_mvs_return_schema_and_ply_count_extraction(self):
         """
         Defect 1 Verification: Proves that PLY vertex count extraction strictly parses
-        real PLY headers, rejects malformed point clouds, and dense stereo returns dense_point_count.
+        real PLY headers, validates actual body payloads, rejects malformed/truncated point clouds,
+        and real run_dense_stereo returns dense_point_count extracted from fused.ply.
         """
-        # Valid ASCII PLY
+        import struct
+
+        # 1. Valid ASCII PLY
         ascii_ply = os.path.join(self.temp_dir, "test_dense_ascii.ply")
         with open(ascii_ply, "w", encoding="ascii") as f:
             f.write("ply\nformat ascii 1.0\nelement vertex 42\nproperty float x\nproperty float y\nproperty float z\nend_header\n")
@@ -538,50 +546,139 @@ class TestRealReconstructionStrictGuards(unittest.TestCase):
         count_ascii = extract_ply_vertex_count(ascii_ply)
         self.assertEqual(count_ascii, 42)
 
-        # Valid binary PLY
+        # 2. Valid binary little-endian PLY
         binary_ply = os.path.join(self.temp_dir, "test_dense_binary.ply")
         with open(binary_ply, "wb") as f:
-            f.write(b"ply\nformat binary_little_endian 1.0\nelement vertex 150\nproperty float x\nproperty float y\nproperty float z\nend_header\n" + b"\x00" * (150 * 12))
+            f.write(b"ply\nformat binary_little_endian 1.0\nelement vertex 150\nproperty float x\nproperty float y\nproperty float z\nend_header\n")
+            for i in range(150):
+                f.write(struct.pack("<fff", float(i), float(i), float(i)))
 
         count_bin = extract_ply_vertex_count(binary_ply)
         self.assertEqual(count_bin, 150)
 
-        # Malformed: missing format
+        # 3. Valid binary big-endian PLY
+        be_ply = os.path.join(self.temp_dir, "test_dense_be.ply")
+        with open(be_ply, "wb") as f:
+            f.write(b"ply\nformat binary_big_endian 1.0\nelement vertex 10\nproperty float x\nproperty float y\nproperty float z\nend_header\n")
+            for i in range(10):
+                f.write(struct.pack(">fff", float(i), float(i), float(i)))
+
+        count_be = extract_ply_vertex_count(be_ply)
+        self.assertEqual(count_be, 10)
+
+        # 4. Malformed: missing format declaration (even on small files < 100 bytes)
         bad_fmt_ply = os.path.join(self.temp_dir, "bad_fmt.ply")
-        with open(bad_fmt_ply, "w") as f:
-            f.write("ply\nelement vertex 10\nend_header\n" + "0 0 0\n" * 10)
+        with open(bad_fmt_ply, "wb") as f:
+            # Exactly 93 bytes with \n line endings as on Linux CI
+            f.write(b"ply\nelement vertex 10\nproperty float x\nproperty float y\nproperty float z\nend_header\n" + b"0 0 0\n" * 10)
         with self.assertRaises(ValueError) as ctx:
             extract_ply_vertex_count(bad_fmt_ply)
         self.assertIn("format", str(ctx.exception).lower())
 
-        # Malformed: truncated / too small (< 100 bytes)
+        # 5. Malformed: truncated header / missing end_header (< 100 bytes)
         trunc_ply = os.path.join(self.temp_dir, "trunc.ply")
-        with open(trunc_ply, "w") as f:
+        with open(trunc_ply, "w", encoding="ascii") as f:
             f.write("ply\nformat ascii 1.0\nelement vertex 10\n")
         with self.assertRaises(ValueError) as ctx:
             extract_ply_vertex_count(trunc_ply)
-        self.assertIn("truncated or too small", str(ctx.exception))
+        self.assertIn("truncated or too small", str(ctx.exception).lower())
 
-        # Malformed: zero vertex count with full header
+        # 6. Malformed: zero vertex count with full header
         zero_ply = os.path.join(self.temp_dir, "zero.ply")
-        with open(zero_ply, "w") as f:
+        with open(zero_ply, "w", encoding="ascii") as f:
             f.write("ply\nformat ascii 1.0\ncomment " + "padding_" * 20 + "\nelement vertex 0\nend_header\n")
         with self.assertRaises(ValueError) as ctx:
             extract_ply_vertex_count(zero_ply)
         self.assertIn("must be > 0", str(ctx.exception))
 
-        # Contract verification on dense test fixture
-        fake_sparse = os.path.join(self.temp_dir, "fake_sparse")
-        os.makedirs(fake_sparse, exist_ok=True)
-        with open(os.path.join(fake_sparse, "points3D.txt"), "w") as f:
-            f.write("1 0.1 0.2 0.3 255 0 0 0.1\n2 0.4 0.5 0.6 0 255 0 0.2\n")
+        # 7. Malformed: Declared vertex count greater than actual binary payload
+        trunc_payload_ply = os.path.join(self.temp_dir, "trunc_payload.ply")
+        with open(trunc_payload_ply, "wb") as f:
+            f.write(b"ply\nformat binary_little_endian 1.0\nelement vertex 100\nproperty float x\nproperty float y\nproperty float z\nend_header\n")
+            # Only 5 vertices provided (60 bytes instead of 1200 bytes)
+            for i in range(5):
+                f.write(struct.pack("<fff", 1.0, 2.0, 3.0))
+        with self.assertRaises(ValueError) as ctx:
+            extract_ply_vertex_count(trunc_payload_ply)
+        self.assertIn("truncated or too small", str(ctx.exception).lower())
 
-        dense_out = os.path.join(self.temp_dir, "out_dense_test")
-        dense_res = _generate_test_fixture_dense(fake_sparse, dense_out)
-        self.assertTrue(dense_res["success"])
-        self.assertIn("dense_point_count", dense_res)
-        self.assertEqual(dense_res["dense_point_count"], 2)
-        self.assertEqual(extract_ply_vertex_count(dense_res["fused_ply"]), 2)
+        # 8. Malformed: Truncated binary vertex record (incomplete last record)
+        partial_record_ply = os.path.join(self.temp_dir, "partial_record.ply")
+        with open(partial_record_ply, "wb") as f:
+            f.write(b"ply\nformat binary_little_endian 1.0\nelement vertex 2\nproperty float x\nproperty float y\nproperty float z\nend_header\n")
+            f.write(struct.pack("<fff", 1.0, 2.0, 3.0))
+            f.write(b"\x00\x00\x00\x00")  # Only 4 bytes of 12-byte second record
+        with self.assertRaises(ValueError) as ctx:
+            extract_ply_vertex_count(partial_record_ply)
+        self.assertIn("truncated or too small", str(ctx.exception).lower())
+
+        # 9. Malformed: Missing required coordinate properties
+        missing_coord_ply = os.path.join(self.temp_dir, "missing_coord.ply")
+        with open(missing_coord_ply, "wb") as f:
+            f.write(b"ply\nformat binary_little_endian 1.0\nelement vertex 5\nproperty float x\nproperty float y\nend_header\n" + b"\x00" * 40)
+        with self.assertRaises(ValueError) as ctx:
+            extract_ply_vertex_count(missing_coord_ply)
+        self.assertIn("missing required coordinate property", str(ctx.exception).lower())
+
+        # 10. Malformed: Non-finite coordinates (NaN / Inf)
+        nan_ply = os.path.join(self.temp_dir, "nan_coord.ply")
+        with open(nan_ply, "wb") as f:
+            f.write(b"ply\nformat binary_little_endian 1.0\nelement vertex 1\nproperty float x\nproperty float y\nproperty float z\nend_header\n")
+            f.write(struct.pack("<fff", float("nan"), 0.0, 0.0))
+        with self.assertRaises(ValueError) as ctx:
+            extract_ply_vertex_count(nan_ply)
+        self.assertIn("non-finite coordinate", str(ctx.exception).lower())
+
+        # 11. Malformed: ASCII PLY with declared 10 vertices but only 3 provided
+        ascii_trunc_ply = os.path.join(self.temp_dir, "ascii_trunc.ply")
+        with open(ascii_trunc_ply, "w", encoding="ascii") as f:
+            f.write("ply\nformat ascii 1.0\nelement vertex 10\nproperty float x\nproperty float y\nproperty float z\nend_header\n")
+            for i in range(3):
+                f.write(f"{i} {i} {i}\n")
+        with self.assertRaises(ValueError) as ctx:
+            extract_ply_vertex_count(ascii_trunc_ply)
+        self.assertIn("truncated", str(ctx.exception).lower())
+
+        # 12. Dense stereo real execution path using controlled subprocess mocks
+        sparse_mock_dir = os.path.join(self.temp_dir, "sparse_colmap_mock")
+        os.makedirs(os.path.join(sparse_mock_dir, "sparse", "0"), exist_ok=True)
+        with open(os.path.join(sparse_mock_dir, "sparse", "0", "cameras.bin"), "wb") as f:
+            f.write(b"MOCK_CAMERAS")
+
+        img_mock_dir = os.path.join(self.temp_dir, "images_colmap_mock")
+        os.makedirs(img_mock_dir, exist_ok=True)
+        with open(os.path.join(img_mock_dir, "frame_01.jpg"), "wb") as f:
+            f.write(b"\xff\xd8\xff\xe0" + b"\x00" * 2000)
+
+        real_dense_out = os.path.join(self.temp_dir, "dense_real_mock_out")
+
+        def mock_dense_exec(cmd, **kwargs):
+            # When stereo_fusion is executed, write a valid fused.ply
+            if "stereo_fusion" in cmd:
+                dense_fused_target = os.path.join(real_dense_out, "fused.ply")
+                os.makedirs(real_dense_out, exist_ok=True)
+                with open(dense_fused_target, "wb") as f_out:
+                    f_out.write(
+                        b"ply\nformat binary_little_endian 1.0\n"
+                        b"element vertex 250\n"
+                        b"property float x\nproperty float y\nproperty float z\n"
+                        b"property uchar red\nproperty uchar green\nproperty uchar blue\n"
+                        b"end_header\n"
+                    )
+                    for idx in range(250):
+                        f_out.write(struct.pack("<fffBBB", float(idx), 0.0, 1.0, 255, 128, 64))
+            return 0
+
+        with patch("pipeline.colmap.is_colmap_available", return_value=True), \
+             patch("pipeline.colmap.exec_colmap", side_effect=mock_dense_exec):
+            stereo_res = run_dense_stereo(
+                sparse_dir=sparse_mock_dir,
+                image_dir=img_mock_dir,
+                dense_dir=real_dense_out
+            )
+            self.assertTrue(stereo_res["success"])
+            self.assertEqual(stereo_res["dense_point_count"], 250)
+            self.assertEqual(extract_ply_vertex_count(stereo_res["fused_ply"]), 250)
 
     def test_splat_optimizer_interface_supports_opacity_threshold_and_min_opacity(self):
         """
@@ -667,7 +764,7 @@ class TestRealReconstructionStrictGuards(unittest.TestCase):
     def test_graphdeco_provenance_validation(self):
         """
         Defect 3 Verification: Proves that git provenance verification strictly enforces
-        official upstream repository identity, commit recording, and clean working tree.
+        official upstream repository identity, commit recording, tracked status, and clean working tree.
         """
         # Case 1: Wrong filename
         wrong_name_script = os.path.join(self.temp_dir, "not_train.py")
@@ -706,7 +803,43 @@ class TestRealReconstructionStrictGuards(unittest.TestCase):
         self.assertFalse(valid_unapp)
         self.assertIn("not in approved Graphdeco remotes", reason_unapp)
 
-        # Case 4: Git repo with official remote but uncommitted modifications
+        # Case 4: Remote URL with substring spoofing attempt
+        spoofed_dir = os.path.join(self.temp_dir, "spoofed_repo")
+        os.makedirs(spoofed_dir, exist_ok=True)
+        subprocess.run(["git", "init"], cwd=spoofed_dir, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        subprocess.run(["git", "config", "user.name", "Tester"], cwd=spoofed_dir, check=True)
+        subprocess.run(["git", "config", "user.email", "tester@test.com"], cwd=spoofed_dir, check=True)
+        subprocess.run(["git", "remote", "add", "origin", "https://github.com/attacker/graphdeco-inria/gaussian-splatting.git"], cwd=spoofed_dir, check=True)
+        spoofed_script = os.path.join(spoofed_dir, "train.py")
+        with open(spoofed_script, "w") as f:
+            f.write("from scene import Scene, GaussianModel\nfrom gaussian_renderer import render\nGaussianModel()\n")
+        subprocess.run(["git", "add", "."], cwd=spoofed_dir, check=True)
+        subprocess.run(["git", "commit", "-m", "init"], cwd=spoofed_dir, check=True)
+        valid_sp, reason_sp = validate_graphdeco_runner_provenance(spoofed_script)
+        self.assertFalse(valid_sp)
+        self.assertIn("not in approved Graphdeco remotes", reason_sp)
+
+        # Case 5: Official remote, but untracked train.py
+        untracked_dir = os.path.join(self.temp_dir, "untracked_repo")
+        os.makedirs(untracked_dir, exist_ok=True)
+        subprocess.run(["git", "init"], cwd=untracked_dir, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        subprocess.run(["git", "config", "user.name", "Tester"], cwd=untracked_dir, check=True)
+        subprocess.run(["git", "config", "user.email", "tester@test.com"], cwd=untracked_dir, check=True)
+        subprocess.run(["git", "remote", "add", "origin", "https://github.com/graphdeco-inria/gaussian-splatting"], cwd=untracked_dir, check=True)
+        os.makedirs(os.path.join(untracked_dir, "scene"), exist_ok=True)
+        os.makedirs(os.path.join(untracked_dir, "gaussian_renderer"), exist_ok=True)
+        with open(os.path.join(untracked_dir, "README.md"), "w") as f:
+            f.write("# Repo\n")
+        subprocess.run(["git", "add", "."], cwd=untracked_dir, check=True)
+        subprocess.run(["git", "commit", "-m", "init"], cwd=untracked_dir, check=True)
+        untracked_script = os.path.join(untracked_dir, "train.py")
+        with open(untracked_script, "w") as f:
+            f.write("from scene import Scene, GaussianModel\nfrom gaussian_renderer import render\nGaussianModel()\n")
+        valid_ut, reason_ut = validate_graphdeco_runner_provenance(untracked_script)
+        self.assertFalse(valid_ut)
+        self.assertIn("untracked", reason_ut)
+
+        # Case 6: Git repo with official remote but uncommitted modifications
         official_mock_dir = os.path.join(self.temp_dir, "official_mock_repo")
         os.makedirs(official_mock_dir, exist_ok=True)
         subprocess.run(["git", "init"], cwd=official_mock_dir, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -729,19 +862,33 @@ class TestRealReconstructionStrictGuards(unittest.TestCase):
         self.assertFalse(valid_mod)
         self.assertIn("uncommitted local modifications", reason_mod)
 
-        # Case 5: Clean official repository
+        # Case 7: Clean official repository BUT fake / unapproved commit SHA (default production check)
         subprocess.run(["git", "checkout", "--", "train.py"], cwd=official_mock_dir, check=True)
-        valid_clean, reason_clean, details_clean = validate_graphdeco_runner_provenance(official_script, return_details=True)
+        # Calling without overriding allowed_commits MUST FAIL against pinned DEFAULT_APPROVED_GRAPHDECO_COMMITS
+        valid_unapproved_commit, reason_unapproved_commit = validate_graphdeco_runner_provenance(official_script)
+        self.assertFalse(valid_unapproved_commit)
+        self.assertIn("is not in approved Graphdeco commit whitelist", reason_unapproved_commit)
+
+        # Case 8: Positive authentication when commit is explicitly in allowed list
+        res_head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=official_mock_dir, capture_output=True, text=True, check=True)
+        head_sha = res_head.stdout.strip()
+        valid_clean, reason_clean, details_clean = validate_graphdeco_runner_provenance(
+            official_script,
+            allowed_commits={head_sha},
+            return_details=True
+        )
         self.assertTrue(valid_clean)
         self.assertIn("Authentic official Graphdeco", reason_clean)
-        self.assertEqual(len(details_clean["commit_sha"]), 40)
+        self.assertEqual(details_clean["commit_sha"], head_sha)
         self.assertTrue(details_clean["is_clean"])
 
     def test_gaussian_ply_schema_validation(self):
         """
         Verifies that validate_gaussian_ply_schema confirms compliant 3DGS PLY files
-        and rejects non-compliant or corrupted headers.
+        and rejects non-compliant, corrupted, or truncated files.
         """
+        import struct
+
         valid_ply = os.path.join(self.temp_dir, "valid_model.ply")
         with open(valid_ply, "wb") as f:
             f.write(
@@ -751,12 +898,15 @@ class TestRealReconstructionStrictGuards(unittest.TestCase):
                 b"property float opacity\n"
                 b"property float scale_0\nproperty float scale_1\nproperty float scale_2\n"
                 b"property float rot_0\nproperty float rot_1\nproperty float rot_2\nproperty float rot_3\n"
-                b"end_header\n" + b"\x00" * 4400
+                b"end_header\n"
             )
+            for i in range(100):
+                f.write(struct.pack("<fff f fff ffff", float(i), 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0))
         res = validate_gaussian_ply_schema(valid_ply)
         self.assertTrue(res["valid"])
         self.assertEqual(res["vertex_count"], 100)
 
+        # Missing required properties
         bad_ply = os.path.join(self.temp_dir, "bad_model.ply")
         with open(bad_ply, "wb") as f:
             f.write(
@@ -768,6 +918,163 @@ class TestRealReconstructionStrictGuards(unittest.TestCase):
         with self.assertRaises(ValueError) as ctx:
             validate_gaussian_ply_schema(bad_ply)
         self.assertIn("missing required properties", str(ctx.exception))
+
+        # Truncated payload: declares 100 vertices but only has 10 vertices
+        trunc_body_ply = os.path.join(self.temp_dir, "trunc_gaussians.ply")
+        with open(trunc_body_ply, "wb") as f:
+            f.write(
+                b"ply\nformat binary_little_endian 1.0\n"
+                b"element vertex 100\n"
+                b"property float x\nproperty float y\nproperty float z\n"
+                b"property float opacity\n"
+                b"property float scale_0\nproperty float scale_1\nproperty float scale_2\n"
+                b"property float rot_0\nproperty float rot_1\nproperty float rot_2\nproperty float rot_3\n"
+                b"end_header\n"
+            )
+            for i in range(10):
+                f.write(struct.pack("<fff f fff ffff", float(i), 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0))
+        with self.assertRaises(ValueError) as ctx:
+            validate_gaussian_ply_schema(trunc_body_ply)
+        self.assertIn("truncated", str(ctx.exception).lower())
+
+        # Non-finite coordinates or opacity in Gaussian PLY
+        nan_gaussian_ply = os.path.join(self.temp_dir, "nan_gaussian.ply")
+        with open(nan_gaussian_ply, "wb") as f:
+            f.write(
+                b"ply\nformat binary_little_endian 1.0\n"
+                b"element vertex 1\n"
+                b"property float x\nproperty float y\nproperty float z\n"
+                b"property float opacity\n"
+                b"property float scale_0\nproperty float scale_1\nproperty float scale_2\n"
+                b"property float rot_0\nproperty float rot_1\nproperty float rot_2\nproperty float rot_3\n"
+                b"end_header\n"
+            )
+            f.write(struct.pack("<fff f fff ffff", float("nan"), 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0))
+        with self.assertRaises(ValueError) as ctx:
+            validate_gaussian_ply_schema(nan_gaussian_ply)
+        self.assertIn("non-finite", str(ctx.exception).lower())
+
+    def test_directory_checksum_verification(self):
+        """
+        TASK 3 Verification: Proves that compute_directory_manifest_hash generates
+        deterministic SHA-256 manifests, detects altered/added/removed files,
+        and verify_retained_deliverables verifies directories and files cryptographically.
+        """
+        test_dir = os.path.join(self.temp_dir, "manifest_dir_test")
+        sub_dir = os.path.join(test_dir, "sub")
+        os.makedirs(sub_dir, exist_ok=True)
+
+        with open(os.path.join(test_dir, "file_a.txt"), "w") as f:
+            f.write("Alpha\n")
+        with open(os.path.join(test_dir, "file_b.txt"), "w") as f:
+            f.write("Beta\n")
+        with open(os.path.join(sub_dir, "file_c.txt"), "w") as f:
+            f.write("Gamma\n")
+
+        hash1, size1, count1 = compute_directory_manifest_hash(test_dir)
+        hash2, size2, count2 = compute_directory_manifest_hash(test_dir)
+
+        # Determinism
+        self.assertEqual(hash1, hash2)
+        self.assertEqual(size1, size2)
+        self.assertEqual(count1, 3)
+
+        # Retain deliverables with directory
+        artifacts = {
+            "test_directory": test_dir,
+            "test_single_file": os.path.join(test_dir, "file_a.txt")
+        }
+        retained = retain_deliverables("run_dir_verify", artifacts, self.evidence_test_dir)
+        self.assertTrue(retained["test_directory"]["isDirectory"])
+        self.assertEqual(retained["test_directory"]["sha256"], hash1)
+        self.assertEqual(retained["test_directory"]["fileCount"], 3)
+
+        evidence_manifest = {
+            "run_id": "run_dir_verify",
+            "status": "PASSED",
+            "artifacts": retained
+        }
+        is_valid, errors = verify_retained_deliverables(evidence_manifest)
+        self.assertTrue(is_valid, f"Verification failed: {errors}")
+        self.assertEqual(len(errors), 0)
+
+        # Tampering detection: modify a file inside the retained directory
+        retained_dir_path = retained["test_directory"]["path"]
+        with open(os.path.join(retained_dir_path, "sub", "file_c.txt"), "a") as f:
+            f.write("TAMPERED\n")
+
+        is_valid_tampered, tampered_errors = verify_retained_deliverables(evidence_manifest)
+        self.assertFalse(is_valid_tampered)
+        self.assertTrue(any("manifest hash mismatch" in e for e in tampered_errors))
+
+    def test_failure_preserves_partial_deliverables_and_logs(self):
+        """
+        TASK 4 Verification: Proves that when a pipeline error occurs mid-way,
+        partial deliverables and diagnostic logs are retained persistently in evidence storage
+        before ephemeral working directory is cleaned up.
+        """
+        temp_work = os.path.join(self.temp_dir, "work_pipeline_sim")
+        os.makedirs(os.path.join(temp_work, "sfm", "sparse", "0"), exist_ok=True)
+        os.makedirs(os.path.join(temp_work, "dense"), exist_ok=True)
+
+        sfm_cam = os.path.join(temp_work, "sfm", "sparse", "0", "cameras.bin")
+        with open(sfm_cam, "wb") as f:
+            f.write(b"MOCK_CAMERAS_DATA_FOR_FAILURE_TEST")
+
+        sfm_log = os.path.join(temp_work, "colmap_sfm.log")
+        with open(sfm_log, "w") as f:
+            f.write("COLMAP SfM log output: registered 28 images\n")
+
+        dense_fused = os.path.join(temp_work, "dense", "fused.ply")
+        with open(dense_fused, "wb") as f:
+            f.write(
+                b"ply\nformat binary_little_endian 1.0\nelement vertex 2\n"
+                b"property float x\nproperty float y\nproperty float z\nend_header\n" + b"\x00" * 24
+            )
+
+        partial_artifacts = {
+            "sparse_sfm": os.path.join(temp_work, "sfm"),
+            "colmap_sfm_log": sfm_log,
+            "dense_ply": dense_fused
+        }
+
+        # Simulate exception during training stage
+        evidence = {
+            "run_id": "run_simulated_failure",
+            "status": "FAILED",
+            "blocking_reason": "Simulated CUDA Out-Of-Memory in stage 4 training.",
+            "artifacts": {}
+        }
+
+        try:
+            raise RuntimeError("CUDA Out-Of-Memory")
+        except Exception as e:
+            evidence["blocking_reason"] = f"Execution exception: {e}"
+        finally:
+            retained = retain_deliverables("run_simulated_failure", partial_artifacts, self.evidence_test_dir)
+            evidence["artifacts"] = retained
+            write_acceptance_evidence(evidence, self.evidence_test_dir)
+
+        # Ephemeral tempdir deleted
+        shutil.rmtree(temp_work)
+        self.assertFalse(os.path.exists(temp_work))
+
+        # Check evidence JSON and retained files exist
+        evidence_json = os.path.join(self.evidence_test_dir, "acceptance_evidence.json")
+        self.assertTrue(os.path.isfile(evidence_json))
+        with open(evidence_json, "r") as f:
+            loaded_ev = json.load(f)
+        self.assertEqual(loaded_ev["status"], "FAILED")
+        self.assertIn("CUDA Out-Of-Memory", loaded_ev["blocking_reason"])
+
+        # Check retained files survived
+        self.assertTrue(os.path.isfile(loaded_ev["artifacts"]["colmap_sfm_log"]["path"]))
+        self.assertTrue(os.path.isfile(loaded_ev["artifacts"]["dense_ply"]["path"]))
+        self.assertTrue(os.path.isdir(loaded_ev["artifacts"]["sparse_sfm"]["path"]))
+
+        # Verify integrity of retained partial deliverables
+        is_valid, errors = verify_retained_deliverables(loaded_ev)
+        self.assertTrue(is_valid, f"Retained partial deliverables failed verification: {errors}")
 
 
 
@@ -908,6 +1215,7 @@ class TestRealGPUPipelineAcceptance(unittest.TestCase):
         # ---------------------------------------------------------------------
         # Full Real Execution (Only runs when ALL prerequisites are satisfied)
         # ---------------------------------------------------------------------
+        partial_artifacts: Dict[str, Any] = {}
         try:
             print("\n==================================================================")
             print(" EXECUTING AUTHORITATIVE REAL GPU RECONSTRUCTION ACCEPTANCE TEST")
@@ -934,6 +1242,12 @@ class TestRealGPUPipelineAcceptance(unittest.TestCase):
             t1 = time.time()
             sfm_out = os.path.join(self.temp_dir, "sfm")
             sfm_res = run_sfm(image_dir=self.fixture_dir, output_dir=sfm_out, is_video=False)
+            if os.path.exists(sfm_out):
+                partial_artifacts["sparse_sfm"] = {"path": sfm_out}
+            sfm_log = os.path.join(self.temp_dir, "colmap_sfm.log")
+            if os.path.exists(sfm_log):
+                partial_artifacts["colmap_sfm_log"] = {"path": sfm_log}
+
             self.assertTrue(sfm_res["success"], f"Real COLMAP SfM failed: {sfm_res}")
             self.assertGreaterEqual(sfm_res["registered_images"], profile["min_registered_cameras"], f"SfM registered fewer cameras than required by profile {profile['min_registered_cameras']}")
             self.assertGreaterEqual(sfm_res["points_count"], profile["min_sparse_points"])
@@ -955,6 +1269,14 @@ class TestRealGPUPipelineAcceptance(unittest.TestCase):
             t2 = time.time()
             dense_out = os.path.join(self.temp_dir, "dense")
             dense_res = run_dense_stereo(sparse_dir=sfm_out, image_dir=self.fixture_dir, dense_dir=dense_out)
+            if "fused_ply" in dense_res and os.path.exists(dense_res["fused_ply"]):
+                partial_artifacts["dense_ply"] = {"path": dense_res["fused_ply"], "sizeBytes": os.path.getsize(dense_res["fused_ply"])}
+            if os.path.exists(dense_out):
+                partial_artifacts["dense_dir"] = {"path": dense_out}
+            dense_log = os.path.join(self.temp_dir, "colmap_dense.log")
+            if os.path.exists(dense_log):
+                partial_artifacts["colmap_dense_log"] = {"path": dense_log}
+
             self.assertTrue(dense_res["success"], f"Real Dense Stereo failed: {dense_res}")
             self.assertGreaterEqual(dense_res["dense_point_count"], profile["min_dense_points"], f"Dense points {dense_res['dense_point_count']} below profile threshold {profile['min_dense_points']}")
             evidence["stages"]["DENSE_STEREO"] = {
@@ -975,6 +1297,17 @@ class TestRealGPUPipelineAcceptance(unittest.TestCase):
                 iterations=30000,
                 sh_degree=3
             )
+            if os.path.exists(model_out):
+                partial_artifacts["model_dir"] = {"path": model_out}
+            train_stdout = os.path.join(model_out, "training_stdout.log")
+            if os.path.exists(train_stdout):
+                partial_artifacts["training_log"] = {"path": train_stdout, "sizeBytes": os.path.getsize(train_stdout)}
+            train_stderr = os.path.join(model_out, "training_stderr.log")
+            if os.path.exists(train_stderr):
+                partial_artifacts["training_stderr_log"] = {"path": train_stderr, "sizeBytes": os.path.getsize(train_stderr)}
+            if "target_ply" in train_res and os.path.exists(train_res["target_ply"]):
+                partial_artifacts["trained_ply"] = {"path": train_res["target_ply"], "sizeBytes": os.path.getsize(train_res["target_ply"])}
+
             self.assertTrue(train_res["success"], f"Graphdeco 3DGS training failed: {train_res}")
             verified_iters = train_res.get("verified_completed_iterations", 0)
             self.assertGreaterEqual(verified_iters, 30000, f"Graphdeco did not complete 30,000 iterations (verified: {verified_iters})")
@@ -997,6 +1330,9 @@ class TestRealGPUPipelineAcceptance(unittest.TestCase):
             # Stage 5: Floater Pruning & Optimization
             opt_ply = os.path.join(self.temp_dir, "optimized.ply")
             opt_res = optimize_splat_cloud(trained_ply, opt_ply, opacity_threshold=0.01)
+            if os.path.exists(opt_ply):
+                partial_artifacts["optimized_ply"] = {"path": opt_ply, "sizeBytes": os.path.getsize(opt_ply)}
+
             self.assertTrue(opt_res["success"])
             self.assertGreaterEqual(opt_res["splat_count"], profile["min_splats"], f"Final splat count {opt_res['splat_count']} below profile threshold {profile['min_splats']}")
 
@@ -1027,6 +1363,7 @@ class TestRealGPUPipelineAcceptance(unittest.TestCase):
             )
             self.assertTrue(calib_res["is_calibrated"])
             scale_k = calib_res["scale_factor"]
+            partial_artifacts["calibration"] = {"scaleFactor": scale_k}
 
             # Holdout Cross-Validation Gate (<= 0.05m RMSE)
             eval_res = evaluate_survey_accuracy(
@@ -1038,6 +1375,8 @@ class TestRealGPUPipelineAcceptance(unittest.TestCase):
             )
             self.assertTrue(eval_res["passed"])
             self.assertLessEqual(eval_res["rmse"], profile["max_holdout_rmse"], f"Holdout RMSE {eval_res['rmse']}m exceeded {profile['max_holdout_rmse']}m gate")
+            partial_artifacts["calibration"]["holdoutRmse"] = eval_res["rmse"]
+
             evidence["acceptance_criteria"]["METRIC_CALIBRATION"] = {
                 "status": "PASSED",
                 "details": f"Scale factor {scale_k:.4f}, Holdout RMSE {eval_res['rmse']}m <= 0.05m gate."
@@ -1050,6 +1389,8 @@ class TestRealGPUPipelineAcceptance(unittest.TestCase):
 
             scale_res = scale_ply_to_metric(opt_ply, metric_ply, scale_factor=scale_k)
             self.assertTrue(scale_res["success"])
+            if os.path.exists(metric_ply):
+                partial_artifacts["metric_ply"] = {"path": metric_ply, "sizeBytes": os.path.getsize(metric_ply)}
 
             spz_res = convert_ply_to_spz(metric_ply, spz_file)
             self.assertTrue(spz_res["success"])
@@ -1070,6 +1411,9 @@ class TestRealGPUPipelineAcceptance(unittest.TestCase):
             with open(glb_file, "rb") as f:
                 glb_sha = hashlib.sha256(f.read()).hexdigest()
 
+            partial_artifacts["spz"] = {"path": spz_file, "sizeBytes": os.path.getsize(spz_file), "sha256": spz_sha, "splatCount": opt_res["splat_count"]}
+            partial_artifacts["glb"] = {"path": glb_file, "sizeBytes": os.path.getsize(glb_file), "sha256": glb_sha, "validGlTF": True}
+
             evidence["status"] = "PASSED"
             evidence["acceptance_criteria"]["SPZ_EXPORT"] = {
                 "status": "PASSED",
@@ -1079,29 +1423,6 @@ class TestRealGPUPipelineAcceptance(unittest.TestCase):
                 "status": "PASSED",
                 "details": f"glTF 2.0 valid binary, SHA-256: {glb_sha[:16]}"
             }
-            # Retain all authoritative deliverables persistently in evidence storage
-            raw_artifacts = {
-                "spz": {"path": spz_file, "sizeBytes": os.path.getsize(spz_file), "sha256": spz_sha, "splatCount": opt_res["splat_count"]},
-                "glb": {"path": glb_file, "sizeBytes": os.path.getsize(glb_file), "sha256": glb_sha, "validGlTF": True},
-                "trained_ply": {"path": trained_ply, "sizeBytes": os.path.getsize(trained_ply)},
-                "optimized_ply": {"path": opt_ply, "sizeBytes": os.path.getsize(opt_ply)},
-                "metric_ply": {"path": metric_ply, "sizeBytes": os.path.getsize(metric_ply)},
-                "dense_ply": {"path": dense_res["fused_ply"], "sizeBytes": os.path.getsize(dense_res["fused_ply"])},
-                "sparse_sfm": {"path": sfm_out},
-                "calibration": {"scaleFactor": scale_k, "holdoutRmse": eval_res["rmse"]}
-            }
-            colmap_log = os.path.join(self.temp_dir, "colmap.log")
-            if os.path.exists(colmap_log):
-                raw_artifacts["colmap_log"] = {"path": colmap_log, "sizeBytes": os.path.getsize(colmap_log)}
-            training_log = os.path.join(model_out, "training_stdout.log")
-            if os.path.exists(training_log):
-                raw_artifacts["training_log"] = {"path": training_log, "sizeBytes": os.path.getsize(training_log)}
-            retained_manifest = retain_deliverables(
-                run_id=self.run_id,
-                source_artifacts=raw_artifacts,
-                evidence_dir=self.evidence_dir
-            )
-            evidence["artifacts"] = retained_manifest
 
             print("\n==================================================================")
             print(" AUTHORITATIVE REAL GPU RECONSTRUCTION ACCEPTANCE: PASSED 100%")
@@ -1116,7 +1437,20 @@ class TestRealGPUPipelineAcceptance(unittest.TestCase):
             evidence["blocking_reason"] = f"Execution exception: {e}"
             raise
         finally:
+            if partial_artifacts:
+                try:
+                    retained_manifest = retain_deliverables(
+                        run_id=self.run_id,
+                        source_artifacts=partial_artifacts,
+                        evidence_dir=self.evidence_dir
+                    )
+                    evidence["artifacts"] = retained_manifest
+                except Exception as retain_err:
+                    print(f"Warning: Failed retaining partial deliverables: {retain_err}")
             write_acceptance_evidence(evidence, self.evidence_dir)
+            if evidence.get("status") == "PASSED":
+                is_valid_manifest, manifest_errs = verify_retained_deliverables(evidence)
+                self.assertTrue(is_valid_manifest, f"Retained deliverable verification failed: {manifest_errs}")
 
 
 if __name__ == "__main__":

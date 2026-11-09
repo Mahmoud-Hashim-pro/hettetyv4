@@ -21,7 +21,7 @@ import time
 import uuid
 import shutil
 import hashlib
-from typing import Dict, Any, Optional, Tuple, List, Set
+from typing import Dict, Any, Optional, Tuple, List, Set, Union
 
 # Allowed fixture datasets explicitly permitted for acceptance testing
 ALLOWED_ACCEPTANCE_DATASETS: Set[str] = {
@@ -245,6 +245,63 @@ def generate_run_id() -> str:
 
 
 
+def compute_file_hash(filepath: str) -> Tuple[str, int]:
+    """Calculates SHA-256 hash and byte size of a file in streaming 64KB chunks."""
+    hasher = hashlib.sha256()
+    total_size = 0
+    with open(filepath, "rb") as f:
+        while chunk := f.read(65536):
+            hasher.update(chunk)
+            total_size += len(chunk)
+    return hasher.hexdigest(), total_size
+
+
+def compute_directory_manifest_hash(dir_path: str) -> Tuple[str, int, int]:
+    """
+    Computes a deterministic, tamper-evident manifest hash of an entire directory tree.
+    Recursively scans files, handles symlinks securely (rejects links escaping dir_path),
+    normalizes relative paths with forward slashes '/', sorts paths lexicographically,
+    and updates the SHA-256 manifest hasher with '<relative_path>:<file_sha256>:<file_size_bytes>\\n'.
+    Returns (manifest_sha256, total_size_bytes, file_count).
+    """
+    real_dir = os.path.realpath(os.path.abspath(dir_path))
+    if not os.path.isdir(real_dir):
+        raise ValueError(f"Directory not found or not a directory: {dir_path}")
+
+    manifest_hasher = hashlib.sha256()
+    total_size = 0
+    file_count = 0
+    entries: List[Tuple[str, str, int]] = []
+
+    for root, _, files in os.walk(real_dir):
+        for f in files:
+            fp = os.path.join(root, f)
+            # Safely verify symlinks do not escape target directory
+            if os.path.islink(fp):
+                target = os.path.realpath(fp)
+                try:
+                    common = os.path.commonpath([real_dir, target])
+                    if common != real_dir:
+                        raise ValueError(f"SECURITY_VIOLATION: Symlink '{fp}' escapes directory boundary '{real_dir}' -> '{target}'")
+                except ValueError as err:
+                    raise ValueError(f"SECURITY_VIOLATION: Symlink error on '{fp}': {err}")
+
+            rel_path = os.path.relpath(fp, real_dir).replace("\\", "/")
+            file_sha, file_size = compute_file_hash(fp)
+            entries.append((rel_path, file_sha, file_size))
+
+    # Sort lexicographically by normalized relative path
+    entries.sort(key=lambda x: x[0])
+
+    for rel_path, file_sha, file_size in entries:
+        line = f"{rel_path}:{file_sha}:{file_size}\n"
+        manifest_hasher.update(line.encode("utf-8"))
+        total_size += file_size
+        file_count += 1
+
+    return manifest_hasher.hexdigest(), total_size, file_count
+
+
 def retain_deliverables(
     run_id: str,
     source_artifacts: Dict[str, Any],
@@ -265,15 +322,6 @@ def retain_deliverables(
 
     retained: Dict[str, Any] = {}
 
-    def _hash_file(filepath: str) -> Tuple[str, int]:
-        hasher = hashlib.sha256()
-        total_size = 0
-        with open(filepath, "rb") as f:
-            while chunk := f.read(65536):
-                hasher.update(chunk)
-                total_size += len(chunk)
-        return hasher.hexdigest(), total_size
-
     def _copy_and_audit(src_path: str, dest_name: str) -> Optional[Dict[str, Any]]:
         if not src_path or not os.path.exists(src_path):
             return None
@@ -282,31 +330,28 @@ def retain_deliverables(
             if os.path.exists(dest_path):
                 shutil.rmtree(dest_path, ignore_errors=True)
             shutil.copytree(src_path, dest_path)
-            dir_hasher = hashlib.sha256()
-            dir_size = 0
-            file_count = 0
-            for root, _, files in sorted(os.walk(dest_path)):
-                for f in sorted(files):
-                    fp = os.path.join(root, f)
-                    h, s = _hash_file(fp)
-                    dir_hasher.update(h.encode("ascii"))
-                    dir_size += s
-                    file_count += 1
+            orig_sha, orig_size, orig_count = compute_directory_manifest_hash(src_path)
+            dest_sha, dest_size, dest_count = compute_directory_manifest_hash(dest_path)
+            if dest_sha != orig_sha or dest_size != orig_size or dest_count != orig_count:
+                raise ValueError(
+                    f"COPY_INTEGRITY_VIOLATION: Retained directory '{dest_name}' manifest {dest_sha} != source {orig_sha}"
+                )
             return {
                 "path": dest_path,
                 "isDirectory": True,
-                "fileCount": file_count,
-                "sizeBytes": dir_size,
-                "sha256": dir_hasher.hexdigest(),
+                "fileCount": dest_count,
+                "sizeBytes": dest_size,
+                "sha256": dest_sha,
             }
         else:
-            orig_h, orig_s = _hash_file(src_path)
+            orig_h, orig_s = compute_file_hash(src_path)
             shutil.copy2(src_path, dest_path)
-            h, s = _hash_file(dest_path)
+            h, s = compute_file_hash(dest_path)
             if h != orig_h or s != orig_s:
                 raise ValueError(f"COPY_INTEGRITY_VIOLATION: Retained file '{dest_name}' hash {h} != source hash {orig_h}")
             return {
                 "path": dest_path,
+                "isDirectory": False,
                 "sizeBytes": s,
                 "sha256": h,
             }
@@ -334,11 +379,101 @@ def retain_deliverables(
     latest_deliverables_dir = os.path.join(target_evidence_dir, "retained_artifacts")
     os.makedirs(latest_deliverables_dir, exist_ok=True)
     for art_key, info in retained.items():
-        if isinstance(info, dict) and "path" in info and os.path.isfile(info["path"]):
-            target_latest = os.path.join(latest_deliverables_dir, os.path.basename(info["path"]))
-            shutil.copy2(info["path"], target_latest)
+        if isinstance(info, dict) and "path" in info and os.path.exists(info["path"]):
+            p = info["path"]
+            target_latest = os.path.join(latest_deliverables_dir, os.path.basename(p))
+            if os.path.isfile(p):
+                shutil.copy2(p, target_latest)
+            elif os.path.isdir(p):
+                if os.path.exists(target_latest):
+                    shutil.rmtree(target_latest, ignore_errors=True)
+                shutil.copytree(p, target_latest)
 
     return retained
+
+
+def verify_retained_deliverables(
+    evidence_json_or_dict: Union[str, Dict[str, Any]],
+    base_dir: Optional[str] = None
+) -> Tuple[bool, List[str]]:
+    """
+    Cryptographically verifies the presence and integrity of all retained deliverables
+    recorded in an acceptance evidence manifest.
+    Checks:
+      1. Every retained artifact exists on disk and is non-empty.
+      2. For files: recomputes SHA-256 and verifies byte-for-byte against recorded hash.
+      3. For directories: recomputes recursive deterministic manifest hash, verifies against recorded hash,
+         verifies file count and cumulative byte size.
+    Returns (is_valid, list_of_errors). Fails closed (is_valid=False) on any discrepancy.
+    """
+    if isinstance(evidence_json_or_dict, str):
+        if not os.path.isfile(evidence_json_or_dict):
+            return False, [f"Evidence JSON file not found: {evidence_json_or_dict}"]
+        with open(evidence_json_or_dict, "r", encoding="utf-8") as f:
+            evidence = json.load(f)
+    elif isinstance(evidence_json_or_dict, dict):
+        evidence = evidence_json_or_dict
+    else:
+        return False, [f"Invalid evidence input type: {type(evidence_json_or_dict)}"]
+
+    artifacts = evidence.get("artifacts", {})
+    if not artifacts:
+        return False, ["No artifacts found in evidence manifest."]
+
+    errors: List[str] = []
+
+    for key, art_meta in artifacts.items():
+        if not isinstance(art_meta, dict):
+            continue
+        p = art_meta.get("path")
+        if not p:
+            continue
+        if base_dir and not os.path.isabs(p):
+            p = os.path.join(base_dir, p)
+
+        if not os.path.exists(p):
+            errors.append(f"Retained artifact '{key}' missing at '{p}'")
+            continue
+
+        is_dir = art_meta.get("isDirectory", False) or os.path.isdir(p)
+        expected_sha = art_meta.get("sha256")
+
+        if is_dir:
+            if not os.path.isdir(p):
+                errors.append(f"Artifact '{key}' expected to be directory but is file at '{p}'")
+                continue
+            try:
+                actual_sha, actual_size, actual_count = compute_directory_manifest_hash(p)
+                if expected_sha and actual_sha != expected_sha:
+                    errors.append(f"Directory '{key}' manifest hash mismatch: expected {expected_sha}, got {actual_sha}")
+                expected_count = art_meta.get("fileCount")
+                if expected_count is not None and actual_count != expected_count:
+                    errors.append(f"Directory '{key}' file count mismatch: expected {expected_count}, got {actual_count}")
+                expected_size = art_meta.get("sizeBytes")
+                if expected_size is not None and actual_size != expected_size:
+                    errors.append(f"Directory '{key}' size mismatch: expected {expected_size}, got {actual_size}")
+            except Exception as e:
+                errors.append(f"Failed to audit directory '{key}' at '{p}': {e}")
+        else:
+            if not os.path.isfile(p):
+                errors.append(f"Artifact '{key}' expected to be file but is directory at '{p}'")
+                continue
+            actual_size = os.path.getsize(p)
+            if actual_size == 0:
+                errors.append(f"Retained artifact '{key}' is empty (0 bytes) at '{p}'")
+                continue
+            expected_size = art_meta.get("sizeBytes")
+            if expected_size is not None and actual_size != expected_size:
+                errors.append(f"Artifact '{key}' size mismatch: expected {expected_size}, got {actual_size}")
+            if expected_sha:
+                try:
+                    actual_sha, _ = compute_file_hash(p)
+                    if actual_sha != expected_sha:
+                        errors.append(f"Artifact '{key}' SHA-256 mismatch: expected {expected_sha}, got {actual_sha}")
+                except Exception as e:
+                    errors.append(f"Failed to hash file '{key}' at '{p}': {e}")
+
+    return len(errors) == 0, errors
 
 def write_acceptance_evidence(
     evidence: Dict[str, Any],

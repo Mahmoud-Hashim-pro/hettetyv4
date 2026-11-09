@@ -94,10 +94,13 @@ def run_managed_process(
     cancel_check: Optional[Callable[[], bool]] = None,
     timeout: Optional[float] = None,
     env: Optional[Dict[str, str]] = None,
-    poll_interval: float = 0.2
+    poll_interval: float = 0.2,
+    log_path: Optional[str] = None,
+    log_mode: str = "a"
 ) -> subprocess.CompletedProcess:
     """
     Executes a subprocess with continuous cancellation monitoring and process-tree termination.
+    Persists full stdout and stderr to log_path if provided (even on error, timeout, or cancellation).
     Raises JobCancelledException if cancel_check() evaluates to True during execution.
     """
     start_time = time.time()
@@ -115,19 +118,42 @@ def run_managed_process(
     proc = subprocess.Popen(cmd, **kwargs)
     register_process(proc)
 
-    try:
-        stdout: Optional[bytes] = None
-        stderr: Optional[bytes] = None
+    stdout: Optional[bytes] = None
+    stderr: Optional[bytes] = None
 
+    def _persist_log():
+        if not log_path:
+            return
+        try:
+            os.makedirs(os.path.dirname(os.path.abspath(log_path)), exist_ok=True)
+            with open(log_path, log_mode, encoding="utf-8", errors="replace") as f:
+                f.write(f"\n=== MANAGED SUBPROCESS: {' '.join(cmd)} (PID: {proc.pid}) ===\n")
+                if stdout:
+                    f.write("--- STDOUT ---\n")
+                    f.write(stdout.decode("utf-8", errors="replace"))
+                    if not stdout.endswith(b"\n"):
+                        f.write("\n")
+                if stderr:
+                    f.write("--- STDERR ---\n")
+                    f.write(stderr.decode("utf-8", errors="replace"))
+                    if not stderr.endswith(b"\n"):
+                        f.write("\n")
+                exit_str = proc.returncode if proc.returncode is not None else "KILLED"
+                f.write(f"=== EXIT CODE: {exit_str} ===\n")
+        except Exception as ex:
+            logger.warning(f"Failed writing process output log to '{log_path}': {ex}")
+
+    try:
         while True:
             # 1. Check cancellation signal
             if cancel_check and cancel_check():
                 logger.warning(f"Cancellation signal received during execution of PID {proc.pid}! Killing process tree...")
                 kill_process_tree(proc.pid)
                 try:
-                    proc.communicate(timeout=2)
+                    stdout, stderr = proc.communicate(timeout=2)
                 except Exception:
                     pass
+                _persist_log()
                 raise JobCancelledException(f"Subprocess (PID {proc.pid}) was terminated due to job cancellation.")
 
             # 2. Check timeout
@@ -135,9 +161,10 @@ def run_managed_process(
                 logger.error(f"Subprocess PID {proc.pid} exceeded timeout limit of {timeout}s! Killing...")
                 kill_process_tree(proc.pid)
                 try:
-                    proc.communicate(timeout=2)
+                    stdout, stderr = proc.communicate(timeout=2)
                 except Exception:
                     pass
+                _persist_log()
                 raise subprocess.TimeoutExpired(cmd, timeout)
 
             # 3. Read output chunks with timeout without blocking pipe buffer
@@ -146,6 +173,8 @@ def run_managed_process(
                 break
             except subprocess.TimeoutExpired:
                 continue
+
+        _persist_log()
 
         if check and proc.returncode != 0:
             err_msg = stderr.decode("utf-8", errors="ignore") if stderr else ""

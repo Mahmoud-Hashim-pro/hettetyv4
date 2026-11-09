@@ -71,7 +71,10 @@ jobs:
         if: always()
         run: |
           python -c "
-          import os, json, sys, hashlib
+          import os, json, sys
+          sys.path.insert(0, os.path.abspath('hettety-3d-worker'))
+          from pipeline.acceptance_evidence import verify_retained_deliverables
+
           evidence_dir = os.environ.get('HETTETY_ACCEPTANCE_EVIDENCE_DIR', 'artifacts/acceptance_evidence')
           evidence_file = os.path.join(evidence_dir, 'acceptance_evidence.json')
           if not os.path.exists(evidence_file):
@@ -94,28 +97,14 @@ jobs:
                   print(f'CRITICAL_FAILURE: Criterion \"{crit_name}\" is not PASSED: {crit_data}')
                   sys.exit(1)
 
-          # Defect A & 5: Verify persistent retained 3D deliverables exist on disk, are non-empty, and verify SHA-256
-          artifacts = ev.get('artifacts', {})
-          for key, art_meta in artifacts.items():
-              if isinstance(art_meta, dict) and 'path' in art_meta:
-                  p = art_meta['path']
-                  if not os.path.exists(p):
-                      print(f'CRITICAL_FAILURE: Retained artifact \"{key}\" missing at \"{p}\"!')
-                      sys.exit(1)
-                  if os.path.getsize(p) == 0:
-                      print(f'CRITICAL_FAILURE: Retained artifact \"{key}\" is empty at \"{p}\"!')
-                      sys.exit(1)
-                  expected_sha = art_meta.get('sha256')
-                  if expected_sha and not art_meta.get('isDirectory'):
-                      hasher = hashlib.sha256()
-                      with open(p, 'rb') as f:
-                          while chunk := f.read(65536):
-                              hasher.update(chunk)
-                      actual_sha = hasher.hexdigest()
-                      if actual_sha != expected_sha:
-                          print(f'CRITICAL_FAILURE: Hash mismatch on \"{key}\": expected {expected_sha}, got {actual_sha}!')
-                          sys.exit(1)
-          print('All acceptance criteria and retained 3D deliverables verified successfully with matching SHA-256 checksums.')
+          # Defect A & 3: Cryptographically verify persistent retained 3D deliverables and recursive directory checksums
+          valid_deliverables, errs = verify_retained_deliverables(ev)
+          if not valid_deliverables:
+              for err in errs:
+                  print(f'CRITICAL_FAILURE: Deliverable integrity violation: {err}')
+              sys.exit(1)
+
+          print('All acceptance criteria, retained 3D deliverables, and directory manifest checksums verified successfully.')
           "
 
       - name: Archive Machine-Readable Acceptance Evidence & 3D Deliverables

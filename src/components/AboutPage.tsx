@@ -10,7 +10,7 @@ import {
 
 const AboutPage = ({ onCta, t, isRtl }: { onCta: () => void, t: any, isRtl: boolean }) => {
   return (
-    <div className="min-h-screen bg-white dark:bg-slate-950 text-slate-900 dark:text-white font-sans animate-fade-in transition-colors duration-500" dir={isRtl ? "rtl" : "ltr"}>
+    <div className="min-h-screen bg-white dark:bg-slate-950 text-slate-900 dark:text-white font-sans w-full max-w-full overflow-x-hidden animate-fade-in transition-colors duration-500" dir={isRtl ? "rtl" : "ltr"}>
       
       {/* Hero Section */}
       <section className="relative pt-32 pb-20 px-6 text-center overflow-hidden">

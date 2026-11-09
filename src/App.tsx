@@ -3563,7 +3563,7 @@ const AdminDashboard = ({ isRtl, isSuperAdmin }: { isRtl: boolean; isSuperAdmin:
         </div>
 
         <div 
-          className="flex flex-wrap lg:flex-nowrap items-center gap-1.5 bg-slate-100 dark:bg-slate-800 p-1.5 rounded-2xl border border-slate-200 dark:border-slate-700 w-full max-w-full min-w-0 overflow-x-auto shadow-xs" 
+          className="flex flex-wrap items-center gap-1.5 bg-slate-100 dark:bg-slate-800 p-1.5 rounded-2xl border border-slate-200 dark:border-slate-700 w-full max-w-full min-w-0 shadow-xs" 
           role="tablist" 
           aria-label={isRtl ? 'أقسام لوحة التحكم' : 'Admin dashboard sections'}
         >
@@ -4634,7 +4634,7 @@ export default function App() {
         setProperties(PREMIER_LANDMARK_PROPERTIES);
       }
     } catch (err) {
-      console.error("Error refreshing properties from Firestore:", err);
+      console.warn("Could not refresh properties from Firestore, keeping landmark inventory:", err);
       setProperties(PREMIER_LANDMARK_PROPERTIES);
     }
   }, []);
@@ -4760,8 +4760,8 @@ export default function App() {
         <SplashScreen onFinish={() => setShowSplash(false)} />
       ) : (
         <>
-      <nav className="sticky top-0 z-50 bg-white/95 dark:bg-slate-900/95 backdrop-blur-xl border-none text-slate-900 dark:text-white shadow-sm dark:shadow-slate-950 transition-all duration-500 w-full max-w-full overflow-x-clip">
-        <div className="w-full px-3 sm:px-5 lg:px-6 xl:px-8 h-20 flex items-center justify-between max-w-full min-w-0">
+      <nav className="sticky top-0 z-50 bg-white/95 dark:bg-slate-900/95 backdrop-blur-xl border-none text-slate-900 dark:text-white shadow-sm dark:shadow-slate-950 transition-all duration-500 w-full max-w-full overflow-x-hidden">
+        <div className="w-full px-3 sm:px-4 lg:px-6 xl:px-8 h-20 flex items-center justify-between max-w-full min-w-0">
           {/* Logo Group - Left side */}
           <div className="flex items-center shrink-0">
             <button 
@@ -4770,14 +4770,14 @@ export default function App() {
               onClick={() => handleNav('home')}
               aria-label="HETTETY Home"
             >
-              <Logo className="h-14 w-auto text-brand-900 dark:text-white transition-colors" />
+              <Logo className="h-12 sm:h-14 w-auto text-brand-900 dark:text-white transition-colors" />
             </button>
           </div>
 
           {/* Menu & Actions Group - Right side (Opposite to logo) */}
-          <div className="flex items-center gap-2 sm:gap-3 lg:gap-4 xl:gap-6 shrink-0">
+          <div className="flex items-center gap-1.5 sm:gap-2.5 lg:gap-3 xl:gap-5 min-w-0">
             {/* Desktop Menu */}
-            <div className="hidden lg:flex items-center gap-0.5 xl:gap-2.5 2xl:gap-5 text-xs xl:text-sm min-w-0 flex-nowrap whitespace-nowrap">
+            <div className="hidden lg:flex items-center gap-0.5 xl:gap-2 2xl:gap-4 text-xs xl:text-sm min-w-0 flex-nowrap whitespace-nowrap">
               <NavLink page="home" label={t.nav_home} />
               <NavLink page="listings" label={t.nav_listings} />
               <NavLink page="yalla-sahel" label={isRtl ? '🌊 ساحل حتتي' : '🌊 Sahel Hettety'} />
@@ -4788,32 +4788,32 @@ export default function App() {
                 type="button"
                 onClick={() => handleNav('ai-chat')} 
                 aria-current={currentPage === 'ai-chat' ? 'page' : undefined}
-                className={`font-black text-xs transition-all flex items-center gap-1.5 xl:gap-2 cursor-pointer px-3.5 xl:px-5 py-2 xl:py-2.5 rounded-full uppercase tracking-[0.05em] xl:tracking-[0.1em] shadow-sm focus:outline-none focus:ring-2 focus:ring-brand-500 ${currentPage === 'ai-chat' ? 'bg-brand-600 text-white shadow-brand-200' : 'bg-slate-100 dark:bg-slate-800 text-slate-900 dark:text-slate-200 hover:bg-brand-50 dark:hover:bg-brand-900/30 hover:text-brand-600'}`}
+                className={`font-black text-xs transition-all flex items-center gap-1.5 xl:gap-2 cursor-pointer px-3 xl:px-4 py-2 rounded-full uppercase tracking-wider shadow-sm focus:outline-none focus:ring-2 focus:ring-brand-500 shrink-0 ${currentPage === 'ai-chat' ? 'bg-brand-600 text-white shadow-brand-200' : 'bg-slate-100 dark:bg-slate-800 text-slate-900 dark:text-slate-200 hover:bg-brand-50 dark:hover:bg-brand-900/30 hover:text-brand-600'}`}
               >
-                <Sparkles size={16} className="animate-pulse" aria-hidden="true" />
+                <Sparkles size={14} className="animate-pulse" aria-hidden="true" />
                 {t.advisor_nav || t.nav_ai}
               </button>
               <NavLink page="about" label={t.footer_about} />
             </div>
 
             {/* Actions */}
-            <div className="flex items-center gap-3 sm:gap-4 shrink-0">
-              <div className="hidden md:flex items-center gap-2">
+            <div className="flex items-center gap-2 sm:gap-3 shrink-0">
+              <div className="hidden md:flex items-center gap-1.5">
                 <button 
                   type="button"
                   onClick={() => toggleDarkMode()} 
-                  className="w-10 h-10 rounded-xl bg-white dark:bg-slate-800 hover:bg-slate-50 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 transition-all flex items-center justify-center cursor-pointer border border-slate-200 dark:border-slate-800 hover:border-brand-300 dark:hover:border-brand-700 shadow-sm active:scale-90 focus:outline-none focus:ring-2 focus:ring-brand-500"
+                  className="w-9 h-9 sm:w-10 sm:h-10 rounded-xl bg-white dark:bg-slate-800 hover:bg-slate-50 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 transition-all flex items-center justify-center cursor-pointer border border-slate-200 dark:border-slate-800 hover:border-brand-300 dark:hover:border-brand-700 shadow-sm active:scale-90 focus:outline-none focus:ring-2 focus:ring-brand-500"
                   aria-label="Toggle Theme"
                 >
                   <div className="transform transition-transform duration-500 hover:rotate-12">
-                    {isDarkMode ? <Sun size={20} className="text-amber-500" aria-hidden="true" /> : <Moon size={20} className="text-slate-600" aria-hidden="true" />}
+                    {isDarkMode ? <Sun size={18} className="text-amber-500" aria-hidden="true" /> : <Moon size={18} className="text-slate-600" aria-hidden="true" />}
                   </div>
                 </button>
                 <button 
                   type="button"
                   onClick={() => setLang(lang === 'en' ? 'ar' : 'en')} 
                   aria-label={isRtl ? 'Switch language to English' : 'تغيير اللغة إلى العربية'}
-                  className="w-10 h-10 rounded-xl hover:bg-slate-50 dark:hover:bg-slate-800 text-slate-600 dark:text-slate-400 transition-all flex items-center justify-center cursor-pointer border border-transparent hover:border-slate-100 dark:hover:border-slate-700 focus:outline-none focus:ring-2 focus:ring-brand-500"
+                  className="w-9 h-9 sm:w-10 sm:h-10 rounded-xl hover:bg-slate-50 dark:hover:bg-slate-800 text-slate-600 dark:text-slate-400 transition-all flex items-center justify-center cursor-pointer border border-transparent hover:border-slate-100 dark:hover:border-slate-700 focus:outline-none focus:ring-2 focus:ring-brand-500"
                 >
                   <span className="text-xs font-black tracking-widest leading-none">{lang === 'en' ? 'AR' : 'EN'}</span>
                 </button>
@@ -4824,19 +4824,19 @@ export default function App() {
                 <button
                   type="button"
                   onClick={() => { setShowNotifications(!showNotifications); setShowProfileMenu(false); }}
-                  className="relative min-w-[48px] min-h-[48px] p-2.5 rounded-xl hover:bg-slate-50 dark:hover:bg-slate-800 text-slate-600 dark:text-slate-400 transition-all cursor-pointer border border-transparent hover:border-slate-100 dark:hover:border-slate-700 flex items-center justify-center focus:outline-none focus:ring-2 focus:ring-brand-500"
+                  className="relative min-w-[40px] min-h-[40px] sm:min-w-[44px] sm:min-h-[44px] p-2 sm:p-2.5 rounded-xl hover:bg-slate-50 dark:hover:bg-slate-800 text-slate-600 dark:text-slate-400 transition-all cursor-pointer border border-transparent hover:border-slate-100 dark:hover:border-slate-700 flex items-center justify-center focus:outline-none focus:ring-2 focus:ring-brand-500"
                   aria-label={isRtl ? `الإشعارات (${notifications.filter(n => !n.read).length} غير مقروء)` : `Notifications (${notifications.filter(n => !n.read).length} unread)`}
                   aria-haspopup="dialog"
                   aria-expanded={showNotifications}
                 >
-                  <Bell size={22} className="text-slate-500 dark:text-slate-400" aria-hidden="true" />
+                  <Bell size={20} className="text-slate-500 dark:text-slate-400" aria-hidden="true" />
                   {notifications.filter(n => !n.read).length > 0 && (
                     <span className="absolute top-2 right-2 w-2.5 h-2.5 bg-brand-500 rounded-full border-2 border-white dark:border-slate-900 animate-pulse"></span>
                   )}
                 </button>
                 {showNotifications && (
-                  <div className={`absolute top-full mt-4 w-96 bg-white dark:bg-slate-900 rounded-3xl shadow-2xl border border-slate-100 dark:border-slate-800 overflow-hidden z-50 ${isRtl ? 'left-0' : 'right-0'} animate-fade-in`}>
-                    <div className="p-6 border-b border-slate-50 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-900/50 flex justify-between items-center">
+                  <div className={`absolute top-full mt-4 w-80 sm:w-96 max-w-[calc(100vw-1.5rem)] bg-white dark:bg-slate-900 rounded-3xl shadow-2xl border border-slate-100 dark:border-slate-800 overflow-hidden z-50 ${isRtl ? 'left-0' : 'right-0'} animate-fade-in`}>
+                    <div className="p-5 sm:p-6 border-b border-slate-50 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-900/50 flex justify-between items-center">
                       <h3 className="font-black text-slate-900 dark:text-white text-xs uppercase tracking-widest italic">{isRtl ? 'الإشعارات' : 'Notifications'}</h3>
                       <span className="text-[10px] bg-brand-100 dark:bg-brand-900 text-brand-700 dark:text-brand-300 px-3 py-1.5 rounded-full font-black tracking-widest">
                         {notifications.filter(n => !n.read).length} {isRtl ? 'جديد' : 'NEW'}
@@ -4864,7 +4864,7 @@ export default function App() {
             )}
             
             {/* Profile dropdown (desktop) */}
-            <div className="hidden lg:block relative" data-menu>
+            <div className="hidden lg:block relative shrink-0" data-menu>
               {userEmail ? (
                 <>
                   <button
@@ -4873,16 +4873,16 @@ export default function App() {
                     aria-label={isRtl ? "قائمة الملف الشخصي" : "User Profile Menu"}
                     aria-haspopup="menu"
                     aria-expanded={showProfileMenu}
-                    className="flex items-center gap-2 pl-1.5 pr-2.5 sm:pr-3 py-1.5 rounded-full bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 border border-slate-200 dark:border-slate-700 transition-all cursor-pointer focus:outline-none focus:ring-2 focus:ring-brand-500 shrink-0"
+                    className="flex items-center gap-1.5 sm:gap-2 px-2 sm:px-3 py-1.5 rounded-full bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 border border-slate-200 dark:border-slate-700 transition-all cursor-pointer focus:outline-none focus:ring-2 focus:ring-brand-500 shrink-0"
                   >
-                    <div className="w-9 h-9 rounded-full bg-gradient-to-br from-brand-500 to-brand-700 text-white flex items-center justify-center font-black text-sm uppercase shrink-0 shadow-sm">
+                    <div className="w-8 h-8 rounded-full bg-gradient-to-br from-brand-500 to-brand-700 text-white flex items-center justify-center font-black text-xs sm:text-sm uppercase shrink-0 shadow-sm">
                       {(userName || userEmail || 'U').charAt(0)}
                     </div>
-                    <span className="hidden xl:inline-block text-sm font-bold text-slate-900 dark:text-white max-w-[7rem] 2xl:max-w-[9rem] truncate">{userName || userEmail.split('@')[0]}</span>
+                    <span className="hidden xl:inline-block text-xs sm:text-sm font-bold text-slate-900 dark:text-white max-w-[5.5rem] 2xl:max-w-[8rem] truncate shrink-0">{userName || userEmail.split('@')[0]}</span>
                     <ChevronRight size={14} className={`text-slate-400 transition-transform shrink-0 ${showProfileMenu ? '-rotate-90' : 'rotate-90'}`} aria-hidden="true" />
                   </button>
                   {showProfileMenu && (
-                    <div className={`absolute top-full mt-3 w-80 max-w-[calc(100vw-1.5rem)] bg-white dark:bg-slate-900 rounded-2xl shadow-2xl border border-slate-200 dark:border-slate-800 overflow-hidden z-50 ${isRtl ? 'left-0' : 'right-0'} animate-fade-in`}>
+                    <div className={`absolute top-full mt-3 w-72 sm:w-80 max-w-[calc(100vw-1.5rem)] bg-white dark:bg-slate-900 rounded-2xl shadow-2xl border border-slate-200 dark:border-slate-800 overflow-hidden z-50 ${isRtl ? 'left-0' : 'right-0'} animate-fade-in`}>
                       {/* Header */}
                       <div className="p-4 sm:p-5 border-b border-slate-100 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-900/50">
                         <div className="font-black text-slate-900 dark:text-white text-base truncate">{userName || (isRtl ? 'مستخدم' : 'User')}</div>
@@ -5109,7 +5109,7 @@ export default function App() {
                      {isAiSearching ? <Loader2 className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4" />}
                    </button>
                  </div>
-                 <div className="relative flex-1 sm:flex-initial sm:w-44 md:w-48 min-w-[145px]">
+                 <div className="relative flex-1 sm:flex-initial sm:w-40 md:w-44 min-w-[130px]">
                    <DollarSign className={"absolute top-3 text-slate-400 w-4 h-4 start-3 pointer-events-none"} />
                    <input 
                      type="number"
@@ -5121,10 +5121,10 @@ export default function App() {
                        if (val === '') setMinPrice('');
                        else if (Number(val) >= 0) setMinPrice(Number(val));
                      }}
-                     className={`w-full py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 focus:ring-2 focus:ring-brand-500 outline-none text-black dark:text-white ps-9 pe-3 text-xs sm:text-sm font-medium`} 
+                     className={`w-full py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 focus:ring-2 focus:ring-brand-500 outline-none text-black dark:text-white ps-8 pe-2 text-xs sm:text-sm font-medium [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none`} 
                    />
                  </div>
-                 <div className="relative flex-1 sm:flex-initial sm:w-44 md:w-48 min-w-[145px]">
+                 <div className="relative flex-1 sm:flex-initial sm:w-40 md:w-44 min-w-[130px]">
                    <DollarSign className={"absolute top-3 text-slate-400 w-4 h-4 start-3 pointer-events-none"} />
                    <input 
                      type="number"
@@ -5136,7 +5136,7 @@ export default function App() {
                        if (val === '') setMaxPrice('');
                        else if (Number(val) >= 0) setMaxPrice(Number(val));
                      }}
-                     className={`w-full py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 focus:ring-2 focus:ring-brand-500 outline-none text-black dark:text-white ps-9 pe-3 text-xs sm:text-sm font-medium`} 
+                     className={`w-full py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 focus:ring-2 focus:ring-brand-500 outline-none text-black dark:text-white ps-8 pe-2 text-xs sm:text-sm font-medium [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none`} 
                    />
                  </div>
                  <select

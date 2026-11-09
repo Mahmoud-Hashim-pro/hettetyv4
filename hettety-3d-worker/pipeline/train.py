@@ -562,18 +562,18 @@ def find_enclosing_git_repo(path: str) -> Optional[str]:
 
 
 def get_allowed_graphdeco_remotes() -> Set[str]:
-    """Retrieves allowed upstream Graphdeco git remotes, respecting environment overrides."""
-    custom = os.environ.get("HETTETY_GRAPHDECO_ALLOWED_REMOTES")
-    if custom:
-        return {r.strip().lower() for r in custom.split(",") if r.strip()}
+    """
+    Retrieves authoritative approved upstream Graphdeco git remotes.
+    Production strict policy: environment variables cannot expand or alter this list.
+    """
     return {r.lower() for r in DEFAULT_ALLOWED_GRAPHDECO_REMOTES}
 
 
 def get_allowed_graphdeco_commits() -> Set[str]:
-    """Retrieves approved Graphdeco commit SHAs, respecting environment overrides."""
-    custom = os.environ.get("HETTETY_GRAPHDECO_ALLOWED_COMMITS")
-    if custom:
-        return {c.strip().lower() for c in custom.split(",") if c.strip()}
+    """
+    Retrieves authoritative approved Graphdeco commit SHAs.
+    Production strict policy: environment variables cannot expand or alter this list.
+    """
     return {c.lower() for c in DEFAULT_APPROVED_GRAPHDECO_COMMITS}
 
 

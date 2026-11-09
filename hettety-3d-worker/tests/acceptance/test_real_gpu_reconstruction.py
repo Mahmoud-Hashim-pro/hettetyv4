@@ -42,6 +42,8 @@ from pipeline.train import (
     validate_graphdeco_runner_provenance,
     validate_gaussian_ply_schema,
     DEFAULT_APPROVED_GRAPHDECO_COMMITS,
+    get_allowed_graphdeco_commits,
+    get_allowed_graphdeco_remotes,
     normalize_git_remote_url
 )
 from pipeline.optimize import parse_ply_header_and_bounds, optimize_splat_cloud
@@ -1137,6 +1139,23 @@ class TestRealReconstructionStrictGuards(unittest.TestCase):
         self.assertTrue(valid_auth)
         self.assertIn("Authentic official Graphdeco", reason_auth)
 
+        # 4. Prove environment variables CANNOT expand or subvert trusted commit or remote allowlist
+        os.environ["HETTETY_GRAPHDECO_ALLOWED_COMMITS"] = f"malicious_fake_commit_sha,{local_head}"
+        os.environ["HETTETY_GRAPHDECO_ALLOWED_REMOTES"] = "https://github.com/attacker/gaussian-splatting"
+
+        # get_allowed_graphdeco_commits must strictly ignore HETTETY_GRAPHDECO_ALLOWED_COMMITS
+        self.assertEqual(get_allowed_graphdeco_commits(), upstream_verified)
+        self.assertNotIn("malicious_fake_commit_sha", get_allowed_graphdeco_commits())
+        self.assertNotIn(local_head, get_allowed_graphdeco_commits())
+
+        # get_allowed_graphdeco_remotes must strictly ignore HETTETY_GRAPHDECO_ALLOWED_REMOTES
+        self.assertNotIn("https://github.com/attacker/gaussian-splatting", get_allowed_graphdeco_remotes())
+
+        # Production strict validation must reject unapproved commit even when env var claims it is allowed
+        valid_env_spoof, reason_env_spoof = validate_graphdeco_runner_provenance(script_path)
+        self.assertFalse(valid_env_spoof)
+        self.assertIn("is not in approved Graphdeco commit whitelist", reason_env_spoof)
+
     def test_retained_deliverables_fail_closed_validation(self):
         """
         Blocker B Verification: Exhaustively tests all failure cases of verify_retained_deliverables:
@@ -1322,6 +1341,52 @@ class TestRealReconstructionStrictGuards(unittest.TestCase):
         except (OSError, NotImplementedError):
             pass
 
+        # 18. Security Boundary: artifact whose evidence_dir points outside trusted root is rejected
+        outside_dir = os.path.join(self.temp_dir, "outside_dir")
+        os.makedirs(outside_dir, exist_ok=True)
+        m_ev_out = json.loads(json.dumps(base_manifest))
+        m_ev_out["artifacts"]["spz"]["evidence_dir"] = outside_dir
+        ok, errs = verify_retained_deliverables(m_ev_out, base_dir=evidence_dir)
+        self.assertFalse(ok)
+        self.assertTrue(any("does not match trusted evidence root" in e for e in errs))
+
+        # 19. Security Boundary: artifact whose path AND evidence_dir are both changed to external directory is rejected
+        outside_spz = os.path.join(outside_dir, "stolen.spz")
+        with open(outside_spz, "wb") as f:
+            f.write(b"STOLEN_DELIVERABLE")
+        out_spz_sha, out_spz_size = compute_file_hash(outside_spz)
+        m_both_out = json.loads(json.dumps(base_manifest))
+        m_both_out["artifacts"]["spz"]["path"] = outside_spz
+        m_both_out["artifacts"]["spz"]["evidence_dir"] = outside_dir
+        m_both_out["artifacts"]["spz"]["sha256"] = out_spz_sha
+        m_both_out["artifacts"]["spz"]["sizeBytes"] = out_spz_size
+        ok, errs = verify_retained_deliverables(m_both_out, base_dir=evidence_dir)
+        self.assertFalse(ok)
+        self.assertTrue(any("SECURITY_VIOLATION" in e for e in errs))
+
+        # 20. Valid artifact whose metadata points to the correct trusted evidence directory succeeds
+        m_valid_meta = json.loads(json.dumps(base_manifest))
+        m_valid_meta["artifacts"]["spz"]["evidence_dir"] = evidence_dir
+        m_valid_meta["artifacts"]["sparse_sfm"]["evidence_dir"] = evidence_dir
+        ok, errs = verify_retained_deliverables(m_valid_meta, base_dir=evidence_dir)
+        self.assertTrue(ok, f"Valid manifest with matching evidence_dir should pass: {errs}")
+
+        # 21. Security Boundary: nested symlink escaping trusted evidence directory is rejected
+        nested_dir = os.path.join(evidence_dir, "nested_deliverables")
+        os.makedirs(nested_dir, exist_ok=True)
+        nested_symlink = os.path.join(nested_dir, "nested_escape_spz")
+        try:
+            os.symlink(outside_spz, nested_symlink)
+            m_nested_sym = json.loads(json.dumps(base_manifest))
+            m_nested_sym["artifacts"]["spz"]["path"] = nested_symlink
+            m_nested_sym["artifacts"]["spz"]["sha256"] = out_spz_sha
+            m_nested_sym["artifacts"]["spz"]["sizeBytes"] = out_spz_size
+            ok, errs = verify_retained_deliverables(m_nested_sym, base_dir=evidence_dir)
+            self.assertFalse(ok)
+            self.assertTrue(any("SECURITY_VIOLATION" in e for e in errs))
+        except (OSError, NotImplementedError):
+            pass
+
     def test_managed_process_persists_failure_cancellation_and_timeout_logs(self):
         """
         Task Verification: Proves that run_managed_process guarantees that available
@@ -1389,6 +1454,37 @@ class TestRealReconstructionStrictGuards(unittest.TestCase):
             timeout_content = f.read()
         self.assertIn("Pre-timeout message", timeout_content)
         self.assertIn("EXIT CODE:", timeout_content)
+
+    def test_log_persistence_failure_surfaced_as_diagnostic_failure(self):
+        """
+        Requirement 3 Verification: Proves that a log persistence failure
+        is surfaced directly as a diagnostic failure rather than silently
+        being reported as a successfully retained log.
+        """
+        missing_log_path = os.path.join(self.temp_dir, "nonexistent_training_stdout.log")
+        partial_artifacts = {
+            "training_stdout_log": {
+                "path": missing_log_path,
+                "target_filename": "training_stdout.log"
+            }
+        }
+
+        # retain_deliverables records persistence failure when source asset does not exist
+        retained = retain_deliverables("run_log_persist_fail", partial_artifacts, self.evidence_test_dir)
+        self.assertIn("training_stdout_log", retained)
+        self.assertFalse(retained["training_stdout_log"].get("persisted", True))
+        self.assertIn("PERSISTENCE_FAILED", retained["training_stdout_log"].get("error", ""))
+
+        # verify_retained_deliverables must surface the diagnostic failure and reject manifest
+        manifest = {
+            "run_id": "run_log_persist_fail",
+            "evidence_dir": self.evidence_test_dir,
+            "status": "PASSED",
+            "artifacts": retained
+        }
+        is_valid, errors = verify_retained_deliverables(manifest, base_dir=self.evidence_test_dir)
+        self.assertFalse(is_valid)
+        self.assertTrue(any("failed persistence" in e or "missing at" in e for e in errors))
 
     def test_large_ply_streaming_bounds_and_optimization_truncation_rejection(self):
         """

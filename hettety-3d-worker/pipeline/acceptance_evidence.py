@@ -374,6 +374,12 @@ def retain_deliverables(
             res = _copy_and_audit(art_val, os.path.basename(art_val))
             if res:
                 retained[art_key] = res
+            else:
+                retained[art_key] = {
+                    "path": art_val,
+                    "persisted": False,
+                    "error": f"PERSISTENCE_FAILED: Source asset not found on disk at '{art_val}'"
+                }
         elif isinstance(art_val, dict):
             src_p = art_val.get("path")
             if src_p and os.path.exists(src_p):
@@ -384,7 +390,10 @@ def retain_deliverables(
                     merged.update(audit_res)
                     retained[art_key] = merged
             else:
-                retained[art_key] = dict(art_val)
+                failed = dict(art_val)
+                failed["persisted"] = False
+                failed["error"] = f"PERSISTENCE_FAILED: Source asset not found on disk at '{src_p}'"
+                retained[art_key] = failed
         else:
             retained[art_key] = art_val
 
@@ -454,20 +463,27 @@ def verify_retained_deliverables(
             if req not in artifacts:
                 errors.append(f"Retained evidence manifest is missing required deliverable '{req}'.")
 
-    # Determine default root boundary for artifact paths
-    default_root = None
+    # Determine the authoritative trusted evidence root boundary
     if base_dir:
-        default_root = os.path.realpath(os.path.abspath(base_dir))
+        trusted_root = os.path.realpath(os.path.abspath(base_dir))
     elif isinstance(evidence_json_or_dict, str):
-        default_root = os.path.realpath(os.path.abspath(os.path.dirname(evidence_json_or_dict)))
+        trusted_root = os.path.realpath(os.path.abspath(os.path.dirname(evidence_json_or_dict)))
+    elif os.environ.get("HETTETY_ACCEPTANCE_EVIDENCE_DIR"):
+        trusted_root = os.path.realpath(os.path.abspath(os.environ["HETTETY_ACCEPTANCE_EVIDENCE_DIR"]))
     elif evidence.get("evidence_dir"):
-        default_root = os.path.realpath(os.path.abspath(evidence["evidence_dir"]))
+        trusted_root = os.path.realpath(os.path.abspath(evidence["evidence_dir"]))
     else:
-        default_root = os.path.realpath(os.path.abspath(get_evidence_directory()))
+        trusted_root = os.path.realpath(os.path.abspath(get_evidence_directory()))
 
     for key, art_meta in artifacts.items():
         if not isinstance(art_meta, dict):
             errors.append(f"Deliverable '{key}' metadata is malformed: expected dictionary, got {type(art_meta).__name__}")
+            continue
+
+        # Surface log or deliverable persistence failures directly as diagnostic failures
+        if art_meta.get("persisted") is False or "error" in art_meta:
+            err_msg = art_meta.get("error", "persistence failed")
+            errors.append(f"Deliverable '{key}' failed persistence: {err_msg}")
             continue
 
         p = art_meta.get("path")
@@ -475,11 +491,20 @@ def verify_retained_deliverables(
             errors.append(f"Deliverable '{key}' metadata is missing a valid non-empty 'path' string.")
             continue
 
-        # Boundary security check
-        effective_root = default_root
-        if art_meta.get("evidence_dir") and not base_dir:
-            effective_root = os.path.realpath(os.path.abspath(art_meta["evidence_dir"]))
+        # If artifact metadata declares evidence_dir, it MUST match trusted_root (no override permitted)
+        meta_ev_dir = art_meta.get("evidence_dir")
+        if meta_ev_dir is not None:
+            if not isinstance(meta_ev_dir, str) or not meta_ev_dir.strip():
+                errors.append(f"SECURITY_VIOLATION: Deliverable '{key}' evidence_dir is invalid.")
+                continue
+            canonical_meta_dir = os.path.realpath(os.path.abspath(meta_ev_dir))
+            if canonical_meta_dir != trusted_root:
+                errors.append(
+                    f"SECURITY_VIOLATION: Deliverable '{key}' evidence_dir '{meta_ev_dir}' does not match trusted evidence root '{trusted_root}'."
+                )
+                continue
 
+        # Check deliverable path containment strictly inside trusted_root
         if base_dir and not os.path.isabs(p):
             resolved_p = os.path.join(base_dir, p)
         else:
@@ -488,9 +513,9 @@ def verify_retained_deliverables(
         canonical_p = os.path.realpath(os.path.abspath(resolved_p))
 
         try:
-            common = os.path.commonpath([effective_root, canonical_p])
-            if common != effective_root:
-                errors.append(f"SECURITY_VIOLATION: Deliverable '{key}' path '{p}' escapes evidence directory boundary '{effective_root}'.")
+            common = os.path.commonpath([trusted_root, canonical_p])
+            if common != trusted_root:
+                errors.append(f"SECURITY_VIOLATION: Deliverable '{key}' path '{p}' escapes trusted evidence directory '{trusted_root}'.")
                 continue
         except Exception as ve:
             errors.append(f"SECURITY_VIOLATION: Deliverable '{key}' boundary verification error for '{p}': {ve}")

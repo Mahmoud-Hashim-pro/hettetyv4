@@ -98,7 +98,7 @@ jobs:
                   sys.exit(1)
 
           # Defect A & 3: Cryptographically verify persistent retained 3D deliverables and recursive directory checksums
-          valid_deliverables, errs = verify_retained_deliverables(ev, required_keys=['spz', 'glb', 'sparse_sfm'])
+          valid_deliverables, errs = verify_retained_deliverables(ev, base_dir=evidence_dir, required_keys=['spz', 'glb', 'sparse_sfm'])
           if not valid_deliverables:
               for err in errs:
                   print(f'CRITICAL_FAILURE: Deliverable integrity violation: {err}')

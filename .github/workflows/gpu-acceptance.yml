@@ -1,0 +1,62 @@
+name: Dedicated Physical GPU Acceptance Gate
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_real_gpu_acceptance:
+        description: 'Explicit confirmation to execute 30,000-iteration Graphdeco 3DGS on dedicated physical NVIDIA GPU'
+        required: true
+        default: 'true'
+        type: boolean
+      target_property_fixture:
+        description: 'Acceptance fixture dataset to execute against'
+        required: true
+        default: 'prop_villa_marassi_01'
+        type: string
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  authoritative-gpu-acceptance:
+    name: Physical GPU Photogrammetric Acceptance Gate (NVIDIA CUDA 11.8+ Required)
+    # This authoritative acceptance gate runs ONLY on dedicated self-hosted runners
+    # equipped with physical NVIDIA GPUs (VRAM >= 12GB), CUDA >= 11.8, native COLMAP,
+    # and compiled Graphdeco gaussian-splatting CUDA submodules.
+    runs-on: [self-hosted, gpu, nvidia]
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Verify Physical NVIDIA GPU Hardware & Drivers
+        run: |
+          nvidia-smi
+          python -c "import torch; assert torch.cuda.is_available(), 'CRITICAL_BLOCKER: CUDA is not available on this runner!'"
+          python -c "import torch; v = tuple(map(int, torch.version.cuda.split('.')[:2])); assert v >= (11, 8), f'CRITICAL_BLOCKER: CUDA version {torch.version.cuda} is below 11.8!'"
+          python -c "import torch; vram = torch.cuda.get_device_properties(0).total_memory / (1024**3); assert vram >= 11.5, f'CRITICAL_BLOCKER: Minimum 12 GB VRAM required (detected {vram:.2f} GB)!'"
+
+      - name: Verify Native COLMAP Installation
+        run: |
+          colmap --version
+
+      - name: Verify Graphdeco 3DGS Submodules
+        run: |
+          python -c "import diff_gaussian_rasterization; import simple_knn; print('Graphdeco CUDA submodules verified successfully.')"
+
+      - name: Execute Authoritative Real GPU Reconstruction Acceptance Suite
+        env:
+          HETTETY_REAL_PIPELINE_STRICT: '1'
+          GAUSSIAN_SPLATTING_PATH: '/opt/gaussian-splatting/train.py'
+        run: |
+          python -m pytest hettety-3d-worker/tests/acceptance/test_real_gpu_reconstruction.py -v -s
+
+      - name: Archive Machine-Readable Acceptance Evidence Artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: real-gpu-acceptance-evidence
+          path: |
+            hettety-3d-worker/tests/acceptance/acceptance_evidence.json
+            tests/fixtures/real_properties/prop_villa_marassi_01/acceptance_evidence.json
+          if-no-files-found: warn

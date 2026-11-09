@@ -2,7 +2,7 @@
 
 > **Report Identity**: `FINAL_AUDIT/REAL_PIPELINE_ACCEPTANCE_REPORT.md`  
 > **Repository**: `Mahmoud-Hashim-pro/hettetyv4`  
-> **Audit Date**: November 8, 2026  
+> **Audit Date**: November 9, 2026 (Updated with Hardened Strict Acceptance Suite)  
 > **Auditor**: Principal Staff Systems & 3D Reconstruction Engineer  
 > **Overall Real Reconstruction Status**: **PARTIAL (ARCHITECTURE & CODE VERIFIED; REAL GPU EXECUTION BLOCKED ON CLOUD GPU HOST)**  
 
@@ -10,18 +10,18 @@
 
 ## 1. Executive Summary & Forensic Disclosure
 
-Following comprehensive source code inspection of the Hettety v4 3D reconstruction pipeline, an essential architectural distinction has been formally established:
+Following comprehensive source code inspection and hardening of the Hettety v4 3D reconstruction pipeline, an essential architectural distinction has been formally established and rigorously tested:
 
-1. **Automated CI & Development Suites (67 Pytest + 488 Vitest Tests)**:
+1. **Automated CI & Development Suites (77 Pytest + 504 Vitest Tests)**:
    - Exercise the entire data flow, coordinate mapping, file schemas (Niantic SPZ v4, glTF 2.0 binary GLB), laser holdout calibration math, error handling, and worker state transitions.
-   - When executed in test environments (`HETTETY_ENV=test`) on CPU hosts (such as GitHub Actions `ubuntu-latest` or local development machines), the tests historically utilized synthetic fixture generation (`_generate_test_fixture_sfm`, `_generate_test_fixture_dense`) and mathematical CPU optimization (`IterativeGaussianOptimizer`).
+   - When executed in test environments (`HETTETY_ENV=test`) on CPU hosts (such as GitHub Actions `ubuntu-latest` or local development machines), unit tests utilize synthetic fixture generation (`_generate_test_fixture_sfm`, `_generate_test_fixture_dense`) and mathematical CPU optimization (`IterativeGaussianOptimizer`).
    - **Forensic Truth**: A 100% pass rate in these test suites proves algorithmic and data contract validity, but does **NOT** prove that real COLMAP binaries or CUDA-accelerated Graphdeco 3DGS training ran on physical GPU hardware.
 
 2. **Physical GPU Reconstruction Invariant**:
    - Genuine photogrammetric reconstruction of luxury real estate walkthrough captures requires physical hardware:
      * Host with an NVIDIA GPU ($\ge 12$ GB VRAM) running CUDA 11.8+.
      * Native COLMAP binary (or official container) compiled with CUDA SIFT/MVS.
-     * Official `graphdeco-inria/gaussian-splatting` repository with compiled `diff-gaussian-rasterization` CUDA extensions.
+     * Official `graphdeco-inria/gaussian-splatting` repository with genuine `train.py` executable and compiled `diff_gaussian_rasterization` and `simple_knn` CUDA submodules.
    - Because this hardware is not present on standard CPU CI runners, claiming that real E2E production certification is complete was a conflation of fixture verification with physical execution.
 
 ---
@@ -54,22 +54,24 @@ Strictly conforming to the four allowed statuses: `COMPLETE`, `PARTIAL`, `BLOCKE
 
 ---
 
-## 3. Strict Real Pipeline Acceptance Guards
+## 3. Strict Real Pipeline Acceptance Guards & Hardened Test Suite
 
-To permanently enforce that test fixtures and CPU fallback optimizers are NEVER counted as real reconstruction proof, strict acceptance guards have been added to the worker codebase:
+To permanently enforce that test fixtures and CPU fallback optimizers are NEVER counted as real reconstruction proof, strict acceptance guards have been hardened across the worker codebase:
 
-### Implementation in `pipeline/colmap.py` & `pipeline/train.py`
+### Hardened Implementation in `pipeline/colmap.py` & `pipeline/train.py`
 When `HETTETY_REAL_PIPELINE_STRICT=1` is set:
-1. `run_sfm()` strictly checks `is_colmap_available()`. If COLMAP binary/container is absent, it returns `error_code: COLMAP_UNAVAILABLE` with an explicit guard message. It is strictly forbidden from invoking `_generate_test_fixture_sfm()`.
-2. `run_dense_stereo()` strictly checks `is_colmap_available()`. If absent, it returns `error_code: COLMAP_UNAVAILABLE` and strictly refuses to invoke `_generate_test_fixture_dense()`.
-3. `run_gaussian_training()` strictly checks for official `train.py` and `torch.cuda.is_available()`. If either is missing, it returns `GRAPHDECO_RUNNER_MISSING` or `CUDA_UNAVAILABLE` and strictly refuses to invoke `IterativeGaussianOptimizer`.
+1. `run_sfm()` strictly checks `is_colmap_available()`. If COLMAP binary/container is absent, it returns `error_code: COLMAP_UNAVAILABLE` with an explicit guard message. It is strictly forbidden from invoking `_generate_test_fixture_sfm()`, whether COLMAP is installed or not.
+2. `run_dense_stereo()` strictly checks `is_colmap_available()`. If absent or if stereo execution fails, it strictly refuses to invoke `_generate_test_fixture_dense()`.
+3. `run_gaussian_training()` strictly resolves `resolve_graphdeco_script_path()`, requiring an existing file named `train.py` (rejecting directories). It parses `torch.version.cuda` numerically and enforces `CUDA >= 11.8`. If the runner, CUDA, or compiled submodules are missing, it returns explicit error codes and strictly refuses to instantiate `IterativeGaussianOptimizer`.
+4. `verify_acceptance_dataset()` validates that the dataset directory contains $\ge 8$ valid image files with genuine JPEG/PNG byte headers and valid `survey_benchmarks.json`. It fails closed with `DATASET_INCOMPLETE` if any element is missing or corrupt.
+5. All environment variables modified during tests (`HETTETY_REAL_PIPELINE_STRICT`, `HETTETY_ENV`, `NODE_ENV`, `GAUSSIAN_SPLATTING_PATH`) are strictly restored in `tearDown()`.
 
 ### Dedicated Acceptance Test Suite
 **File**: `hettety-3d-worker/tests/acceptance/test_real_gpu_reconstruction.py`
 
 This suite contains two classes:
-1. `TestRealReconstructionStrictGuards`: Verifies on any environment that strict guards actively block all synthetic fixtures and CPU optimizer fallbacks.
-2. `TestRealGPUPipelineAcceptance`: Requires physical NVIDIA GPU, CUDA $\ge 11.8$, $\ge 12$ GB VRAM, COLMAP binary, and Graphdeco repository. If any is missing, it marks the test as `SKIPPED / BLOCKED_PREREQUISITE` with the exact missing requirement.
+1. `TestRealReconstructionStrictGuards`: Verifies on any environment that strict guards actively block all synthetic fixtures and CPU optimizer fallbacks via mocking and instrumentation.
+2. `TestRealGPUPipelineAcceptance`: Requires physical NVIDIA GPU, CUDA $\ge 11.8$, $\ge 12$ GB VRAM, COLMAP binary, and Graphdeco repository with compiled CUDA extensions. If any prerequisite is missing, it writes a machine-readable `acceptance_evidence.json` with status `BLOCKED` and marks the test as `SKIPPED` with the exact missing requirement.
 
 #### Execution Output on Local Environment:
 ```
@@ -77,15 +79,21 @@ This suite contains two classes:
 platform win32 -- Python 3.13.14, pytest-9.1.1, pluggy-1.6.0
 rootdir: C:\Users\Tie\.gemini\antigravity\scratch\hettetyv4
 configfile: pytest.ini
-collected 4 items
+collected 10 items
 
-hettety-3d-worker/tests/acceptance/test_real_gpu_reconstruction.py::TestRealReconstructionStrictGuards::test_strict_guard_rejects_iterative_gaussian_optimizer PASSED [ 25%]
-hettety-3d-worker/tests/acceptance/test_real_gpu_reconstruction.py::TestRealReconstructionStrictGuards::test_strict_guard_rejects_synthetic_dense_fixture PASSED [ 50%]
-hettety-3d-worker/tests/acceptance/test_real_gpu_reconstruction.py::TestRealReconstructionStrictGuards::test_strict_guard_rejects_synthetic_sfm_fixture PASSED [ 75%]
+hettety-3d-worker/tests/acceptance/test_real_gpu_reconstruction.py::TestRealReconstructionStrictGuards::test_acceptance_dataset_integrity_validator PASSED [ 10%]
+hettety-3d-worker/tests/acceptance/test_real_gpu_reconstruction.py::TestRealReconstructionStrictGuards::test_cuda_version_numeric_parsing PASSED [ 20%]
+hettety-3d-worker/tests/acceptance/test_real_gpu_reconstruction.py::TestRealReconstructionStrictGuards::test_strict_guard_directory_path_not_mistaken_for_train_py PASSED [ 30%]
+hettety-3d-worker/tests/acceptance/test_real_gpu_reconstruction.py::TestRealReconstructionStrictGuards::test_strict_guard_proves_iterative_optimizer_never_instantiated_cuda_unavailable PASSED [ 40%]
+hettety-3d-worker/tests/acceptance/test_real_gpu_reconstruction.py::TestRealReconstructionStrictGuards::test_strict_guard_proves_iterative_optimizer_never_instantiated_missing_runner PASSED [ 50%]
+hettety-3d-worker/tests/acceptance/test_real_gpu_reconstruction.py::TestRealReconstructionStrictGuards::test_strict_guard_rejects_dense_fixture_when_colmap_fails PASSED [ 60%]
+hettety-3d-worker/tests/acceptance/test_real_gpu_reconstruction.py::TestRealReconstructionStrictGuards::test_strict_guard_rejects_dense_fixture_when_colmap_unavailable PASSED [ 70%]
+hettety-3d-worker/tests/acceptance/test_real_gpu_reconstruction.py::TestRealReconstructionStrictGuards::test_strict_guard_rejects_sfm_fixture_when_colmap_fails PASSED [ 80%]
+hettety-3d-worker/tests/acceptance/test_real_gpu_reconstruction.py::TestRealReconstructionStrictGuards::test_strict_guard_rejects_sfm_fixture_when_colmap_unavailable PASSED [ 90%]
 hettety-3d-worker/tests/acceptance/test_real_gpu_reconstruction.py::TestRealGPUPipelineAcceptance::test_real_gpu_photogrammetry_reconstruction SKIPPED [100%]
-(Reason: BLOCKED_PREREQUISITE: Physical NVIDIA GPU with CUDA support is required. Current host does not have CUDA available.)
 
-======================== 3 passed, 1 skipped in 1.49s =========================
+======================== 9 passed, 1 skipped in 1.59s =========================
+SKIPPED Reason: Physical NVIDIA GPU with CUDA support is required. Current host does not have CUDA available.
 ```
 
 ---
@@ -129,15 +137,15 @@ export GAUSSIAN_SPLATTING_PATH=/opt/gaussian-splatting/train.py
 python -m pytest tests/acceptance/test_real_gpu_reconstruction.py -v
 ```
 
-### 3. Managed Services
-- **Redis Queue**: GCP Cloud Memorystore for Redis (or Upstash Redis) with TLS enabled and persistent stream storage.
-- **Object Storage**: Google Cloud Storage bucket with CORS headers allowing `GET / HEAD` from `https://hettety.vercel.app`.
+### 3. CI Configuration & Separation
+- **CPU Workflows (`.github/workflows/ci.yml`)**: Executes Node.js 20 typechecking, Vite build, 504 Vitest frontend tests, and 77 Pytest worker CPU tests on GitHub standard `ubuntu-latest`.
+- **GPU Acceptance Workflow (`.github/workflows/gpu-acceptance.yml`)**: Strictly isolated workflow targeting `runs-on: [self-hosted, gpu, nvidia]` runners to execute full 30,000-iteration reconstruction with hardware verification.
 
 ---
 
 ## 5. Certification Summary & Conclusion
 
-- **Client & Control Plane**: **PRODUCTION READY**. Hosted and serving traffic at `https://hettety.vercel.app/`.
+- **Client & Control Plane**: **PRODUCTION READY**. Hosted and serving live traffic at `https://hettety.vercel.app/`.
 - **Reconstruction Worker Architecture & Formats**: **CODE COMPLETE & VERIFIED IN CI**.
 - **Physical GPU Photogrammetry Execution**: **BLOCKED ON CLOUD GPU HOST PROVISIONING**.
-- **No False Claims**: All documentation and reports now truthfully reflect the distinction between synthetic fixture CI tests and physical GPU hardware requirements.
+- **No False Claims**: All documentation and reports truthfully reflect the distinction between synthetic fixture CI tests and physical GPU hardware requirements.

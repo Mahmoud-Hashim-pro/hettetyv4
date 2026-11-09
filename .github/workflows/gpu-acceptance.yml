@@ -46,17 +46,28 @@ jobs:
           echo "=== COLMAP Binary Inspection ==="
           colmap --version
 
-      - name: Verify Official Graphdeco 3DGS Submodules
+      - name: Verify Official Graphdeco 3DGS Submodules & Runner Script Provenance
         run: |
           echo "=== Graphdeco CUDA Submodules Inspection ==="
           python -c "import diff_gaussian_rasterization; import simple_knn; print('Graphdeco CUDA submodules verified successfully.')"
+          echo "=== Graphdeco Runner Script Provenance Inspection ==="
+          python -c "
+          import os, sys
+          sys.path.insert(0, 'hettety-3d-worker')
+          from pipeline.train import validate_graphdeco_runner_provenance
+          runner = os.environ.get('GAUSSIAN_SPLATTING_PATH', '/opt/gaussian-splatting/train.py')
+          assert os.path.isfile(runner), f'CRITICAL_BLOCKER: Runner script missing at {runner}'
+          valid, reason = validate_graphdeco_runner_provenance(runner)
+          assert valid, f'CRITICAL_BLOCKER: Invalid Graphdeco runner provenance: {reason}'
+          print(f'Graphdeco runner {runner} verified with authentic provenance.')
+          "
 
       - name: Execute Authoritative Real GPU Reconstruction Acceptance Suite
         run: |
           echo "=== Running Acceptance Test Suite with Dataset: $HETTETY_ACCEPTANCE_DATASET ==="
           python -m pytest hettety-3d-worker/tests/acceptance/test_real_gpu_reconstruction.py -v -s
 
-      - name: Verify Acceptance Evidence Integrity
+      - name: Verify Acceptance Evidence Integrity & Fail Closed
         if: always()
         run: |
           python -c "
@@ -66,18 +77,41 @@ jobs:
           if not os.path.exists(evidence_file):
               print(f'CRITICAL_FAILURE: Required evidence file missing at {evidence_file}')
               sys.exit(1)
-          with open(evidence_file) as f:
+          with open(evidence_file, encoding='utf-8') as f:
               ev = json.load(f)
           print(f'Verified evidence: run_id={ev.get(\"run_id\")} status={ev.get(\"status\")}')
-          if ev.get('status') not in ('PASSED', 'BLOCKED', 'SKIPPED'):
-              print(f'CRITICAL_FAILURE: Evidence status {ev.get(\"status\")} is invalid!')
+
+          # Defect B: Must strictly fail closed if not PASSED
+          if ev.get('status') != 'PASSED':
+              print(f'CRITICAL_FAILURE: Dedicated GPU acceptance job requires status == \"PASSED\", but got {ev.get(\"status\")}! Blocking reason: {ev.get(\"blocking_reason\")}')
               sys.exit(1)
+
+          # Verify every individual acceptance criterion is PASSED
+          criteria = ev.get('acceptance_criteria', {})
+          for crit_name, crit_data in criteria.items():
+              c_status = crit_data.get('status') if isinstance(crit_data, dict) else crit_data
+              if c_status != 'PASSED':
+                  print(f'CRITICAL_FAILURE: Criterion \"{crit_name}\" is not PASSED: {crit_data}')
+                  sys.exit(1)
+
+          # Defect A: Verify persistent retained 3D deliverables exist on disk and are non-empty
+          artifacts = ev.get('artifacts', {})
+          for key, art_meta in artifacts.items():
+              if isinstance(art_meta, dict) and 'path' in art_meta:
+                  p = art_meta['path']
+                  if not os.path.exists(p):
+                      print(f'CRITICAL_FAILURE: Retained artifact \"{key}\" missing at \"{p}\"!')
+                      sys.exit(1)
+                  if os.path.getsize(p) == 0:
+                      print(f'CRITICAL_FAILURE: Retained artifact \"{key}\" is empty at \"{p}\"!')
+                      sys.exit(1)
+          print('All acceptance criteria and retained 3D deliverables verified successfully.')
           "
 
-      - name: Archive Machine-Readable Acceptance Evidence Artifacts
+      - name: Archive Machine-Readable Acceptance Evidence & 3D Deliverables
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: real-gpu-acceptance-evidence
-          path: ${{ github.workspace }}/artifacts/acceptance_evidence/*
+          name: real-gpu-acceptance-evidence-and-deliverables
+          path: ${{ github.workspace }}/artifacts/acceptance_evidence/**
           if-no-files-found: error

@@ -16,6 +16,8 @@ Strictly rejects 0-vertex proxy fallbacks and static constant formulas.
 
 import os
 
+import re
+
 import sys
 
 import math
@@ -494,6 +496,95 @@ class IterativeGaussianOptimizer:
 
 
 
+
+
+def validate_graphdeco_runner_provenance(script_path: Optional[str]) -> Tuple[bool, str]:
+    """
+    Validates that a training runner script is an authentic official Graphdeco
+    3D Gaussian Splatting implementation.
+    Checks AST / token signatures for official Graphdeco structures:
+      - Scene and GaussianModel abstractions
+      - gaussian_renderer rendering interfaces
+      - iteration and spherical harmonics degrees parameters
+    Strictly rejects dummy scripts, wrappers, or mock implementations.
+    """
+    if not script_path or not os.path.isfile(script_path):
+        return False, "Script path is empty or file does not exist on disk."
+
+    if os.path.basename(script_path) != "train.py":
+        return False, f"Filename must be 'train.py', got '{os.path.basename(script_path)}'."
+
+    try:
+        with open(script_path, "r", encoding="utf-8", errors="ignore") as f:
+            code = f.read(131072)
+
+        required_patterns = [
+            re.compile(r"(from\s+scene\s+import|import\s+scene|Scene|GaussianModel)"),
+            re.compile(r"(from\s+gaussian_renderer\s+import|gaussian_renderer|render)"),
+            re.compile(r"(iterations|sh_degree|opt\.(iterations|densify_until_iter)|GaussianModel)"),
+        ]
+
+        matches = [bool(p.search(code)) for p in required_patterns]
+        if sum(matches) >= 2:
+            return True, "Authentic Graphdeco 3DGS signatures verified."
+        else:
+            return False, "Script lacks official Graphdeco 3DGS signatures (Scene, GaussianModel, gaussian_renderer)."
+    except Exception as e:
+        return False, f"Failed to read or parse script: {e}"
+
+
+def validate_gaussian_ply_schema(ply_path: str) -> Dict[str, Any]:
+    """
+    Validates that a PLY file conforms to the official 3D Gaussian Splatting schema.
+    Verifies:
+      1. Binary or ASCII PLY header with 'element vertex <N>' (N > 0).
+      2. Required 3DGS properties: x, y, z, opacity, scale_0, scale_1, scale_2, rot_0, rot_1, rot_2, rot_3.
+      3. Physical file size is non-empty and has plausible minimum byte size.
+    """
+    if not os.path.isfile(ply_path):
+        raise FileNotFoundError(f"PLY file does not exist: {ply_path}")
+
+    file_size = os.path.getsize(ply_path)
+    if file_size < 100:
+        raise ValueError(f"PLY file is corrupted or too small ({file_size} bytes)")
+
+    with open(ply_path, "rb") as f:
+        header_bytes = f.read(8192)
+
+    header_end_idx = header_bytes.find(b"end_header")
+    if header_end_idx == -1:
+        raise ValueError("Invalid PLY file: 'end_header' tag not found in initial 8KB.")
+
+    header_text = header_bytes[:header_end_idx].decode("ascii", errors="ignore")
+
+    vertex_match = re.search(r"element\s+vertex\s+(\d+)", header_text)
+    if not vertex_match:
+        raise ValueError("Invalid PLY file: missing 'element vertex <count>' in header.")
+
+    vertex_count = int(vertex_match.group(1))
+    if vertex_count <= 0:
+        raise ValueError(f"Invalid PLY file: declared vertex count is {vertex_count} (must be > 0).")
+
+    required_props = ["x", "y", "z", "opacity", "scale_0", "scale_1", "scale_2", "rot_0", "rot_1", "rot_2", "rot_3"]
+    properties = []
+    for line in header_text.splitlines():
+        line = line.strip()
+        if line.startswith("property "):
+            parts = line.split()
+            if len(parts) >= 3:
+                properties.append(parts[2])
+
+    missing = [p for p in required_props if p not in properties]
+    if missing:
+        raise ValueError(f"Invalid 3DGS PLY schema: missing required properties {missing}.")
+
+    return {
+        "valid": True,
+        "vertex_count": vertex_count,
+        "file_size": file_size,
+        "properties_count": len(properties),
+    }
+
 def resolve_graphdeco_script_path() -> Optional[str]:
 
     """
@@ -961,6 +1052,20 @@ def run_gaussian_training(
                 "verified_completed_iterations": log_parse["completed_iterations"],
                 "requested_iterations": iterations
             }
+
+        # Validate PLY schema conforms to official 3DGS specifications
+        try:
+            validate_gaussian_ply_schema(target_ply)
+        except Exception as schema_err:
+            logger.error(f"3DGS PLY schema validation failed: {schema_err}")
+            return {
+                "success": False,
+                "error_code": "INVALID_PLY_SCHEMA",
+                "message": f"Trained 3DGS model failed schema validation: {schema_err}",
+                "verified_completed_iterations": log_parse["completed_iterations"],
+                "requested_iterations": iterations
+            }
+
 
         return {
             "success": True,

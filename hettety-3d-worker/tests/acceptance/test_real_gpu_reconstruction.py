@@ -36,7 +36,12 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..",
 
 from pipeline.validate import validate_keyframes
 from pipeline.colmap import run_sfm, run_dense_stereo, is_colmap_available, exec_colmap
-from pipeline.train import run_gaussian_training, resolve_graphdeco_script_path
+from pipeline.train import (
+    run_gaussian_training,
+    resolve_graphdeco_script_path,
+    validate_graphdeco_runner_provenance,
+    validate_gaussian_ply_schema
+)
 from pipeline.optimize import parse_ply_header_and_bounds, optimize_splat_cloud
 from pipeline.calibrate import (
     calibrate_sparse_scale,
@@ -55,10 +60,13 @@ from pipeline.publish import publish_tour_assets
 from storage.object_storage import ObjectStorageClient
 from pipeline.acceptance_evidence import (
     ALLOWED_ACCEPTANCE_DATASETS,
+    DATASET_ACCEPTANCE_PROFILES,
+    get_dataset_acceptance_profile,
     sanitize_dataset_name,
     resolve_and_validate_acceptance_dataset,
     get_evidence_directory,
     generate_run_id,
+    retain_deliverables,
     write_acceptance_evidence
 )
 from pipeline.training_log_parser import parse_graphdeco_training_log
@@ -419,6 +427,171 @@ class TestRealReconstructionStrictGuards(unittest.TestCase):
         self.assertEqual(res_premature["completed_iterations"], 18200)
         self.assertFalse(res_premature["iterations_verified"])
 
+    def test_retained_deliverables_survive_tempdir_cleanup(self):
+        """
+        Defect A Verification: Proves that deliverables retained via retain_deliverables
+        survive complete deletion of the temporary working directory (self.temp_dir)
+        and retain their byte contents and SHA-256 hashes.
+        """
+        temp_work = os.path.join(self.temp_dir, "work_to_be_deleted")
+        os.makedirs(temp_work, exist_ok=True)
+
+        mock_spz = os.path.join(temp_work, "scene.spz")
+        mock_glb = os.path.join(temp_work, "mesh.glb")
+        mock_ply = os.path.join(temp_work, "point_cloud.ply")
+
+        with open(mock_spz, "wb") as f:
+            f.write(b"SPZ_V4_MOCK_DATA_" + b"A" * 500)
+        with open(mock_glb, "wb") as f:
+            f.write(b"glTF_BINARY_MOCK_" + b"B" * 500)
+        with open(mock_ply, "wb") as f:
+            f.write(b"ply\nformat binary_little_endian 1.0\nelement vertex 10\nproperty float x\nproperty float y\nproperty float z\nproperty float opacity\nproperty float scale_0\nproperty float scale_1\nproperty float scale_2\nproperty float rot_0\nproperty float rot_1\nproperty float rot_2\nproperty float rot_3\nend_header\n" + b"C" * 500)
+
+        with open(mock_spz, "rb") as f:
+            spz_orig_sha = hashlib.sha256(f.read()).hexdigest()
+        with open(mock_glb, "rb") as f:
+            glb_orig_sha = hashlib.sha256(f.read()).hexdigest()
+        with open(mock_ply, "rb") as f:
+            ply_orig_sha = hashlib.sha256(f.read()).hexdigest()
+
+        artifacts_to_retain = {
+            "spz": {"path": mock_spz, "splatCount": 10},
+            "glb": {"path": mock_glb, "validGlTF": True},
+            "trained_ply": {"path": mock_ply},
+        }
+
+        retained = retain_deliverables(
+            run_id="run_survival_test",
+            source_artifacts=artifacts_to_retain,
+            evidence_dir=self.evidence_test_dir
+        )
+
+        retained_spz_path = retained["spz"]["path"]
+        retained_glb_path = retained["glb"]["path"]
+        retained_ply_path = retained["trained_ply"]["path"]
+
+        self.assertTrue(retained_spz_path.startswith(os.path.abspath(self.evidence_test_dir)))
+        self.assertTrue(retained_glb_path.startswith(os.path.abspath(self.evidence_test_dir)))
+        self.assertTrue(retained_ply_path.startswith(os.path.abspath(self.evidence_test_dir)))
+
+        # Destroy temporary working directory
+        shutil.rmtree(temp_work)
+        self.assertFalse(os.path.exists(mock_spz))
+        self.assertFalse(os.path.exists(mock_glb))
+        self.assertFalse(os.path.exists(mock_ply))
+
+        # Verify retained assets in persistent evidence directory survived intact
+        self.assertTrue(os.path.isfile(retained_spz_path))
+        self.assertTrue(os.path.isfile(retained_glb_path))
+        self.assertTrue(os.path.isfile(retained_ply_path))
+
+        with open(retained_spz_path, "rb") as f:
+            self.assertEqual(hashlib.sha256(f.read()).hexdigest(), spz_orig_sha)
+        with open(retained_glb_path, "rb") as f:
+            self.assertEqual(hashlib.sha256(f.read()).hexdigest(), glb_orig_sha)
+        with open(retained_ply_path, "rb") as f:
+            self.assertEqual(hashlib.sha256(f.read()).hexdigest(), ply_orig_sha)
+
+    def test_dataset_acceptance_profile_rejects_subthreshold_metrics(self):
+        """
+        Defect C Verification: Proves that degraded reconstructions fail
+        the dataset-specific acceptance profile quality gates.
+        """
+        profile_marassi = get_dataset_acceptance_profile("prop_villa_marassi_01")
+        self.assertEqual(profile_marassi["min_keyframes"], 24)
+        self.assertEqual(profile_marassi["min_registered_cameras"], 24)
+        self.assertEqual(profile_marassi["min_dense_points"], 5000)
+        self.assertEqual(profile_marassi["min_splats"], 50000)
+        self.assertEqual(profile_marassi["max_holdout_rmse"], 0.05)
+
+        profile_courtyard = get_dataset_acceptance_profile("prop_courtyard_dslr_02")
+        self.assertEqual(profile_courtyard["min_keyframes"], 12)
+        self.assertEqual(profile_courtyard["min_registered_cameras"], 12)
+        self.assertEqual(profile_courtyard["min_dense_points"], 2500)
+        self.assertEqual(profile_courtyard["min_splats"], 25000)
+        self.assertEqual(profile_courtyard["max_holdout_rmse"], 0.05)
+
+        # Test sub-threshold camera count rejection
+        degraded_cameras = 20
+        self.assertLess(degraded_cameras, profile_marassi["min_registered_cameras"])
+
+        # Test sub-threshold dense points rejection
+        degraded_dense_points = 3500
+        self.assertLess(degraded_dense_points, profile_marassi["min_dense_points"])
+
+        # Test degraded holdout RMSE (0.082m > 0.05m)
+        degraded_rmse = 0.082
+        self.assertGreater(degraded_rmse, profile_marassi["max_holdout_rmse"])
+
+    def test_graphdeco_provenance_validation(self):
+        """
+        Defect D Verification: Proves that arbitrary scripts without official
+        Graphdeco signatures are rejected, while authentic Graphdeco code is verified.
+        """
+        # Case 1: Wrong filename
+        wrong_name_script = os.path.join(self.temp_dir, "not_train.py")
+        with open(wrong_name_script, "w") as f:
+            f.write("# Dummy script\n")
+        valid_name, reason_name = validate_graphdeco_runner_provenance(wrong_name_script)
+        self.assertFalse(valid_name)
+        self.assertIn("Filename must be 'train.py'", reason_name)
+
+        # Case 2: Named train.py but lacks Graphdeco signatures
+        fake_repo_dir = os.path.join(self.temp_dir, "fake_graphdeco")
+        os.makedirs(fake_repo_dir, exist_ok=True)
+        dummy_script = os.path.join(fake_repo_dir, "train.py")
+        with open(dummy_script, "w") as f:
+            f.write("# Dummy script with no Graphdeco code\nprint('hello world')\n")
+        valid, reason = validate_graphdeco_runner_provenance(dummy_script)
+        self.assertFalse(valid)
+        self.assertIn("lacks official Graphdeco", reason)
+
+        # Case 3: Authentic Graphdeco signatures
+        real_script = os.path.join(self.temp_dir, "train.py")
+        with open(real_script, "w") as f:
+            f.write(
+                "from scene import Scene, GaussianModel\n"
+                "from gaussian_renderer import render\n"
+                "def training(dataset, opt, pipe, testing_iterations, saving_iterations):\n"
+                "    gaussians = GaussianModel(dataset.sh_degree)\n"
+            )
+        valid_real, reason_real = validate_graphdeco_runner_provenance(real_script)
+        self.assertTrue(valid_real)
+        self.assertIn("Authentic Graphdeco", reason_real)
+
+    def test_gaussian_ply_schema_validation(self):
+        """
+        Verifies that validate_gaussian_ply_schema confirms compliant 3DGS PLY files
+        and rejects non-compliant or corrupted headers.
+        """
+        valid_ply = os.path.join(self.temp_dir, "valid_model.ply")
+        with open(valid_ply, "wb") as f:
+            f.write(
+                b"ply\nformat binary_little_endian 1.0\n"
+                b"element vertex 100\n"
+                b"property float x\nproperty float y\nproperty float z\n"
+                b"property float opacity\n"
+                b"property float scale_0\nproperty float scale_1\nproperty float scale_2\n"
+                b"property float rot_0\nproperty float rot_1\nproperty float rot_2\nproperty float rot_3\n"
+                b"end_header\n" + b"\x00" * 4400
+            )
+        res = validate_gaussian_ply_schema(valid_ply)
+        self.assertTrue(res["valid"])
+        self.assertEqual(res["vertex_count"], 100)
+
+        bad_ply = os.path.join(self.temp_dir, "bad_model.ply")
+        with open(bad_ply, "wb") as f:
+            f.write(
+                b"ply\nformat binary_little_endian 1.0\n"
+                b"element vertex 100\n"
+                b"property float x\nproperty float y\nproperty float z\n"
+                b"end_header\n" + b"\x00" * 1200
+            )
+        with self.assertRaises(ValueError) as ctx:
+            validate_gaussian_ply_schema(bad_ply)
+        self.assertIn("missing required properties", str(ctx.exception))
+
+
 
 class TestRealGPUPipelineAcceptance(unittest.TestCase):
     """
@@ -530,10 +703,17 @@ class TestRealGPUPipelineAcceptance(unittest.TestCase):
             write_acceptance_evidence(evidence, self.evidence_dir)
             self.skipTest(evidence["blocking_reason"])
 
-        # 6. Enforce real Graphdeco training runner prerequisite
+        # 6. Enforce real Graphdeco training runner prerequisite and authentic provenance
         if not self.gpu_env["graphdeco_available"]:
             evidence["status"] = "BLOCKED"
             evidence["blocking_reason"] = "Official Graphdeco training runner (gaussian-splatting/train.py) is required. IterativeGaussianOptimizer substitution is strictly prohibited."
+            write_acceptance_evidence(evidence, self.evidence_dir)
+            self.skipTest(evidence["blocking_reason"])
+
+        is_prov_valid, prov_reason = validate_graphdeco_runner_provenance(self.gpu_env.get("graphdeco_script_path"))
+        if not is_prov_valid:
+            evidence["status"] = "BLOCKED"
+            evidence["blocking_reason"] = f"Official Graphdeco runner provenance validation failed: {prov_reason}"
             write_acceptance_evidence(evidence, self.evidence_dir)
             self.skipTest(evidence["blocking_reason"])
 
@@ -560,10 +740,16 @@ class TestRealGPUPipelineAcceptance(unittest.TestCase):
             print(f" Graphdeco   : {self.gpu_env['graphdeco_script_path']}")
             print("==================================================================\n")
 
+            # Authoritative Dataset Acceptance Profile
+            profile = get_dataset_acceptance_profile(self.dataset_meta["dataset_name"])
+            print(f" Quality Profile: {profile['description']}")
+            print(f" Thresholds: min_cams={profile['min_registered_cameras']}, min_dense={profile['min_dense_points']}, min_splats={profile['min_splats']}, max_rmse={profile['max_holdout_rmse']}m")
+
             # Stage 1: Keyframe Validation
             t0 = time.time()
-            val_res = validate_keyframes(self.fixture_dir, min_images=8)
+            val_res = validate_keyframes(self.fixture_dir, min_images=profile["min_keyframes"])
             self.assertTrue(val_res["valid"], f"Keyframe validation failed: {val_res}")
+            self.assertGreaterEqual(val_res["image_count"], profile["min_keyframes"])
             evidence["stages"]["VALIDATING"] = {"durationSec": round(time.time() - t0, 2), "imageCount": val_res["image_count"]}
 
             # Stage 2: Genuine COLMAP SfM
@@ -571,17 +757,20 @@ class TestRealGPUPipelineAcceptance(unittest.TestCase):
             sfm_out = os.path.join(self.temp_dir, "sfm")
             sfm_res = run_sfm(image_dir=self.fixture_dir, output_dir=sfm_out, is_video=False)
             self.assertTrue(sfm_res["success"], f"Real COLMAP SfM failed: {sfm_res}")
-            self.assertGreaterEqual(sfm_res["registered_images"], 8)
-            self.assertGreater(sfm_res["points_count"], 100)
+            self.assertGreaterEqual(sfm_res["registered_images"], profile["min_registered_cameras"], f"SfM registered fewer cameras than required by profile {profile['min_registered_cameras']}")
+            self.assertGreaterEqual(sfm_res["points_count"], profile["min_sparse_points"])
+            mean_reproj = sfm_res.get("mean_reprojection_error", 0.0)
+            if mean_reproj > 0.0:
+                self.assertLessEqual(mean_reproj, profile["max_reprojection_error"], f"Reprojection error {mean_reproj} exceeds threshold {profile['max_reprojection_error']}")
             evidence["stages"]["SFM"] = {
                 "durationSec": round(time.time() - t1, 2),
                 "registeredImages": sfm_res["registered_images"],
                 "pointsCount": sfm_res["points_count"],
-                "meanReprojectionError": sfm_res.get("mean_reprojection_error", 0.0)
+                "meanReprojectionError": mean_reproj
             }
             evidence["acceptance_criteria"]["STRICT_COLMAP"] = {
                 "status": "PASSED",
-                "details": f"Registered {sfm_res['registered_images']} cameras, {sfm_res['points_count']} 3D points."
+                "details": f"Registered {sfm_res['registered_images']} cameras, {sfm_res['points_count']} 3D points (Reprojection error: {mean_reproj:.2f}px)."
             }
 
             # Stage 3: Genuine Dense Multi-View Stereo (PatchMatch)
@@ -589,7 +778,7 @@ class TestRealGPUPipelineAcceptance(unittest.TestCase):
             dense_out = os.path.join(self.temp_dir, "dense")
             dense_res = run_dense_stereo(sparse_dir=sfm_out, image_dir=self.fixture_dir, dense_dir=dense_out)
             self.assertTrue(dense_res["success"], f"Real Dense Stereo failed: {dense_res}")
-            self.assertGreater(dense_res["dense_point_count"], 1000)
+            self.assertGreaterEqual(dense_res["dense_point_count"], profile["min_dense_points"], f"Dense points {dense_res['dense_point_count']} below profile threshold {profile['min_dense_points']}")
             evidence["stages"]["DENSE_STEREO"] = {
                 "durationSec": round(time.time() - t2, 2),
                 "densePointCount": dense_res["dense_point_count"]
@@ -631,7 +820,7 @@ class TestRealGPUPipelineAcceptance(unittest.TestCase):
             opt_ply = os.path.join(self.temp_dir, "optimized.ply")
             opt_res = optimize_splat_cloud(trained_ply, opt_ply, opacity_threshold=0.01)
             self.assertTrue(opt_res["success"])
-            self.assertGreater(opt_res["splat_count"], 1000)
+            self.assertGreaterEqual(opt_res["splat_count"], profile["min_splats"], f"Final splat count {opt_res['splat_count']} below profile threshold {profile['min_splats']}")
 
             # Stage 6: Survey Metric Calibration with Holdout Validation
             survey_json = self.dataset_meta["survey_path"]
@@ -670,7 +859,7 @@ class TestRealGPUPipelineAcceptance(unittest.TestCase):
                 holdout_only=True
             )
             self.assertTrue(eval_res["passed"])
-            self.assertLessEqual(eval_res["rmse"], 0.05, f"Holdout RMSE {eval_res['rmse']}m exceeded 0.05m gate")
+            self.assertLessEqual(eval_res["rmse"], profile["max_holdout_rmse"], f"Holdout RMSE {eval_res['rmse']}m exceeded {profile['max_holdout_rmse']}m gate")
             evidence["acceptance_criteria"]["METRIC_CALIBRATION"] = {
                 "status": "PASSED",
                 "details": f"Scale factor {scale_k:.4f}, Holdout RMSE {eval_res['rmse']}m <= 0.05m gate."
@@ -712,11 +901,22 @@ class TestRealGPUPipelineAcceptance(unittest.TestCase):
                 "status": "PASSED",
                 "details": f"glTF 2.0 valid binary, SHA-256: {glb_sha[:16]}"
             }
-            evidence["artifacts"] = {
+            # Retain all authoritative deliverables persistently in evidence storage
+            raw_artifacts = {
                 "spz": {"path": spz_file, "sizeBytes": os.path.getsize(spz_file), "sha256": spz_sha, "splatCount": opt_res["splat_count"]},
                 "glb": {"path": glb_file, "sizeBytes": os.path.getsize(glb_file), "sha256": glb_sha, "validGlTF": True},
+                "trained_ply": {"path": trained_ply, "sizeBytes": os.path.getsize(trained_ply)},
+                "optimized_ply": {"path": opt_ply, "sizeBytes": os.path.getsize(opt_ply)},
+                "metric_ply": {"path": metric_ply, "sizeBytes": os.path.getsize(metric_ply)},
+                "sparse_sfm": {"path": sfm_out},
                 "calibration": {"scaleFactor": scale_k, "holdoutRmse": eval_res["rmse"]}
             }
+            retained_manifest = retain_deliverables(
+                run_id=self.run_id,
+                source_artifacts=raw_artifacts,
+                evidence_dir=self.evidence_dir
+            )
+            evidence["artifacts"] = retained_manifest
 
             print("\n==================================================================")
             print(" AUTHORITATIVE REAL GPU RECONSTRUCTION ACCEPTANCE: PASSED 100%")

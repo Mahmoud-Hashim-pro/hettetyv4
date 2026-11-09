@@ -19,6 +19,7 @@ import sys
 import json
 import time
 import uuid
+import shutil
 import hashlib
 from typing import Dict, Any, Optional, Tuple, List, Set
 
@@ -27,6 +28,45 @@ ALLOWED_ACCEPTANCE_DATASETS: Set[str] = {
     "prop_villa_marassi_01",
     "prop_courtyard_dslr_02",
 }
+
+# Authoritative quality criteria profiles per allowlisted dataset
+DATASET_ACCEPTANCE_PROFILES: Dict[str, Dict[str, Any]] = {
+    "prop_villa_marassi_01": {
+        "dataset_name": "prop_villa_marassi_01",
+        "description": "28 High-Resolution DSLR Keyframes with 4 Laser Survey Anchors",
+        "min_keyframes": 24,
+        "total_keyframes": 28,
+        "min_registered_cameras": 24,  # >= 85% of total
+        "min_sparse_points": 500,
+        "max_reprojection_error": 1.80,  # pixels
+        "min_dense_points": 5000,
+        "min_splats": 50000,
+        "max_holdout_rmse": 0.05,  # 5 cm
+        "min_survey_benchmarks": 4,
+    },
+    "prop_courtyard_dslr_02": {
+        "dataset_name": "prop_courtyard_dslr_02",
+        "description": "14 High-Resolution DSLR Keyframes with 2 Laser Survey Anchors",
+        "min_keyframes": 12,
+        "total_keyframes": 14,
+        "min_registered_cameras": 12,  # >= 85% of total
+        "min_sparse_points": 300,
+        "max_reprojection_error": 2.00,  # pixels
+        "min_dense_points": 2500,
+        "min_splats": 25000,
+        "max_holdout_rmse": 0.05,  # 5 cm
+        "min_survey_benchmarks": 2,
+    },
+}
+
+
+def get_dataset_acceptance_profile(dataset_name: Optional[str]) -> Dict[str, Any]:
+    """Retrieves authoritative acceptance quality thresholds for the given dataset."""
+    name = sanitize_dataset_name(dataset_name or "prop_villa_marassi_01")
+    if name not in DATASET_ACCEPTANCE_PROFILES:
+        raise ValueError(f"No acceptance quality profile configured for dataset '{name}'.")
+    return dict(DATASET_ACCEPTANCE_PROFILES[name])
+
 
 _NAME_PATTERN = re.compile(r"^[a-zA-Z0-9_-]+$")
 
@@ -202,6 +242,100 @@ def generate_run_id() -> str:
     """Generates a unique, sortable execution run identifier."""
     return f"acc_{int(time.time())}_{uuid.uuid4().hex[:8]}"
 
+
+
+
+def retain_deliverables(
+    run_id: str,
+    source_artifacts: Dict[str, Any],
+    evidence_dir: Optional[str] = None
+) -> Dict[str, Any]:
+    """
+    Persistently copies authoritative 3D reconstruction deliverables, PLYs,
+    meshes, sparse data, and execution logs from ephemeral working directories
+    into the persistent evidence repository.
+
+    Ensures 3D deliverables survive test tearDown cleanup (temp directory rmtree).
+    Calculates and verifies SHA-256 checksums and file sizes for all retained assets.
+    Returns an updated manifest dictionary with persistent paths.
+    """
+    target_evidence_dir = os.path.abspath(evidence_dir or get_evidence_directory())
+    run_deliverables_dir = os.path.join(target_evidence_dir, "runs", run_id, "deliverables")
+    os.makedirs(run_deliverables_dir, exist_ok=True)
+
+    retained: Dict[str, Any] = {}
+
+    def _hash_file(filepath: str) -> Tuple[str, int]:
+        hasher = hashlib.sha256()
+        total_size = 0
+        with open(filepath, "rb") as f:
+            while chunk := f.read(65536):
+                hasher.update(chunk)
+                total_size += len(chunk)
+        return hasher.hexdigest(), total_size
+
+    def _copy_and_audit(src_path: str, dest_name: str) -> Optional[Dict[str, Any]]:
+        if not src_path or not os.path.exists(src_path):
+            return None
+        dest_path = os.path.join(run_deliverables_dir, dest_name)
+        if os.path.isdir(src_path):
+            if os.path.exists(dest_path):
+                shutil.rmtree(dest_path, ignore_errors=True)
+            shutil.copytree(src_path, dest_path)
+            dir_hasher = hashlib.sha256()
+            dir_size = 0
+            file_count = 0
+            for root, _, files in sorted(os.walk(dest_path)):
+                for f in sorted(files):
+                    fp = os.path.join(root, f)
+                    h, s = _hash_file(fp)
+                    dir_hasher.update(h.encode("ascii"))
+                    dir_size += s
+                    file_count += 1
+            return {
+                "path": dest_path,
+                "isDirectory": True,
+                "fileCount": file_count,
+                "sizeBytes": dir_size,
+                "sha256": dir_hasher.hexdigest(),
+            }
+        else:
+            shutil.copy2(src_path, dest_path)
+            h, s = _hash_file(dest_path)
+            return {
+                "path": dest_path,
+                "sizeBytes": s,
+                "sha256": h,
+            }
+
+    for art_key, art_val in source_artifacts.items():
+        if isinstance(art_val, str):
+            res = _copy_and_audit(art_val, os.path.basename(art_val))
+            if res:
+                retained[art_key] = res
+        elif isinstance(art_val, dict):
+            src_p = art_val.get("path")
+            if src_p and os.path.exists(src_p):
+                filename = art_val.get("target_filename") or os.path.basename(src_p)
+                audit_res = _copy_and_audit(src_p, filename)
+                if audit_res:
+                    merged = dict(art_val)
+                    merged.update(audit_res)
+                    retained[art_key] = merged
+            else:
+                retained[art_key] = dict(art_val)
+        else:
+            retained[art_key] = art_val
+
+    # Also maintain latest deliverables copy
+    latest_deliverables_dir = os.path.join(target_evidence_dir, "retained_artifacts")
+    os.makedirs(latest_deliverables_dir, exist_ok=True)
+    for art_key, info in retained.items():
+        if isinstance(info, dict) and "path" in info and os.path.isfile(info["path"]):
+            target_latest = os.path.join(latest_deliverables_dir, os.path.basename(info["path"]))
+            shutil.copy2(info["path"], target_latest)
+
+    return retained
 
 def write_acceptance_evidence(
     evidence: Dict[str, Any],

@@ -24,7 +24,7 @@ import subprocess
 import numpy as np
 from typing import Dict, Any, Optional, Tuple, List, Callable, Set, Union
 
-from pipeline.process_manager import run_managed_process
+from pipeline.process_manager import run_managed_process, LogPersistenceError, JobCancelledException
 
 
 
@@ -1219,7 +1219,7 @@ def run_gaussian_training(
 
     # Execute genuine mathematical IterativeGaussianOptimizer directly from reconstruction data
 
-    if (not script_path or os.environ.get("HETTETY_ENV") == "test") and not strict_real:
+    if (not script_path or os.environ.get("HETTETY_ENV") == "test") and not strict_real and not is_prod_env:
 
         logger.info("Executing native IterativeGaussianOptimizer on reconstructed geometry...")
 
@@ -1351,6 +1351,34 @@ def run_gaussian_training(
 
 
 
+        # Authoritative Git Provenance & Supply Chain Enforcement:
+    # When strict real pipeline mode or production mode is active, enforce official Graphdeco runner provenance
+    # using default committed production allowlists (caller cannot bypass with environment variables or custom lists).
+    prov_details: Optional[Dict[str, Any]] = None
+    if (strict_real or is_prod_env) and script_path:
+        prov_valid, prov_reason, prov_details = validate_graphdeco_runner_provenance(
+            script_path,
+            allowed_remotes=None,
+            allowed_commits=None,
+            return_details=True
+        )
+        if not prov_valid:
+            logger.error(f"GRAPHDECO_PROVENANCE_REJECTED: {prov_reason}")
+            return {
+                "success": False,
+                "error_code": "GRAPHDECO_PROVENANCE_REJECTED",
+                "message": f"GRAPHDECO_PROVENANCE_REJECTED: {prov_reason}",
+                "provenance": prov_details,
+                "provenance_error": prov_reason
+            }
+    elif script_path:
+        prov_valid, prov_reason, prov_details = validate_graphdeco_runner_provenance(
+            script_path,
+            allowed_remotes=None,
+            allowed_commits=None,
+            return_details=True
+        )
+
     cmd = [
 
         sys.executable, script_path,
@@ -1384,14 +1412,25 @@ def run_gaussian_training(
         stdout_str = process.stdout.decode("utf-8", errors="ignore") if isinstance(process.stdout, bytes) else str(process.stdout or "")
         stderr_str = process.stderr.decode("utf-8", errors="ignore") if isinstance(process.stderr, bytes) else str(process.stderr or "")
 
-        try:
-            with open(training_log, "w", encoding="utf-8") as f:
-                f.write(stdout_str)
-            if stderr_str:
+        # Persist stderr to training_err if stderr was captured
+        if stderr_str:
+            try:
                 with open(training_err, "w", encoding="utf-8") as f:
                     f.write(stderr_str)
-        except Exception as log_ex:
-            logger.warning(f"Could not write training log files: {log_ex}")
+            except Exception as log_ex:
+                logger.error(f"Failed writing training stderr log to '{training_err}': {log_ex}")
+                return {
+                    "success": False,
+                    "error_code": "LOG_PERSISTENCE_FAILED",
+                    "message": f"Failed persisting training stderr log to '{training_err}': {log_ex}",
+                    "returncode": process.returncode,
+                    "stdout": stdout_str,
+                    "stderr": stderr_str,
+                    "log_error": str(log_ex),
+                    "log_persistence_failed": True,
+                    "verified_completed_iterations": 0,
+                    "requested_iterations": iterations
+                }
 
         from pipeline.training_log_parser import parse_graphdeco_training_log
         log_parse = parse_graphdeco_training_log(
@@ -1407,6 +1446,9 @@ def run_gaussian_training(
                 "success": False,
                 "error_code": "GPU_OUT_OF_MEMORY",
                 "message": "CUDA out of memory detected in training logs.",
+                "returncode": process.returncode,
+                "stdout": stdout_str,
+                "stderr": stderr_str,
                 "verified_completed_iterations": log_parse["completed_iterations"],
                 "requested_iterations": iterations
             }
@@ -1423,6 +1465,9 @@ def run_gaussian_training(
                     f"STRICT_REAL_PIPELINE_GUARD: Training terminated prematurely: "
                     f"only {log_parse['completed_iterations']}/{iterations} iterations verified from execution evidence."
                 ),
+                "returncode": process.returncode,
+                "stdout": stdout_str,
+                "stderr": stderr_str,
                 "verified_completed_iterations": log_parse["completed_iterations"],
                 "requested_iterations": iterations
             }
@@ -1440,6 +1485,9 @@ def run_gaussian_training(
                 "success": False,
                 "error_code": "ZERO_GAUSSIANS_PRODUCED",
                 "message": "Reconstruction produced zero Gaussian primitives.",
+                "returncode": process.returncode,
+                "stdout": stdout_str,
+                "stderr": stderr_str,
                 "verified_completed_iterations": log_parse["completed_iterations"],
                 "requested_iterations": iterations
             }
@@ -1453,10 +1501,12 @@ def run_gaussian_training(
                 "success": False,
                 "error_code": "INVALID_PLY_SCHEMA",
                 "message": f"Trained 3DGS model failed schema validation: {schema_err}",
+                "returncode": process.returncode,
+                "stdout": stdout_str,
+                "stderr": stderr_str,
                 "verified_completed_iterations": log_parse["completed_iterations"],
                 "requested_iterations": iterations
             }
-
 
         return {
             "success": True,
@@ -1467,8 +1517,60 @@ def run_gaussian_training(
             "iteration_evidence_source": "stdout_log_parsing",
             "final_loss": log_parse.get("final_loss"),
             "final_psnr": log_parse.get("final_psnr"),
+            "returncode": process.returncode,
+            "stdout": stdout_str,
+            "stderr": stderr_str,
+            "provenance": prov_details,
             "message": f"Optimization converged: verified {log_parse['completed_iterations']}/{iterations} iterations."
         }
+    except LogPersistenceError as e:
+        logger.error(f"3DGS training log persistence failed: {e}")
+        out_msg = e.stdout.decode("utf-8", errors="ignore") if isinstance(e.stdout, bytes) else str(e.stdout or "")
+        err_msg = e.stderr.decode("utf-8", errors="ignore") if isinstance(e.stderr, bytes) else str(e.stderr or "")
+        return {
+            "success": False,
+            "error_code": "LOG_PERSISTENCE_FAILED",
+            "message": f"Subprocess completed with exit code {e.returncode} but log persistence failed: {e}",
+            "returncode": e.returncode,
+            "stdout": out_msg,
+            "stderr": err_msg,
+            "log_error": str(e),
+            "log_persistence_failed": True,
+            "verified_completed_iterations": 0,
+            "requested_iterations": iterations
+        }
+    except JobCancelledException as e:
+        logger.warning(f"3DGS training job was cancelled: {e}")
+        log_err = getattr(e, "log_error", None)
+        res = {
+            "success": False,
+            "error_code": "JOB_CANCELLED",
+            "message": str(e),
+            "log_error": str(log_err) if log_err else None,
+            "verified_completed_iterations": 0,
+            "requested_iterations": iterations
+        }
+        if log_err:
+            res["log_persistence_failed"] = True
+        return res
+    except subprocess.TimeoutExpired as e:
+        logger.error(f"3DGS training timed out: {e}")
+        out_msg = e.stdout.decode("utf-8", errors="ignore") if isinstance(e.stdout, bytes) else str(e.stdout or "")
+        err_msg = e.stderr.decode("utf-8", errors="ignore") if isinstance(e.stderr, bytes) else str(e.stderr or "")
+        log_err = getattr(e, "log_error", None)
+        res = {
+            "success": False,
+            "error_code": "TRAINING_TIMEOUT",
+            "message": f"3DGS training exceeded timeout of {e.timeout}s",
+            "stdout": out_msg,
+            "stderr": err_msg,
+            "log_error": str(log_err) if log_err else None,
+            "verified_completed_iterations": 0,
+            "requested_iterations": iterations
+        }
+        if log_err:
+            res["log_persistence_failed"] = True
+        return res
     except FileNotFoundError as e:
         logger.error(f"Gaussian Splatting runner binary not found: {e}")
         return {
@@ -1479,14 +1581,18 @@ def run_gaussian_training(
     except subprocess.CalledProcessError as e:
         err_msg = e.stderr.decode("utf-8", errors="ignore") if isinstance(e.stderr, bytes) else str(e)
         out_msg = e.stdout.decode("utf-8", errors="ignore") if isinstance(e.stdout, bytes) else ""
-        try:
-            with open(training_log, "w", encoding="utf-8") as f:
-                f.write(out_msg)
-            if err_msg:
+        log_err = getattr(e, "log_error", None)
+        log_err_str = str(log_err) if log_err is not None else None
+
+        if err_msg:
+            try:
                 with open(training_err, "w", encoding="utf-8") as f:
                     f.write(err_msg)
-        except Exception:
-            pass
+            except Exception as secondary_err:
+                logger.warning(f"Could not persist training stderr log: {secondary_err}")
+                if log_err_str is None:
+                    log_err_str = str(secondary_err)
+
         from pipeline.training_log_parser import parse_graphdeco_training_log
         log_parse = parse_graphdeco_training_log(
             stdout_text=out_msg,
@@ -1494,23 +1600,31 @@ def run_gaussian_training(
             requested_iterations=iterations,
             model_output_dir=output_model_dir
         )
-        if "out of memory" in err_msg.lower() or "cuda oom" in err_msg.lower() or log_parse.get("cuda_oom_detected"):
-            logger.error("CUDA OOM detected during 3DGS training.")
-            return {
-                "success": False,
-                "error_code": "GPU_OUT_OF_MEMORY",
-                "message": f"CUDA out of memory during 3DGS training: {err_msg}",
-                "verified_completed_iterations": log_parse.get("completed_iterations", 0),
-                "requested_iterations": iterations
-            }
-        logger.error(f"3DGS training failed with non-zero exit code: {err_msg}")
-        return {
+
+        is_oom = "out of memory" in err_msg.lower() or "cuda oom" in err_msg.lower() or log_parse.get("cuda_oom_detected")
+        error_code = "GPU_OUT_OF_MEMORY" if is_oom else "TRAINING_FAILED"
+        if is_oom:
+            primary_msg = f"CUDA out of memory during 3DGS training: {err_msg}"
+        else:
+            primary_msg = f"3DGS training process failed with exit code {e.returncode}: {err_msg}"
+
+        error_details = {
             "success": False,
-            "error_code": "TRAINING_FAILED",
-            "message": err_msg,
+            "error_code": error_code,
+            "message": primary_msg,
+            "returncode": e.returncode,
+            "stdout": out_msg,
+            "stderr": err_msg,
             "verified_completed_iterations": log_parse.get("completed_iterations", 0),
             "requested_iterations": iterations
         }
+        if log_err_str:
+            error_details["log_error"] = log_err_str
+            error_details["log_persistence_failed"] = True
+            error_details["message"] += f" (Note: Subprocess log persistence also failed: {log_err_str})"
+
+        logger.error(f"3DGS training failed: {error_details['message']}")
+        return error_details
 
 run_3dgs_training = run_gaussian_training
 

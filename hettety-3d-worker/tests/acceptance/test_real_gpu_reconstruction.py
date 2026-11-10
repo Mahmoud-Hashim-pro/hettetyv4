@@ -1084,6 +1084,193 @@ class TestRealReconstructionStrictGuards(unittest.TestCase):
             if os.path.islink(symlink_dir):
                 os.unlink(symlink_dir)
 
+    def test_run_gaussian_training_enforces_runtime_provenance_and_log_diagnostics(self):
+        """
+        TASK Verification: Tests run_gaussian_training directly to verify:
+        1. An unapproved commit is rejected with GRAPHDECO_PROVENANCE_REJECTED before process execution.
+        2. An environment-variable allowlist spoof is rejected before process execution.
+        3. An untracked or modified train.py is rejected before process execution.
+        4. A genuine approved Graphdeco commit reaches the runner and records provenance in result.
+        5. A subprocess failure with an unwritable log retains returncode, stdout, stderr, and exposes log_error.
+        6. A successful subprocess with an unwritable required log cannot report success.
+        """
+        from pipeline.process_manager import LogPersistenceError
+
+        source_dir = os.path.join(self.temp_dir, "sfm_source")
+        os.makedirs(os.path.join(source_dir, "sparse", "0"), exist_ok=True)
+        with open(os.path.join(source_dir, "sparse", "0", "points3D.txt"), "w") as f:
+            f.write("1 0.0 0.0 0.0 255 255 255 0.1 1 2\n")
+
+        model_dir = os.path.join(self.temp_dir, "model_out")
+        os.makedirs(model_dir, exist_ok=True)
+
+        # Create a mock git repository with official remote but an unapproved commit
+        repo_dir = os.path.join(self.temp_dir, "graphdeco_repo")
+        os.makedirs(repo_dir, exist_ok=True)
+        subprocess.run(["git", "init"], cwd=repo_dir, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        subprocess.run(["git", "config", "user.name", "Tester"], cwd=repo_dir, check=True)
+        subprocess.run(["git", "config", "user.email", "tester@test.com"], cwd=repo_dir, check=True)
+        subprocess.run(["git", "remote", "add", "origin", "https://github.com/graphdeco-inria/gaussian-splatting"], cwd=repo_dir, check=True)
+        os.makedirs(os.path.join(repo_dir, "scene"), exist_ok=True)
+        os.makedirs(os.path.join(repo_dir, "gaussian_renderer"), exist_ok=True)
+        script_file = os.path.join(repo_dir, "train.py")
+        with open(script_file, "w", encoding="utf-8") as f:
+            f.write("from scene import Scene, GaussianModel\nfrom gaussian_renderer import render\nGaussianModel()\n")
+        subprocess.run(["git", "add", "."], cwd=repo_dir, check=True)
+        subprocess.run(["git", "commit", "-m", "unapproved commit"], cwd=repo_dir, check=True)
+
+        os.environ["GAUSSIAN_SPLATTING_PATH"] = script_file
+        os.environ["HETTETY_REAL_PIPELINE_STRICT"] = "1"
+
+        mock_torch = MagicMock()
+        mock_torch.cuda.is_available.return_value = True
+        mock_torch.version.cuda = "12.1"
+
+        # 1. Unapproved commit is rejected before process execution
+        with patch.dict(sys.modules, {
+            "torch": mock_torch,
+            "diff_gaussian_rasterization": MagicMock(),
+            "simple_knn": MagicMock()
+        }):
+            with patch("pipeline.train.run_managed_process") as mock_exec:
+                res = run_gaussian_training(source_dir, model_dir, iterations=100)
+                self.assertFalse(res["success"])
+                self.assertEqual(res["error_code"], "GRAPHDECO_PROVENANCE_REJECTED")
+                self.assertIn("not in approved Graphdeco commit whitelist", res["message"])
+                mock_exec.assert_not_called()
+
+        # 2. Environment-variable allowlist spoof is rejected before process execution
+        unapproved_sha = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=repo_dir, capture_output=True, text=True, check=True
+        ).stdout.strip().lower()
+        os.environ["HETTETY_ALLOWED_GRAPHDECO_COMMITS"] = unapproved_sha
+        os.environ["GRAPHDECO_ALLOWED_COMMITS"] = unapproved_sha
+
+        with patch.dict(sys.modules, {
+            "torch": mock_torch,
+            "diff_gaussian_rasterization": MagicMock(),
+            "simple_knn": MagicMock()
+        }):
+            with patch("pipeline.train.run_managed_process") as mock_exec:
+                res = run_gaussian_training(source_dir, model_dir, iterations=100)
+                self.assertFalse(res["success"])
+                self.assertEqual(res["error_code"], "GRAPHDECO_PROVENANCE_REJECTED")
+                self.assertIn("not in approved Graphdeco commit whitelist", res["message"])
+                mock_exec.assert_not_called()
+
+        os.environ.pop("HETTETY_ALLOWED_GRAPHDECO_COMMITS", None)
+        os.environ.pop("GRAPHDECO_ALLOWED_COMMITS", None)
+
+        # 3. Untracked / modified train.py is rejected before process execution
+        with open(script_file, "a", encoding="utf-8") as f:
+            f.write("\n# dirty uncommitted change\n")
+
+        with patch.dict(sys.modules, {
+            "torch": mock_torch,
+            "diff_gaussian_rasterization": MagicMock(),
+            "simple_knn": MagicMock()
+        }):
+            with patch("pipeline.train.run_managed_process") as mock_exec:
+                res = run_gaussian_training(source_dir, model_dir, iterations=100)
+                self.assertFalse(res["success"])
+                self.assertEqual(res["error_code"], "GRAPHDECO_PROVENANCE_REJECTED")
+                self.assertTrue(any(w in res["message"].lower() for w in ["modification", "modified", "uncommitted"]))
+                mock_exec.assert_not_called()
+
+        # Clean git working tree
+        subprocess.run(["git", "checkout", "--", "train.py"], cwd=repo_dir, check=True)
+
+        # 4. Genuine approved Graphdeco commit reaches the runner and records provenance
+        approved_sha = "21301643a4354d6e24495c0df5a85354af8bd2be"
+        approved_prov = {
+            "verified": True,
+            "commit_sha": approved_sha,
+            "remote_url": "https://github.com/graphdeco-inria/gaussian-splatting",
+            "script_path": script_file
+        }
+
+        ply_dir = os.path.join(model_dir, "point_cloud", "iteration_100")
+        os.makedirs(ply_dir, exist_ok=True)
+        ply_file = os.path.join(ply_dir, "point_cloud.ply")
+        with open(ply_file, "wb") as f:
+            f.write(
+                b"ply\nformat binary_little_endian 1.0\nelement vertex 2\n"
+                b"property float x\nproperty float y\nproperty float z\n"
+                b"property float nx\nproperty float ny\nproperty float nz\n"
+                b"property float f_dc_0\nproperty float f_dc_1\nproperty float f_dc_2\n"
+                b"property float opacity\n"
+                b"property float scale_0\nproperty float scale_1\nproperty float scale_2\n"
+                b"property float rot_0\nproperty float rot_1\nproperty float rot_2\nproperty float rot_3\n"
+                b"end_header\n" + b"\x00" * 128
+            )
+
+        mock_proc_success = subprocess.CompletedProcess(
+            args=["python", script_file],
+            returncode=0,
+            stdout=b"[ITER_EVIDENCE] 100/100 completed loss=0.0123\nTraining finished.\n",
+            stderr=b""
+        )
+
+        with patch.dict(sys.modules, {
+            "torch": mock_torch,
+            "diff_gaussian_rasterization": MagicMock(),
+            "simple_knn": MagicMock()
+        }):
+            with patch("pipeline.train.validate_graphdeco_runner_provenance", return_value=(True, "Approved", approved_prov)):
+                with patch("pipeline.train.run_managed_process", return_value=mock_proc_success) as mock_exec:
+                    with patch("pipeline.train.validate_gaussian_ply_schema"):
+                        res = run_gaussian_training(source_dir, model_dir, iterations=100)
+                        self.assertTrue(res["success"], f"Training failed: {res.get('message')}")
+                        self.assertEqual(res["provenance"]["commit_sha"], approved_sha)
+                        self.assertEqual(res["returncode"], 0)
+                        mock_exec.assert_called_once()
+
+        # 5. Subprocess failure with an unwritable log retains returncode, stdout, stderr, and exposes log_error
+        mock_cpe = subprocess.CalledProcessError(
+            returncode=42,
+            cmd=["python", script_file],
+            output=b"Stage 1 stdout data before crash\n",
+            stderr=b"CUDA Out of memory on layer 3\n"
+        )
+        mock_cpe.log_error = PermissionError("EACCES: training_stdout.log permission denied")
+
+        with patch.dict(sys.modules, {
+            "torch": mock_torch,
+            "diff_gaussian_rasterization": MagicMock(),
+            "simple_knn": MagicMock()
+        }):
+            with patch("pipeline.train.validate_graphdeco_runner_provenance", return_value=(True, "Approved", approved_prov)):
+                with patch("pipeline.train.run_managed_process", side_effect=mock_cpe):
+                    res = run_gaussian_training(source_dir, model_dir, iterations=100)
+                    self.assertFalse(res["success"])
+                    self.assertEqual(res["returncode"], 42)
+                    self.assertIn("CUDA Out of memory", res["stderr"])
+                    self.assertIn("Stage 1 stdout", res["stdout"])
+                    self.assertTrue(res.get("log_persistence_failed", False))
+                    self.assertIn("permission denied", res.get("log_error", ""))
+                    self.assertIn("Subprocess log persistence also failed", res["message"])
+
+        # 6. Successful subprocess with an unwritable required log cannot report success
+        mock_lpe = LogPersistenceError(
+            "Subprocess exited 0 but writing training_stdout.log threw PermissionError",
+            completed_process=mock_proc_success
+        )
+
+        with patch.dict(sys.modules, {
+            "torch": mock_torch,
+            "diff_gaussian_rasterization": MagicMock(),
+            "simple_knn": MagicMock()
+        }):
+            with patch("pipeline.train.validate_graphdeco_runner_provenance", return_value=(True, "Approved", approved_prov)):
+                with patch("pipeline.train.run_managed_process", side_effect=mock_lpe):
+                    res = run_gaussian_training(source_dir, model_dir, iterations=100)
+                    self.assertFalse(res["success"])
+                    self.assertEqual(res["error_code"], "LOG_PERSISTENCE_FAILED")
+                    self.assertEqual(res["returncode"], 0)
+                    self.assertTrue(res.get("log_persistence_failed", False))
+                    self.assertIn("writing training_stdout.log threw", res["message"])
+
+
     def test_default_approved_graphdeco_commits_authenticity(self):
         """
         Blocker A Verification: Proves that DEFAULT_APPROVED_GRAPHDECO_COMMITS

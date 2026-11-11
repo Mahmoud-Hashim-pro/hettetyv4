@@ -36,8 +36,18 @@ sudo apt-get update && sudo apt-get install -y \
     curl \
     wget
 
-# 2. Install NVIDIA Driver (version >= 535 recommended)
-sudo apt-get install -y nvidia-driver-535
+# 2. Identify and install recommended NVIDIA driver for your hardware & Ubuntu release
+# Detect available hardware and driver recommendations:
+ubuntu-drivers devices
+
+# Install recommended production driver package automatically:
+sudo ubuntu-drivers install
+
+# Alternatively, manually install the specific recommended production branch (e.g. driver 550+ for modern Ada/Ampere cards):
+# sudo apt-get install -y nvidia-driver-550-server (or desktop package nvidia-driver-550)
+
+# If installing NVIDIA drivers for the first time on a fresh system, reboot to load kernel modules:
+# sudo reboot
 
 # 3. Install CUDA Toolkit (>= 11.8; CUDA 12.1 or 12.4 recommended)
 # Follow official NVIDIA CUDA instructions for Ubuntu:
@@ -219,7 +229,7 @@ python hettety-3d-worker/scripts/gpu_runner_preflight.py --strict
          NVIDIA GeForce RTX 4090 (24.0 GB VRAM, Compute 8.9)
 
 [ PASS ] 5. Native COLMAP with CUDA Acceleration on PATH
-         COLMAP 3.9.1 at /usr/local/bin/colmap (CUDA SIFT verified)
+         COLMAP 3.9.1 at /usr/local/bin/colmap (CUDA SIFT extraction & matching verified: 342/342 features, 280 matches)
 
 [ PASS ] 6. Graphdeco CUDA Submodules (diff_gaussian_rasterization, simple_knn)
          diff_gaussian_rasterization and simple_knn successfully imported

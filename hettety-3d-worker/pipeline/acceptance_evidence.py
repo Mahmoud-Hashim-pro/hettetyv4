@@ -602,6 +602,53 @@ def verify_retained_deliverables(
             except Exception as e:
                 errors.append(f"Failed to hash file '{key}' at '{p}': {e}")
 
+    # Authoritative Training Provenance Verification:
+    # If the acceptance evidence recorded stages containing TRAINING_3DGS,
+    # training provenance must be present, fully verified, authentic, and clean.
+    stages = evidence.get("stages")
+    if isinstance(stages, dict) and "TRAINING_3DGS" in stages:
+        stage_3dgs = stages["TRAINING_3DGS"]
+        if not isinstance(stage_3dgs, dict):
+            errors.append("Stage 'TRAINING_3DGS' metadata is malformed: expected dictionary.")
+        else:
+            prov = stage_3dgs.get("provenance")
+            if not isinstance(prov, dict) or not prov:
+                errors.append("Stage 'TRAINING_3DGS' is missing required 'provenance' dictionary.")
+            else:
+                if prov.get("verified") is not True:
+                    errors.append(f"Stage 'TRAINING_3DGS' training provenance is unverified (verified={prov.get('verified')}).")
+
+                req_prov_fields = ["commit_sha", "remote_url", "script_path", "blob_sha", "is_clean"]
+                for field in req_prov_fields:
+                    val = prov.get(field)
+                    if val is None or (isinstance(val, str) and not val.strip()):
+                        errors.append(f"Stage 'TRAINING_3DGS' provenance is missing required field '{field}'.")
+
+                if prov.get("is_clean") is not True:
+                    errors.append("Stage 'TRAINING_3DGS' provenance indicates dirty git working tree (is_clean != True).")
+
+                commit_sha = prov.get("commit_sha")
+                if commit_sha:
+                    from pipeline.train import DEFAULT_APPROVED_GRAPHDECO_COMMITS
+                    if commit_sha.lower() not in {c.lower() for c in DEFAULT_APPROVED_GRAPHDECO_COMMITS}:
+                        errors.append(f"Stage 'TRAINING_3DGS' provenance commit '{commit_sha}' is not in approved Graphdeco whitelist.")
+
+                remote_url = prov.get("remote_url")
+                if remote_url:
+                    from pipeline.train import OFFICIAL_GRAPHDECO_REMOTE, normalize_git_remote_url
+                    if normalize_git_remote_url(remote_url) != normalize_git_remote_url(OFFICIAL_GRAPHDECO_REMOTE):
+                        errors.append(f"Stage 'TRAINING_3DGS' provenance remote '{remote_url}' does not match official Graphdeco remote '{OFFICIAL_GRAPHDECO_REMOTE}'.")
+
+    # Authoritative Acceptance Criteria Consistency:
+    criteria = evidence.get("acceptance_criteria")
+    if isinstance(criteria, dict):
+        for crit_key in ["GRAPHDECO_3DGS", "GRAPHDECO_PROVENANCE"]:
+            if crit_key in criteria:
+                crit_obj = criteria[crit_key]
+                c_status = crit_obj.get("status") if isinstance(crit_obj, dict) else crit_obj
+                if c_status != "PASSED":
+                    errors.append(f"Acceptance criterion '{crit_key}' is not PASSED: got '{c_status}'.")
+
     return len(errors) == 0, errors
 
 def write_acceptance_evidence(
@@ -680,7 +727,18 @@ def write_acceptance_evidence(
 
     for stage_name, stage_data in stages.items():
         dur = f"{stage_data.get('durationSec', 0.0)}s" if isinstance(stage_data, dict) else "N/A"
-        metrics_str = ", ".join([f"{k}={v}" for k, v in stage_data.items() if k != "durationSec"]) if isinstance(stage_data, dict) else str(stage_data)
+        if isinstance(stage_data, dict):
+            clean_metrics = {}
+            for k, v in stage_data.items():
+                if k == "durationSec":
+                    continue
+                if k == "provenance" and isinstance(v, dict):
+                    clean_metrics["provenance"] = f"verified={v.get('verified')},commit={str(v.get('commit_sha'))[:7]},clean={v.get('is_clean')}"
+                else:
+                    clean_metrics[k] = v
+            metrics_str = ", ".join([f"{k}={v}" for k, v in clean_metrics.items()])
+        else:
+            metrics_str = str(stage_data)
         md_lines.append(f"| **{stage_name}** | {dur} | {metrics_str} |")
 
     if not stages:

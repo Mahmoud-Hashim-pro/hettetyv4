@@ -108,11 +108,16 @@ Every spatial reconstruction job strictly progresses through the following seque
 - Dynamic GPU detection via `is_gpu_acceleration_available()` (checks `COLMAP_FORCE_GPU`, `torch.cuda.is_available()`, and `nvidia-smi`).
 - Automatically passes `--gpus all` and preserves `--SiftExtraction.use_gpu 1` in Docker when NVIDIA GPUs are present; gracefully falls back to CPU when running on non-GPU host environments.
 
-### 5. Mathematical 3D Gaussian Splatting Optimization (`IterativeGaussianOptimizer`)
-- Genuine mathematical optimization engine without hardcoded constants or synthetic proxy outputs:
-  - **KDTree Spatial Scales**: Anisotropic covariance scale vectors $\mathbf{s}_i$ initialized from $k=3$ spatial nearest neighbors.
-  - **PCA Surface Tangents**: Unit quaternions $\mathbf{q}_i = (w, x, y, z)$ derived from local point cloud covariance eigenvectors.
-  - **Gradient Descent Convergence**: Iteratively minimizes scale smoothness, volume regularization, and opacity entropy, logging verified loss reduction telemetry.
+### 5. Dual 3D Gaussian Splatting Engines: Official Graphdeco vs Development Fallback
+Hettety incorporates two distinct 3DGS optimization engines engineered for different operational environments:
+- **Authoritative Production Path (`run_gaussian_training`)**:
+  - Executes the official Inria Graphdeco 3DGS training runner (`gaussian-splatting/train.py`) utilizing compiled CUDA submodules (`diff_gaussian_rasterization` and `simple_knn`) on dedicated NVIDIA hardware ($\ge 12\text{ GB}$ VRAM).
+  - Enforces authoritative Git supply chain security: strictly verifies the enclosing Git repository, canonical remote URL (`https://github.com/graphdeco-inria/gaussian-splatting`), pinned release commit SHA (e.g. `2130164`), tracked source status, and a 100% clean working tree.
+  - Telemetry is authoritatively parsed from stdout/stderr execution logs and checkpoint PLY files to verify full convergence through 30,000 iterations.
+- **Development & CI Fallback (`IterativeGaussianOptimizer`)**:
+  - Pure Python/PyTorch/SciPy spatial optimization engine designed exclusively for unit testing, non-CUDA CI environments, and local development where physical NVIDIA GPUs are unavailable.
+  - Computes KDTree anisotropic spatial scales ($\mathbf{s}_i$), PCA surface tangent quaternions ($\mathbf{q}_i$), and iterative gradient descent loss minimization without invoking external C++/CUDA binaries.
+  - **Strict Production Guard**: In strict real-pipeline mode (`HETTETY_REAL_PIPELINE_STRICT=1`), substituting `IterativeGaussianOptimizer` for official Graphdeco training is strictly forbidden and fails closed.
 
 ### 6. SSRF & DNS Rebinding Defenses
 - Strict fail-closed DNS resolution: reject unresolvable hostnames in production download paths.
@@ -125,7 +130,12 @@ Every spatial reconstruction job strictly progresses through the following seque
   - Entrance Vestibule Portal: `0.91m`
   - Terrace Window Bay: `1.82m`
   - Corridor Clear Span: `1.10m`
-- Quantitative quality gates: evaluates camera registration, reprojection error ($\le 3.0\,\text{px}$), splat distribution, mesh topology, scale confidence score $\ge 0.90$, and benchmark relative error margin $\le 5.0\%$.
+- Quantitative quality gates: evaluates camera registration, reprojection error ($\le 3.0\text{ px}$), splat distribution, mesh topology, scale confidence score $\ge 0.90$, and benchmark relative error margin $\le 5.0\%$.
+
+### 8. Physical GPU Acceptance Scope
+- **Acceptance Gate Scope**: The authoritative hardware acceptance gate (`.github/workflows/gpu-acceptance.yml` and `hettety-3d-worker/tests/acceptance/test_real_gpu_reconstruction.py`) exercises the **complete local photogrammetric and 3DGS pipeline** on a dedicated physical NVIDIA GPU runner (COLMAP SfM feature extraction & matching, multi-view stereo dense point cloud fusion, official Graphdeco 30,000-iteration training, floater pruning, 1:1 metric calibration against survey ground truth, and dual SPZ/GLB asset compression).
+- **Separation of Concerns**: Physical GPU acceptance validates that the 3D computer vision and neural reconstruction pipeline achieves verified metric survey accuracy and produces authentic 3DGS deliverables. The distributed web platform components (Next.js client, Vercel API control plane, Firebase Admin, and Redis Streams worker queue) are verified independently through dedicated automated unit, integration, and lifecycle test suites.
+- For complete runner provisioning and execution instructions, see [docs/GPU_RUNNER_SETUP.md](docs/GPU_RUNNER_SETUP.md).
 
 ---
 

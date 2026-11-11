@@ -1180,6 +1180,43 @@ class TestRealReconstructionStrictGuards(unittest.TestCase):
         # Clean git working tree
         subprocess.run(["git", "checkout", "--", "train.py"], cwd=repo_dir, check=True)
 
+        # 3b. Untracked train.py is rejected before process execution
+        untracked_repo_dir = os.path.join(self.temp_dir, "graphdeco_untracked_repo")
+        os.makedirs(untracked_repo_dir, exist_ok=True)
+        subprocess.run(["git", "init"], cwd=untracked_repo_dir, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        subprocess.run(["git", "config", "user.name", "Tester"], cwd=untracked_repo_dir, check=True)
+        subprocess.run(["git", "config", "user.email", "tester@test.com"], cwd=untracked_repo_dir, check=True)
+        subprocess.run(["git", "remote", "add", "origin", "https://github.com/graphdeco-inria/gaussian-splatting"], cwd=untracked_repo_dir, check=True)
+        os.makedirs(os.path.join(untracked_repo_dir, "scene"), exist_ok=True)
+        os.makedirs(os.path.join(untracked_repo_dir, "gaussian_renderer"), exist_ok=True)
+        with open(os.path.join(untracked_repo_dir, "README.md"), "w") as f:
+            f.write("# Repo\n")
+        subprocess.run(["git", "add", "."], cwd=untracked_repo_dir, check=True)
+        subprocess.run(["git", "commit", "-m", "init"], cwd=untracked_repo_dir, check=True)
+        untracked_script = os.path.join(untracked_repo_dir, "train.py")
+        with open(untracked_script, "w", encoding="utf-8") as f:
+            f.write("from scene import Scene, GaussianModel\nfrom gaussian_renderer import render\nGaussianModel()\n")
+        
+        saved_gsp = os.environ.get("GAUSSIAN_SPLATTING_PATH")
+        os.environ["GAUSSIAN_SPLATTING_PATH"] = untracked_script
+        try:
+            with patch.dict(sys.modules, {
+                "torch": mock_torch,
+                "diff_gaussian_rasterization": MagicMock(),
+                "simple_knn": MagicMock()
+            }):
+                with patch("pipeline.train.run_managed_process") as mock_exec:
+                    res_untracked = run_gaussian_training(source_dir, model_dir, iterations=100)
+                    self.assertFalse(res_untracked["success"])
+                    self.assertEqual(res_untracked["error_code"], "GRAPHDECO_PROVENANCE_REJECTED")
+                    self.assertIn("untracked", res_untracked["message"].lower())
+                    mock_exec.assert_not_called()
+        finally:
+            if saved_gsp:
+                os.environ["GAUSSIAN_SPLATTING_PATH"] = saved_gsp
+            else:
+                os.environ.pop("GAUSSIAN_SPLATTING_PATH", None)
+
         # 4. Genuine approved Graphdeco commit reaches the runner and records provenance
         approved_sha = "21301643a4354d6e24495c0df5a85354af8bd2be"
         approved_prov = {
@@ -1607,6 +1644,151 @@ class TestRealReconstructionStrictGuards(unittest.TestCase):
                 os.environ["HETTETY_ACCEPTANCE_EVIDENCE_DIR"] = saved_ev_env
             else:
                 os.environ.pop("HETTETY_ACCEPTANCE_EVIDENCE_DIR", None)
+
+    def test_graphdeco_provenance_untracked_train_py_rejected(self):
+        """
+        Supply-Chain Security Verification: Proves that an untracked train.py script
+        inside an otherwise valid official Graphdeco repository is strictly rejected.
+        """
+        untracked_dir = os.path.join(self.temp_dir, "untracked_repo_standalone")
+        os.makedirs(untracked_dir, exist_ok=True)
+        subprocess.run(["git", "init"], cwd=untracked_dir, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        subprocess.run(["git", "config", "user.name", "Tester"], cwd=untracked_dir, check=True)
+        subprocess.run(["git", "config", "user.email", "tester@test.com"], cwd=untracked_dir, check=True)
+        subprocess.run(["git", "remote", "add", "origin", "https://github.com/graphdeco-inria/gaussian-splatting"], cwd=untracked_dir, check=True)
+        os.makedirs(os.path.join(untracked_dir, "scene"), exist_ok=True)
+        os.makedirs(os.path.join(untracked_dir, "gaussian_renderer"), exist_ok=True)
+        with open(os.path.join(untracked_dir, "README.md"), "w") as f:
+            f.write("# Repo\n")
+        subprocess.run(["git", "add", "."], cwd=untracked_dir, check=True)
+        subprocess.run(["git", "commit", "-m", "init"], cwd=untracked_dir, check=True)
+        untracked_script = os.path.join(untracked_dir, "train.py")
+        with open(untracked_script, "w", encoding="utf-8") as f:
+            f.write("from scene import Scene, GaussianModel\nfrom gaussian_renderer import render\nGaussianModel()\n")
+
+        valid, reason, details = validate_graphdeco_runner_provenance(untracked_script, return_details=True)
+        self.assertFalse(valid)
+        self.assertIn("untracked", reason.lower())
+        self.assertFalse(details["verified"])
+        self.assertFalse(details["is_clean"])
+
+    def test_genuine_approved_graphdeco_installation_provenance(self):
+        """
+        Integration Verification: Validates genuine Graphdeco runner provenance against
+        actual on-disk installation using validate_graphdeco_runner_provenance() directly.
+        No mocks, patches, or allowlist overrides are permitted.
+        Skips cleanly on CPU or unprovisioned environments rather than faking approval.
+        """
+        runner = resolve_graphdeco_script_path()
+        if not runner or not os.path.isfile(runner):
+            self.skipTest(
+                "No physical Graphdeco runner installation found on GAUSSIAN_SPLATTING_PATH or standard paths. "
+                "Skipping genuine provenance integration test on unprovisioned host."
+            )
+
+        valid, reason, details = validate_graphdeco_runner_provenance(runner, return_details=True)
+        self.assertTrue(valid, f"Genuine Graphdeco runner failed provenance validation: {reason}")
+        self.assertTrue(details["verified"], "Expected details['verified'] to be True")
+        self.assertTrue(details["is_clean"], "Expected details['is_clean'] to be True")
+        self.assertIn(details["commit_sha"], DEFAULT_APPROVED_GRAPHDECO_COMMITS)
+        from pipeline.train import normalize_git_remote_url, OFFICIAL_GRAPHDECO_REMOTE
+        self.assertEqual(normalize_git_remote_url(details["remote_url"]), normalize_git_remote_url(OFFICIAL_GRAPHDECO_REMOTE))
+        self.assertIsNotNone(details["blob_sha"])
+        self.assertTrue(os.path.isfile(details["script_path"]))
+
+    def test_verify_retained_deliverables_enforces_training_provenance_authenticity(self):
+        """
+        Acceptance Evidence Verification: Proves verify_retained_deliverables enforces
+        fail-closed training provenance authenticity when TRAINING_3DGS is present.
+        """
+        evidence_dir = os.path.join(self.temp_dir, "prov_evidence_test")
+        os.makedirs(evidence_dir, exist_ok=True)
+
+        spz_file = os.path.join(evidence_dir, "scene.spz")
+        with open(spz_file, "wb") as f:
+            f.write(b"SPZ_TEST_DATA")
+        spz_sha, spz_size = compute_file_hash(spz_file)
+
+        valid_manifest = {
+            "run_id": "run_prov_test",
+            "evidence_dir": evidence_dir,
+            "status": "PASSED",
+            "artifacts": {
+                "spz": {"path": "scene.spz", "sha256": spz_sha, "sizeBytes": spz_size}
+            },
+            "stages": {
+                "TRAINING_3DGS": {
+                    "durationSec": 120.0,
+                    "requestedIterations": 30000,
+                    "verifiedCompletedIterations": 30000,
+                    "provenance": {
+                        "verified": True,
+                        "commit_sha": "21301643a4354d6e24495c0df5a85354af8bd2be",
+                        "remote_url": "https://github.com/graphdeco-inria/gaussian-splatting",
+                        "script_path": "/opt/gaussian-splatting/train.py",
+                        "blob_sha": "1234567890abcdef1234567890abcdef12345678",
+                        "is_clean": True
+                    }
+                }
+            },
+            "acceptance_criteria": {
+                "GRAPHDECO_3DGS": {"status": "PASSED", "details": "30,000 iters"},
+                "GRAPHDECO_PROVENANCE": {"status": "PASSED", "details": "Official commit clean"}
+            }
+        }
+
+        # 1. Authentic provenance passes
+        ok, errs = verify_retained_deliverables(valid_manifest, base_dir=evidence_dir)
+        self.assertTrue(ok, f"Valid manifest failed verification: {errs}")
+
+        # 2. Missing provenance dictionary fails closed
+        m_missing_prov = json.loads(json.dumps(valid_manifest))
+        del m_missing_prov["stages"]["TRAINING_3DGS"]["provenance"]
+        ok, errs = verify_retained_deliverables(m_missing_prov, base_dir=evidence_dir)
+        self.assertFalse(ok)
+        self.assertTrue(any("missing required 'provenance' dictionary" in e for e in errs))
+
+        # 3. Unverified provenance fails closed
+        m_unverified = json.loads(json.dumps(valid_manifest))
+        m_unverified["stages"]["TRAINING_3DGS"]["provenance"]["verified"] = False
+        ok, errs = verify_retained_deliverables(m_unverified, base_dir=evidence_dir)
+        self.assertFalse(ok)
+        self.assertTrue(any("provenance is unverified" in e for e in errs))
+
+        # 4. Dirty working tree provenance fails closed
+        m_dirty = json.loads(json.dumps(valid_manifest))
+        m_dirty["stages"]["TRAINING_3DGS"]["provenance"]["is_clean"] = False
+        ok, errs = verify_retained_deliverables(m_dirty, base_dir=evidence_dir)
+        self.assertFalse(ok)
+        self.assertTrue(any("dirty git working tree" in e for e in errs))
+
+        # 5. Unapproved commit SHA fails closed
+        m_bad_commit = json.loads(json.dumps(valid_manifest))
+        m_bad_commit["stages"]["TRAINING_3DGS"]["provenance"]["commit_sha"] = "0000000000000000000000000000000000000000"
+        ok, errs = verify_retained_deliverables(m_bad_commit, base_dir=evidence_dir)
+        self.assertFalse(ok)
+        self.assertTrue(any("not in approved Graphdeco whitelist" in e for e in errs))
+
+        # 6. Attacker remote URL fails closed
+        m_bad_remote = json.loads(json.dumps(valid_manifest))
+        m_bad_remote["stages"]["TRAINING_3DGS"]["provenance"]["remote_url"] = "https://github.com/attacker/gaussian-splatting"
+        ok, errs = verify_retained_deliverables(m_bad_remote, base_dir=evidence_dir)
+        self.assertFalse(ok)
+        self.assertTrue(any("does not match official Graphdeco remote" in e for e in errs))
+
+        # 7. Missing required field in provenance fails closed
+        m_missing_field = json.loads(json.dumps(valid_manifest))
+        del m_missing_field["stages"]["TRAINING_3DGS"]["provenance"]["blob_sha"]
+        ok, errs = verify_retained_deliverables(m_missing_field, base_dir=evidence_dir)
+        self.assertFalse(ok)
+        self.assertTrue(any("missing required field 'blob_sha'" in e for e in errs))
+
+        # 8. Failed GRAPHDECO_PROVENANCE criterion fails closed
+        m_bad_crit = json.loads(json.dumps(valid_manifest))
+        m_bad_crit["acceptance_criteria"]["GRAPHDECO_PROVENANCE"]["status"] = "FAILED"
+        ok, errs = verify_retained_deliverables(m_bad_crit, base_dir=evidence_dir)
+        self.assertFalse(ok)
+        self.assertTrue(any("criterion 'GRAPHDECO_PROVENANCE' is not PASSED" in e for e in errs))
 
     def test_managed_process_persists_failure_cancellation_and_timeout_logs(self):
         """
@@ -2249,6 +2431,9 @@ class TestRealGPUPipelineAcceptance(unittest.TestCase):
             self.assertGreaterEqual(verified_iters, 30000, f"Graphdeco did not complete 30,000 iterations (verified: {verified_iters})")
             trained_ply = train_res["target_ply"]
             self.assertTrue(os.path.exists(trained_ply))
+            train_prov = train_res.get("provenance")
+            if not isinstance(train_prov, dict):
+                train_prov = {}
             evidence["stages"]["TRAINING_3DGS"] = {
                 "durationSec": round(time.time() - t3, 2),
                 "requestedIterations": 30000,
@@ -2256,11 +2441,24 @@ class TestRealGPUPipelineAcceptance(unittest.TestCase):
                 "iterationEvidenceSource": train_res.get("iteration_evidence_source", "log_parsing"),
                 "finalLoss": train_res.get("final_loss"),
                 "finalPsnr": train_res.get("final_psnr"),
-                "targetPly": trained_ply
+                "targetPly": trained_ply,
+                "provenance": {
+                    "verified": bool(train_prov.get("verified", False)),
+                    "commit_sha": train_prov.get("commit_sha"),
+                    "remote_url": train_prov.get("remote_url"),
+                    "script_path": train_prov.get("script_path"),
+                    "blob_sha": train_prov.get("blob_sha"),
+                    "is_clean": bool(train_prov.get("is_clean", False)),
+                }
             }
+            prov_verified = bool(train_prov.get("verified") and train_prov.get("is_clean"))
             evidence["acceptance_criteria"]["GRAPHDECO_3DGS"] = {
-                "status": "PASSED",
-                "details": f"Completed 30,000 iterations (verified from log/checkpoint evidence)."
+                "status": "PASSED" if (verified_iters >= 30000 and prov_verified) else "FAILED",
+                "details": f"Completed 30,000 iterations (verified from log/checkpoint evidence). Provenance verified: {prov_verified} at commit {train_prov.get('commit_sha')}."
+            }
+            evidence["acceptance_criteria"]["GRAPHDECO_PROVENANCE"] = {
+                "status": "PASSED" if prov_verified else "FAILED",
+                "details": f"Official Graphdeco commit {train_prov.get('commit_sha')} verified clean: {train_prov.get('is_clean')}."
             }
 
             # Stage 5: Floater Pruning & Optimization

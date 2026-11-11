@@ -33,6 +33,11 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: GPU Host & Dependency Preflight Verification
+        run: |
+          echo "=== Executing Authoritative Preflight Verification Script ==="
+          python hettety-3d-worker/scripts/gpu_runner_preflight.py --strict --runner "$GAUSSIAN_SPLATTING_PATH" --dataset "$HETTETY_ACCEPTANCE_DATASET"
+
       - name: Verify Physical NVIDIA GPU Hardware & Drivers
         run: |
           echo "=== NVIDIA Hardware Inspection ==="

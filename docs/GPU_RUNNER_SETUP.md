@@ -191,8 +191,11 @@ Clone the Hettety repository and install Python test requirements:
 
 ```bash
 cd ~/
-git clone https://github.com/Mahmoud-Hashim-pro/hettetyv4.git
+# Clone the repository (use --branch fix/gpu-runner-readiness when testing prior to main branch promotion):
+git clone --branch fix/gpu-runner-readiness https://github.com/Mahmoud-Hashim-pro/hettetyv4.git
 cd hettetyv4
+
+# (Note: When running on main after merge, a standard clone without --branch suffices)
 
 # Install Python requirements
 pip install -r hettety-3d-worker/requirements.txt

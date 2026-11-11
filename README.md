@@ -34,11 +34,13 @@ A high-performance luxury real estate marketplace and spatial property platform 
                                   │ 1. Keyframe Sharpness Validation    │
                                   │ 2. COLMAP Structure-from-Motion     │
                                   │ 3. Multi-View Dense Stereo Fusion   │
-                                  │ 4. Iterative 3DGS Loss Optimization │
+                                  │ 4. Official Graphdeco 3DGS Training │*
                                   │ 5. Floater Pruning & Spatial Bounds │
                                   │ 6. 1:1 Metric Scale Calibration     │
                                   │ 7. Dual Asset Compression (SPZ/GLB) │
                                   └─────────────────────────────────────┘
+                                  * Production uses official Graphdeco 3DGS;
+                                    IterativeGaussianOptimizer is dev/test fallback.
                                                         │
                                                         ▼
                                        [ Google Cloud Storage / CDN ]
@@ -67,7 +69,8 @@ Every spatial reconstruction job strictly progresses through the following seque
         │  COLMAP feature extraction, sequential/exhaustive matcher & bundle adjustment
         ▼
    [ TRAINING ]
-        │  Dense stereo fusion + Iterative 3D Gaussian Splatting optimization
+        │  Dense stereo fusion + Official Graphdeco 3DGS training
+        │  (IterativeGaussianOptimizer serves as dev/test fallback)
         ▼
   [ OPTIMIZING ]
         │  Floater pruning, bounding box computation & 1:1 metric calibration

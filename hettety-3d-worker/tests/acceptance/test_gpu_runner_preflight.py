@@ -122,18 +122,94 @@ class TestGPURunnerPreflight(unittest.TestCase):
             self.assertFalse(passed)
             self.assertIn("not found on system PATH", msg)
 
-        # 2. COLMAP present
+        # 2. COLMAP present but --version execution throws exception
         with patch("shutil.which", return_value="/usr/local/bin/colmap"):
-            mock_proc = subprocess.CompletedProcess(
+            with patch("subprocess.run", side_effect=OSError("Exec format error")):
+                passed, msg, _ = check_colmap_binary()
+                self.assertFalse(passed)
+                self.assertIn("Failed executing 'colmap --version'", msg)
+
+        # 3. COLMAP present with CUDA acceleration (version OK, smoke test OK)
+        with patch("shutil.which", return_value="/usr/local/bin/colmap"):
+            mock_ver = subprocess.CompletedProcess(
                 args=["colmap", "--version"],
                 returncode=0,
-                stdout="COLMAP 3.9.1 (Commit 12345)\n",
+                stdout="COLMAP 3.9.1 with CUDA (Commit 12345)\n",
                 stderr=""
             )
-            with patch("subprocess.run", return_value=mock_proc):
+            mock_smoke = subprocess.CompletedProcess(
+                args=["colmap", "feature_extractor"],
+                returncode=0,
+                stdout="Extracting SIFT features using GPU... Extracted 120 features.\n",
+                stderr=""
+            )
+
+            def mock_subp_run(cmd, *args, **kwargs):
+                if "--version" in cmd:
+                    return mock_ver
+                elif "feature_extractor" in cmd:
+                    # Create dummy smoke db file to simulate success
+                    db_idx = cmd.index("--database_path") + 1
+                    db_path = cmd[db_idx]
+                    with open(db_path, "wb") as f:
+                        f.write(b"MOCK_SQLITE_COLMAP_DATABASE")
+                    return mock_smoke
+                return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="", stderr="")
+
+            with patch("subprocess.run", side_effect=mock_subp_run):
                 passed, msg, details = check_colmap_binary()
                 self.assertTrue(passed)
-                self.assertIn("COLMAP 3.9.1", msg)
+                self.assertIn("CUDA SIFT verified", msg)
+                self.assertTrue(details.get("cuda_sift_verified"))
+
+    def test_check_colmap_binary_cpu_only_rejected(self):
+        """
+        Enforces rejection of CPU-only COLMAP installations (e.g. default apt-get packages)
+        via SiftExtraction.use_gpu=1 smoke test failure.
+        """
+        with patch("shutil.which", return_value="/usr/bin/colmap"):
+            mock_ver = subprocess.CompletedProcess(
+                args=["colmap", "--version"],
+                returncode=0,
+                stdout="COLMAP 3.9.1 (Commit 12345 without CUDA)\n",
+                stderr=""
+            )
+            # Case A: Fails with explicit non-zero exit code and CUDA error
+            mock_smoke_fail = subprocess.CompletedProcess(
+                args=["colmap", "feature_extractor"],
+                returncode=1,
+                stdout="",
+                stderr="ERROR: SiftExtraction.use_gpu is only supported if CUDA is enabled.\n"
+            )
+
+            def mock_subp_cpu_fail(cmd, *args, **kwargs):
+                if "--version" in cmd:
+                    return mock_ver
+                return mock_smoke_fail
+
+            with patch("subprocess.run", side_effect=mock_subp_cpu_fail):
+                passed, msg, details = check_colmap_binary()
+                self.assertFalse(passed)
+                self.assertIn("lacks functional CUDA GPU support", msg)
+                self.assertIn("docs/GPU_RUNNER_SETUP.md", msg)
+
+            # Case B: Exits 0 but prints no CUDA device / without CUDA warning
+            mock_smoke_warn = subprocess.CompletedProcess(
+                args=["colmap", "feature_extractor"],
+                returncode=0,
+                stdout="WARNING: No CUDA-capable device is detected. Falling back to CPU.\n",
+                stderr=""
+            )
+
+            def mock_subp_cpu_warn(cmd, *args, **kwargs):
+                if "--version" in cmd:
+                    return mock_ver
+                return mock_smoke_warn
+
+            with patch("subprocess.run", side_effect=mock_subp_cpu_warn):
+                passed, msg, details = check_colmap_binary()
+                self.assertFalse(passed)
+                self.assertIn("lacks functional CUDA GPU support", msg)
 
     def test_check_graphdeco_submodules(self):
         # Missing

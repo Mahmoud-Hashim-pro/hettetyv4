@@ -76,19 +76,59 @@ python -c "import torch; assert torch.cuda.is_available(), 'CUDA not available';
 
 ---
 
-## 4. Native COLMAP Installation
+## 4. Native COLMAP with CUDA Acceleration Build & Installation
 
-COLMAP is required for Structure-from-Motion (SfM) feature extraction, matching, bundle adjustment, and multi-view dense stereo fusion:
+COLMAP is required for Structure-from-Motion (SfM) feature extraction, matching, bundle adjustment, and multi-view dense stereo fusion.
+
+> [!CAUTION]
+> **DO NOT USE `sudo apt-get install colmap`!**
+> Default Linux/Ubuntu repository packages (`apt-get install colmap`) are compiled **without CUDA or HIP acceleration** (CPU-only). Because Hettety strictly enforces hardware-accelerated feature extraction and matching (`--SiftExtraction.use_gpu 1`, `--SiftMatching.use_gpu 1`), a CPU-only package will fail reconstruction and will be rejected immediately by `gpu_runner_preflight.py`.
+>
+> You must build native COLMAP from source with CUDA support enabled, and ensure the resulting `colmap` executable is installed to system `PATH` (e.g. `/usr/local/bin/colmap`).
+
+### Build Native CUDA COLMAP from Source (Ubuntu 22.04 LTS):
 
 ```bash
-# Option A: Ubuntu APT package (quickest)
-sudo apt-get install -y colmap
+# 1. Install build dependencies and library prerequisites
+sudo apt-get update && sudo apt-get install -y \
+    git cmake build-essential ninja-build \
+    libboost-program-options-dev \
+    libboost-filesystem-dev \
+    libboost-graph-dev \
+    libboost-system-dev \
+    libeigen3-dev \
+    libfreeimage-dev \
+    libmetis-dev \
+    libgoogle-glog-dev \
+    libgflags-dev \
+    libsqlite3-dev \
+    libglew-dev \
+    qtbase5-dev \
+    libqt5opengl5-dev \
+    libcgal-dev \
+    libceres-dev
 
-# Option B: Build latest COLMAP with CUDA acceleration (recommended for maximum performance)
-# Follow official build instructions: https://colmap.github.io/install.html
+# 2. Clone COLMAP official source repository
+git clone https://github.com/colmap/colmap.git ~/colmap
+cd ~/colmap
+git checkout 3.9.1
 
-# Verify COLMAP installation on PATH
+# 3. Configure CMake with CUDA support explicitly enabled
+mkdir build && cd build
+cmake .. \
+    -GNinja \
+    -DCUDA_ENABLED=ON \
+    -DCMAKE_CUDA_ARCHITECTURES=all-major \
+    -DCMAKE_BUILD_TYPE=Release
+
+# 4. Compile and install native binary to /usr/local/bin
+ninja
+sudo ninja install
+
+# 5. Verify COLMAP binary is on PATH with CUDA support
+which colmap
 colmap --version
+# Output confirms CUDA support enabled (e.g., 'with CUDA')
 ```
 
 ---
@@ -178,8 +218,8 @@ python hettety-3d-worker/scripts/gpu_runner_preflight.py --strict
 [ PASS ] 4. Physical NVIDIA GPU Hardware (>= 11.5 GB VRAM)
          NVIDIA GeForce RTX 4090 (24.0 GB VRAM, Compute 8.9)
 
-[ PASS ] 5. Native COLMAP Binary on PATH
-         COLMAP 3.9.1 at /usr/bin/colmap
+[ PASS ] 5. Native COLMAP with CUDA Acceleration on PATH
+         COLMAP 3.9.1 at /usr/local/bin/colmap (CUDA SIFT verified)
 
 [ PASS ] 6. Graphdeco CUDA Submodules (diff_gaussian_rasterization, simple_knn)
          diff_gaussian_rasterization and simple_knn successfully imported
@@ -199,24 +239,29 @@ python hettety-3d-worker/scripts/gpu_runner_preflight.py --strict
 
 ## 9. Registering Self-Hosted GitHub Actions Runner
 
-To connect the host to the repository:
+To connect the host to the repository as a dedicated self-hosted runner:
 
-1. Navigate to: **GitHub Repository $\to$ Settings $\to$ Actions $\to$ Runners $\to$ New self-hosted runner**.
-2. Select **Linux** and **x64**.
-3. Follow the instructions to download and extract the runner package:
+1. In your web browser, navigate to your repository runner setup page:
+   **[GitHub Repository $\to$ Settings $\to$ Actions $\to$ Runners $\to$ New self-hosted runner](https://github.com/Mahmoud-Hashim-pro/hettetyv4/settings/actions/runners)**
+2. Select **Runner image**: **Linux** and **Architecture**: **x64**.
+3. **Download & Extract**:
+   Copy and execute the exact `curl` and `tar` commands dynamically provided on that GitHub page. This ensures you always install the current official runner release (e.g. 2.338.2+), avoiding obsolete or deprecated versions:
 
 ```bash
 mkdir -p ~/actions-runner && cd ~/actions-runner
-curl -o actions-runner-linux-x64-2.319.1.tar.gz -L https://github.com/actions/runner/releases/download/v2.319.1/actions-runner-linux-x64-2.319.1.tar.gz
-tar xzf ./actions-runner-linux-x64-2.319.1.tar.gz
+# Paste the current curl and tar commands directly from the GitHub page:
+# Example:
+# curl -o actions-runner-linux-x64-<CURRENT_VERSION>.tar.gz -L https://github.com/actions/runner/releases/download/v<CURRENT_VERSION>/actions-runner-linux-x64-<CURRENT_VERSION>.tar.gz
+# tar xzf ./actions-runner-linux-x64-<CURRENT_VERSION>.tar.gz
 ```
 
-4. Configure the runner with `--ephemeral` and required labels:
+4. **Configure Runner with Ephemeral Flag & Required Labels**:
+   Execute the `./config.sh` command using the temporary registration token generated on the GitHub settings page, appending the required `--labels` and `--ephemeral` flags:
 
 ```bash
 ./config.sh \
   --url https://github.com/Mahmoud-Hashim-pro/hettetyv4 \
-  --token <YOUR_RUNNER_REGISTRATION_TOKEN> \
+  --token <YOUR_DYNAMIC_RUNNER_REGISTRATION_TOKEN_FROM_GITHUB> \
   --labels self-hosted,gpu,nvidia \
   --ephemeral
 ```

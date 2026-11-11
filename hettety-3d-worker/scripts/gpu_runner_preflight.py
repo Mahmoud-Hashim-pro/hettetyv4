@@ -131,7 +131,11 @@ def check_gpu_hardware() -> Tuple[bool, str, Dict[str, Any]]:
 
 
 def check_colmap_binary() -> Tuple[bool, str, Dict[str, Any]]:
-    """Validates native COLMAP executable is on PATH."""
+    """
+    Validates native COLMAP binary is on PATH and verifies functional CUDA SIFT acceleration.
+    Executes an isolated smoke test with SiftExtraction.use_gpu=1 to reject CPU-only builds.
+    Guarantees immediate cleanup of all smoke test temporary files.
+    """
     colmap_path = shutil.which("colmap")
     if not colmap_path:
         return False, "Native 'colmap' executable not found on system PATH", {}
@@ -150,9 +154,74 @@ def check_colmap_binary() -> Tuple[bool, str, Dict[str, Any]]:
         details["colmap_version"] = version_line
         if res.returncode != 0 and "COLMAP" not in version_line:
             return False, f"COLMAP returned non-zero exit code {res.returncode}: {out}", details
-        return True, f"{version_line} at {colmap_path}", details
     except Exception as e:
         return False, f"Failed executing 'colmap --version': {e}", details
+
+    # Isolated CUDA SIFT Smoke Test using --SiftExtraction.use_gpu 1
+    import tempfile
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        img_dir = os.path.join(tmp_dir, "images")
+        os.makedirs(img_dir, exist_ok=True)
+        db_path = os.path.join(tmp_dir, "smoke.db")
+
+        # Generate a small 64x64 checkerboard PPM (binary P6, zero external dependencies)
+        ppm_path = os.path.join(img_dir, "smoke_test.ppm")
+        header = b"P6\n64 64\n255\n"
+        pixels = bytearray()
+        for y in range(64):
+            for x in range(64):
+                val = 255 if ((x // 8) % 2 == (y // 8) % 2) else 0
+                pixels.extend([val, 255 - val, val])
+        with open(ppm_path, "wb") as f:
+            f.write(header + bytes(pixels))
+
+        cmd_smoke = [
+            colmap_path, "feature_extractor",
+            "--database_path", db_path,
+            "--image_path", img_dir,
+            "--ImageReader.camera_model", "SIMPLE_PINHOLE",
+            "--SiftExtraction.use_gpu", "1"
+        ]
+
+        try:
+            res_smoke = subprocess.run(
+                cmd_smoke,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=20
+            )
+            smoke_combined = (res_smoke.stdout + "\n" + res_smoke.stderr).strip()
+        except Exception as e:
+            return (
+                False,
+                f"Failed executing COLMAP CUDA SIFT smoke test: {e}",
+                {"colmap_path": colmap_path, "colmap_version": version_line}
+            )
+
+        smoke_lower = smoke_combined.lower()
+        has_cuda_err = (
+            res_smoke.returncode != 0
+            or "only supported if cuda is enabled" in smoke_lower
+            or "without cuda" in smoke_lower
+            or "cuda error" in smoke_lower
+            or "no cuda-capable device" in smoke_lower
+            or not os.path.isfile(db_path)
+            or os.path.getsize(db_path) == 0
+        )
+
+        if has_cuda_err:
+            err_line = smoke_combined.splitlines()[-1] if smoke_combined.splitlines() else f"returncode {res_smoke.returncode}"
+            return (
+                False,
+                f"Native COLMAP at '{colmap_path}' lacks functional CUDA GPU support: {err_line}. "
+                "Hettety requires CUDA-enabled COLMAP (--SiftExtraction.use_gpu 1). "
+                "Default Ubuntu apt-get packages are CPU-only; build COLMAP from source with -DCUDA_ENABLED=ON (see docs/GPU_RUNNER_SETUP.md).",
+                {"colmap_path": colmap_path, "colmap_version": version_line, "smoke_output": smoke_combined}
+            )
+
+    details["cuda_sift_verified"] = True
+    return True, f"{version_line} at {colmap_path} (CUDA SIFT verified)", details
 
 
 def check_graphdeco_submodules() -> Tuple[bool, str, Dict[str, Any]]:
@@ -249,7 +318,7 @@ def run_all_preflight_checks(
         ("2. PyTest Framework", check_pytest_installed),
         ("3. PyTorch & CUDA Toolkit (>= 11.8)", check_cuda_and_pytorch),
         ("4. Physical NVIDIA GPU Hardware (>= 11.5 GB VRAM)", check_gpu_hardware),
-        ("5. Native COLMAP Binary on PATH", check_colmap_binary),
+        ("5. Native COLMAP with CUDA Acceleration on PATH", check_colmap_binary),
         ("6. Graphdeco CUDA Submodules (diff_gaussian_rasterization, simple_knn)", check_graphdeco_submodules),
         ("7. Graphdeco Runner Provenance & Commit Allowlist", lambda: check_graphdeco_provenance(runner_path)),
         ("8. Authoritative Acceptance Dataset", lambda: check_acceptance_dataset(dataset_name)),

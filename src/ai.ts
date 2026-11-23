@@ -8,6 +8,14 @@
  * here or in the components needs to move.
  */
 
+import type { AdvisorFinancialProfile } from './types';
+import type { AdvisorHealthStatus } from './core/domain/entities';
+import { getAuthToken } from './infrastructure/neon/NeonClient';
+
+/** Request timeout ceiling so browser calls to /api/ai never hang indefinitely. */
+const AI_REQUEST_TIMEOUT_MS = 25_000;
+const AI_HEALTH_TIMEOUT_MS = 10_000;
+
 /** JSON-Schema type names, replacing the vendor SDK's `Type` enum. */
 export const Type = {
   STRING: 'string',
@@ -21,10 +29,10 @@ export const Type = {
 export type Part = { text: string } | { inlineData: { mimeType: string; data: string } };
 export interface Message { role: 'user' | 'model'; parts: Part[] }
 
-/** Vendor-SDK-shaped params, kept so call sites read the same as before. */
 /** Which job this call is — lets the server route it to the right provider. */
 export type AITask = 'chat' | 'search' | 'describe' | 'brochure' | 'ocr';
 
+/** Vendor-SDK-shaped params, kept so call sites read the same as before. */
 export interface GenerateParams {
   task?: AITask;
   contents: string | Message[] | { role?: string; parts: Part[] }[];
@@ -52,13 +60,34 @@ export class AIRequestError extends Error {
 
 /** True for transient "try again later" errors (overload / rate limit). */
 export function isOverloadedError(err: any): boolean {
-  if (err instanceof AIRequestError) return err.transient;
+  if (err instanceof AIRequestError) {
+    return err.transient && (err.status === 429 || err.status === 503 || err.status === 502 || err.status === 504);
+  }
   const code = err?.status ?? err?.error?.code ?? err?.code;
   const status = err?.error?.status ?? err?.status;
   const msg = String(err?.message ?? err?.error?.message ?? '');
-  return code === 503 || code === 429 ||
-    status === 'UNAVAILABLE' || status === 'RESOURCE_EXHAUSTED' ||
-    /\b(503|429|overloaded|unavailable|high demand)\b/i.test(msg);
+  return (
+    code === 503 ||
+    code === 429 ||
+    status === 'UNAVAILABLE' ||
+    status === 'RESOURCE_EXHAUSTED' ||
+    /\b(503|429|overloaded|unavailable|high demand|rate limit)\b/i.test(msg)
+  );
+}
+
+function isTimeoutError(err: any): boolean {
+  if (err instanceof AIRequestError && err.status === 408) return true;
+  if (err?.name === 'AbortError' || err?.status === 408 || err?.code === 408) return true;
+  const msg = String(err?.message ?? '');
+  return /\b(timeout|timed out|aborted)\b/i.test(msg);
+}
+
+function isConfigError(err: any): boolean {
+  const msg = String(err?.message ?? err?.error?.message ?? '');
+  if (err instanceof AIRequestError && err.status === 500 && !err.transient) {
+    return true;
+  }
+  return /(api[_ ]?key|not configured|misconfigur|missing.*key|no provider|env.*missing)/i.test(msg);
 }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -87,29 +116,142 @@ function normaliseContents(contents: GenerateParams['contents']): Message[] {
   }));
 }
 
-/** Posts one request to our serverless AI route. */
+/** Builds headers for /api/ai, attaching the Neon Bearer JWT when available. */
+function buildAiHeaders(): Record<string, string> {
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    Accept: 'application/json',
+  };
+  const token = getAuthToken();
+  if (token && !token.startsWith('local_fallback_')) {
+    headers.Authorization = `Bearer ${token}`;
+  }
+  return headers;
+}
+
+/** Probes GET /api/ai?health=1 and returns structured diagnostics for admin & advisor UX. */
+export async function checkAdvisorHealth(): Promise<AdvisorHealthStatus> {
+  const startedAt = Date.now();
+  const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
+  const timeoutId = controller ? setTimeout(() => controller.abort(), AI_HEALTH_TIMEOUT_MS) : null;
+
+  try {
+    const headers: Record<string, string> = { Accept: 'application/json' };
+    const token = getAuthToken();
+    if (token && !token.startsWith('local_fallback_')) {
+      headers.Authorization = `Bearer ${token}`;
+    }
+
+    const res = await fetch('/api/ai?health=1', {
+      method: 'GET',
+      headers,
+      signal: controller?.signal,
+    });
+
+    const elapsedMs = Date.now() - startedAt;
+    const contentType = (res.headers?.get?.('content-type') || '').toLowerCase();
+    const body: Record<string, any> = contentType.includes('application/json')
+      ? await res.json().catch(() => ({}))
+      : {};
+
+    if (!res.ok) {
+      return {
+        healthy: false,
+        provider: String(body.provider || 'unknown'),
+        model: String(body.model || 'unconfigured'),
+        fallbackModel: typeof body.fallbackModel === 'string' ? body.fallbackModel : undefined,
+        rateLimiterBackend:
+          body.rateLimiterBackend === 'redis' || body.rateLimiterBackend === 'neon_postgres'
+            ? body.rateLimiterBackend
+            : 'memory',
+        hasApiKey: Boolean(body.hasApiKey),
+        latencyMs: typeof body.latencyMs === 'number' ? body.latencyMs : elapsedMs,
+        timestamp: body.timestamp || new Date().toISOString(),
+        diagnostics: body.diagnostics || body.error || `AI health probe returned HTTP ${res.status}`,
+      };
+    }
+
+    return {
+      healthy: body.healthy !== false && body.status !== 'unhealthy',
+      provider: String(body.provider || 'gemini'),
+      model: String(body.model || 'default'),
+      fallbackModel: typeof body.fallbackModel === 'string' ? body.fallbackModel : undefined,
+      rateLimiterBackend:
+        body.rateLimiterBackend === 'redis' || body.rateLimiterBackend === 'neon_postgres'
+          ? body.rateLimiterBackend
+          : 'memory',
+      hasApiKey: body.hasApiKey !== false,
+      latencyMs: typeof body.latencyMs === 'number' ? body.latencyMs : elapsedMs,
+      timestamp: body.timestamp || new Date().toISOString(),
+      diagnostics: typeof body.diagnostics === 'string' ? body.diagnostics : undefined,
+    };
+  } catch (err: any) {
+    const elapsedMs = Date.now() - startedAt;
+    return {
+      healthy: false,
+      provider: 'unreachable',
+      model: 'unavailable',
+      rateLimiterBackend: 'memory',
+      hasApiKey: false,
+      latencyMs: elapsedMs,
+      timestamp: new Date().toISOString(),
+      diagnostics:
+        err?.name === 'AbortError'
+          ? `Health check timed out after ${AI_HEALTH_TIMEOUT_MS}ms`
+          : String(err?.message || 'Unable to reach /api/ai health endpoint'),
+    };
+  } finally {
+    if (timeoutId) clearTimeout(timeoutId);
+  }
+}
+
+/** Posts one request to our serverless AI route with a hard 25s AbortController timeout. */
 export async function generateContent(params: GenerateParams): Promise<GenerateResult> {
-  const res = await fetch('/api/ai', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      task: params.task,
-      contents: normaliseContents(params.contents),
-      systemInstruction: params.config?.systemInstruction,
-      responseMimeType: params.config?.responseMimeType,
-      responseSchema: params.config?.responseSchema,
-      model: params.model,
-    }),
-  });
+  const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
+  const timeoutId = controller ? setTimeout(() => controller.abort(), AI_REQUEST_TIMEOUT_MS) : null;
+
+  let res: Response;
+  try {
+    res = await fetch('/api/ai', {
+      method: 'POST',
+      headers: buildAiHeaders(),
+      body: JSON.stringify({
+        task: params.task,
+        contents: normaliseContents(params.contents),
+        systemInstruction: params.config?.systemInstruction,
+        responseMimeType: params.config?.responseMimeType,
+        responseSchema: params.config?.responseSchema,
+        model: params.model,
+      }),
+      signal: controller?.signal,
+    });
+  } catch (err: any) {
+    if (err?.name === 'AbortError') {
+      throw new AIRequestError(
+        `AI request timed out after ${Math.round(AI_REQUEST_TIMEOUT_MS / 1000)}s`,
+        408,
+        true
+      );
+    }
+    throw new AIRequestError(
+      err instanceof Error ? err.message : 'Network error reaching /api/ai',
+      0,
+      true
+    );
+  } finally {
+    if (timeoutId) clearTimeout(timeoutId);
+  }
 
   if (!res.ok) {
     let message = `AI request failed (${res.status})`;
-    let transient = res.status === 429 || res.status >= 500;
+    let transient = res.status === 429 || res.status === 502 || res.status === 503 || res.status === 504;
     try {
       const body = await res.json();
       if (body?.error) message = body.error;
       if (typeof body?.transient === 'boolean') transient = body.transient;
-    } catch { /* non-JSON error body — keep the default message */ }
+    } catch {
+      /* non-JSON error body — keep the default message */
+    }
     throw new AIRequestError(message, res.status, transient);
   }
 
@@ -130,7 +272,9 @@ export async function generateContentResilient(params: GenerateParams): Promise<
  * History lives here in the browser and is replayed to the stateless endpoint
  * on every turn.
  */
-export function createChat(opts: { config?: { systemInstruction?: string }; history?: Message[]; model?: string; task?: AITask } = {}) {
+export function createChat(
+  opts: { config?: { systemInstruction?: string }; history?: Message[]; model?: string; task?: AITask } = {}
+) {
   const history: Message[] = [...(opts.history || [])];
   return {
     get history() { return [...history]; },
@@ -152,19 +296,37 @@ export function createChat(opts: { config?: { systemInstruction?: string }; hist
 
 export type Chat = ReturnType<typeof createChat>;
 
-/** User-facing message for AI failures, localized. */
+/** User-facing message for AI failures, localized in Arabic & English with clear cause classification. */
 export function aiErrorMessage(err: any, isRtl: boolean): string {
+  if (isTimeoutError(err)) {
+    return isRtl
+      ? 'انتهت مهلة الرد من مساعد الذكاء الاصطناعي ⏱️ جرّب إرسال سؤالك مرة أخرى بشكل أقصر.'
+      : 'The AI assistant timed out waiting for a response ⏱️ Please try again with a shorter prompt.';
+  }
+
   if (isOverloadedError(err)) {
     return isRtl
-      ? 'مساعد الذكاء الاصطناعي مزحوم دلوقتي 🙏 جرّب تبعت تاني بعد ثواني.'
-      : 'The AI assistant is busy right now 🙏 please try again in a few seconds.';
+      ? 'مساعد الذكاء الاصطناعي مزحوم دلوقتي بسبب ضغط الطلبات 🙏 جرّب تبعت تاني بعد ثواني.'
+      : 'The AI assistant is busy right now due to high demand 🙏 Please try again in a few seconds.';
   }
-  return isRtl
-    ? 'حصلت مشكلة في الاتصال بمساعد الذكاء الاصطناعي. حاول تاني.'
-    : 'Something went wrong reaching the AI assistant. Please try again.';
-}
 
-import { AdvisorFinancialProfile } from './types';
+  if (isConfigError(err)) {
+    return isRtl
+      ? 'خدمة الذكاء الاصطناعي غير مضبوطة حالياً على الخادم (مفتاح المزوّد غير مُعد). يرجى التواصل مع الإدارة.'
+      : 'The AI service is not configured on the server (missing provider API key). Please contact the administrator.';
+  }
+
+  const status = err?.status ?? err?.code;
+  if (status === 401 || status === 403) {
+    return isRtl
+      ? 'انتهت صلاحية الجلسة. يرجى إعادة تسجيل الدخول لاستخدام مساعد الذكاء الاصطناعي.'
+      : 'Your session has expired. Please sign in again to use the AI assistant.';
+  }
+
+  return isRtl
+    ? 'حصلت مشكلة في الاتصال بمساعد الذكاء الاصطناعي. تأكد من الاتصال بالإنترنت وحاول تاني.'
+    : 'Something went wrong reaching the AI assistant. Please check your connection and try again.';
+}
 
 /** Marker the AI emits when the user asks to view a property in 3D. */
 export const SHOW_3D_MARKER = '[SHOW_3D]';
@@ -239,4 +401,3 @@ export function extractAdvisorState(text: string): {
   const cleanText = text.replace(/\[ADVISOR_STATE:[\s\S]*?\]/g, '').trim();
   return { cleanText, statePatch };
 }
-

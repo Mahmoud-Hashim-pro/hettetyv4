@@ -1,0 +1,8 @@
+# HETTETY Real Estate Platform — Search Engine Crawl Directives
+User-agent: *
+Allow: /
+Disallow: /api/
+Disallow: /admin
+Disallow: /admin/
+
+Sitemap: https://hettety.vercel.app/sitemap.xml

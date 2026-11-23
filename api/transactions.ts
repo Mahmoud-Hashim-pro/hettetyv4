@@ -2,19 +2,79 @@
  * HETTETY Serverless Transactions & Reservation Control Plane
  * Provides authenticated, authoritative state machine transitions for property offers,
  * reservation deposit intents, and bank escrow settlements under CBE guidelines.
+ *
+ * Persistence priority:
+ *   1. Neon Serverless PostgreSQL (`transactions` table) when DATABASE_URL is configured
+ *   2. Legacy Firestore Admin (`getAdminServices()`) fallback
+ *   3. In-memory store (`mockTransactionsStore`) in dev/test ONLY (fails closed 503 in prod)
  */
 
 import crypto from 'crypto';
-import { TransactionRecord, PaymentMethod } from '../src/types';
-import { authenticateRequest, getAdminServices } from './reconstruction';
+import type { TransactionRecord, PaymentMethod } from '../src/types.js';
+import { authenticateRequest, getAdminServices } from './reconstruction.js';
+import {
+  isNeonConfigured,
+  getNeonSql,
+  ensureNeonSchema,
+  writeAuditLog,
+} from './_lib/neon.js';
+import { verifyAuthHeader, getQueryParams, getJsonBody } from './_lib/auth.js';
 
 export const mockTransactionsStore = new Map<string, TransactionRecord>();
 
+async function authenticateTransactionRequest(req: any): Promise<{
+  uid: string;
+  isAdmin: boolean;
+  isWorker: boolean;
+  email?: string;
+  role?: string;
+}> {
+  const neonAuth = verifyAuthHeader(req);
+  if (neonAuth) {
+    return {
+      uid: neonAuth.uid,
+      isAdmin: neonAuth.isAdmin,
+      isWorker: false,
+      email: neonAuth.email,
+      role: neonAuth.role,
+    };
+  }
+  const legacyAuth = await authenticateRequest(req);
+  return legacyAuth;
+}
+
 /**
- * Retrieves a transaction record from Firestore Admin or the fallback in-memory store.
- * Fails closed in production if Firestore is unavailable.
+ * Retrieves a transaction record from Neon Postgres, Firestore Admin, or dev in-memory store.
+ * Fails closed in production if durable persistence is unavailable.
  */
 async function getDurableTransaction(txId: string): Promise<{ tx: TransactionRecord | null; adminDbRef: any }> {
+  // 1. Primary: Neon Serverless PostgreSQL
+  if (isNeonConfigured()) {
+    try {
+      await ensureNeonSchema();
+      const sql = getNeonSql();
+      const rows = (await sql`
+        SELECT payload FROM transactions WHERE id = ${txId} LIMIT 1
+      `) as Record<string, any>[];
+      if (rows[0]?.payload) {
+        const data = rows[0].payload as TransactionRecord;
+        mockTransactionsStore.set(txId, data);
+        return { tx: data, adminDbRef: null };
+      }
+      return { tx: null, adminDbRef: null };
+    } catch (err: any) {
+      if (process.env.NODE_ENV === 'production') {
+        const dbErr: any = new Error(
+          `DATABASE_PERSISTENCE_FAILED: Error reading transaction ${txId} from Neon Postgres: ${err.message}`
+        );
+        dbErr.status = 503;
+        throw dbErr;
+      }
+      console.warn('[TransactionsAPI] Neon read fallback warning:', err?.message);
+    }
+  }
+
+  // 2. Legacy Firestore Admin fallback
   let adminDbRef: any = null;
   try {
     const { adminDb } = await getAdminServices();
@@ -28,7 +88,7 @@ async function getDurableTransaction(txId: string): Promise<{ tx: TransactionRec
   }
 
   if (process.env.NODE_ENV === 'production' && !adminDbRef) {
-    const dbErr: any = new Error('DATABASE_PERSISTENCE_FAILED: Firestore Admin database unavailable in production.');
+    const dbErr: any = new Error('DATABASE_PERSISTENCE_FAILED: Database unavailable in production.');
     dbErr.status = 503;
     throw dbErr;
   }
@@ -55,10 +115,83 @@ async function getDurableTransaction(txId: string): Promise<{ tx: TransactionRec
 }
 
 /**
- * Persists a transaction record to Firestore Admin.
+ * Lists transactions for an authenticated actor (all for admin, own party records otherwise).
+ */
+async function listDurableTransactions(uid: string, isAdmin: boolean): Promise<TransactionRecord[]> {
+  if (isNeonConfigured()) {
+    await ensureNeonSchema();
+    const sql = getNeonSql();
+    const rows = (isAdmin
+      ? await sql`SELECT payload FROM transactions ORDER BY updated_at DESC LIMIT 250`
+      : await sql`
+          SELECT payload FROM transactions
+          WHERE buyer_id = ${uid} OR seller_id = ${uid} OR agent_id = ${uid}
+          ORDER BY updated_at DESC
+          LIMIT 250
+        `) as Record<string, any>[];
+    return rows.map((r) => r.payload as TransactionRecord).filter(Boolean);
+  }
+
+  const all = Array.from(mockTransactionsStore.values());
+  if (isAdmin) return all;
+  return all.filter((tx) => tx.buyerId === uid || tx.sellerId === uid || tx.agentId === uid);
+}
+
+/**
+ * Persists a transaction record to Neon Postgres (or Firestore Admin fallback).
  * In production, fails closed without modifying in-memory cache if the write fails.
  */
 async function persistDurableTransaction(tx: TransactionRecord, isCreate: boolean = false): Promise<void> {
+  // 1. Primary: Neon Serverless PostgreSQL
+  if (isNeonConfigured()) {
+    try {
+      await ensureNeonSchema();
+      const sql = getNeonSql();
+      await sql`
+        INSERT INTO transactions (
+          id, property_id, property_title, buyer_id, seller_id, agent_id,
+          agreed_price, currency, deposit_amount, status, payload, created_at, updated_at
+        )
+        VALUES (
+          ${tx.id},
+          ${tx.propertyId || null},
+          ${tx.propertyTitle || null},
+          ${tx.buyerId || null},
+          ${tx.sellerId || null},
+          ${tx.agentId || null},
+          ${tx.agreedPrice ?? 0},
+          ${tx.currency || 'EGP'},
+          ${tx.depositAmount ?? 0},
+          ${tx.status || 'offer_submitted'},
+          ${JSON.stringify(tx)}::jsonb,
+          ${tx.createdAt || new Date().toISOString()}::timestamptz,
+          ${tx.updatedAt || new Date().toISOString()}::timestamptz
+        )
+        ON CONFLICT (id) DO UPDATE
+        SET property_id = EXCLUDED.property_id,
+            property_title = EXCLUDED.property_title,
+            buyer_id = EXCLUDED.buyer_id,
+            seller_id = EXCLUDED.seller_id,
+            agent_id = EXCLUDED.agent_id,
+            agreed_price = EXCLUDED.agreed_price,
+            currency = EXCLUDED.currency,
+            deposit_amount = EXCLUDED.deposit_amount,
+            status = EXCLUDED.status,
+            payload = EXCLUDED.payload,
+            updated_at = EXCLUDED.updated_at
+      `;
+      mockTransactionsStore.set(tx.id, tx);
+      return;
+    } catch (err: any) {
+      const dbErr: any = new Error(
+        `DATABASE_PERSISTENCE_FAILED: Failed to durably persist transaction ${tx.id} to Neon Postgres: ${err.message}`
+      );
+      dbErr.status = 503;
+      throw dbErr;
+    }
+  }
+
+  // 2. Legacy Firestore Admin fallback
   let adminDbRef: any = null;
   try {
     const { adminDb } = await getAdminServices();
@@ -96,17 +229,26 @@ async function persistDurableTransaction(tx: TransactionRecord, isCreate: boolea
 }
 
 export default async function handler(req: any, res: any) {
+  if (req.method === 'OPTIONS') return res.status(204).end();
   if (req.method !== 'POST' && req.method !== 'GET') {
     return res.status(405).json({ error: 'Method not allowed. Use GET or POST.' });
   }
 
   try {
-    const auth = await authenticateRequest(req);
-    const action = req.query?.action || req.body?.action;
+    const auth = await authenticateTransactionRequest(req);
+    const query = getQueryParams(req);
+    const body = getJsonBody(req);
+    const action = query.action || body.action;
+
+    // GET /api/transactions?list=1 or action=list-transactions
+    if ((req.method === 'GET' && (query.list === '1' || query.list === 'true')) || action === 'list-transactions') {
+      const transactions = await listDurableTransactions(auth.uid, auth.isAdmin);
+      return res.status(200).json({ success: true, transactions });
+    }
 
     // GET /api/transactions?transactionId=...
     if (req.method === 'GET' || action === 'get-transaction') {
-      const txId = req.query?.transactionId || req.query?.id || req.body?.transactionId || req.body?.id;
+      const txId = query.transactionId || query.id || body.transactionId || body.id;
       if (!txId) {
         return res.status(400).json({ error: 'INVALID_REQUEST: transactionId is required.' });
       }
@@ -137,7 +279,7 @@ export default async function handler(req: any, res: any) {
         depositPercent,
         contractTerms,
         idempotencyKey,
-      } = req.body || {};
+      } = body;
 
       if (!propertyId || !agreedPrice || !buyer?.id || !seller?.id) {
         return res.status(400).json({ error: 'INVALID_REQUEST: Missing required offer fields.' });
@@ -191,7 +333,7 @@ export default async function handler(req: any, res: any) {
 
     // 2. Action: ACCEPT OFFER (Authorized Seller Accepts Buyer Offer)
     if (action === 'accept-offer') {
-      const { transactionId } = req.body || {};
+      const { transactionId } = body;
       if (!transactionId) {
         return res.status(400).json({ error: 'INVALID_REQUEST: transactionId is required.' });
       }
@@ -224,7 +366,7 @@ export default async function handler(req: any, res: any) {
 
     // 3. Action: SUBMIT DEPOSIT REQUEST (Buyer Selects Payment Preference)
     if (action === 'submit-deposit-request') {
-      const { transactionId, paymentMethod } = req.body || {};
+      const { transactionId, paymentMethod } = body;
       if (!transactionId || !paymentMethod) {
         return res.status(400).json({ error: 'INVALID_REQUEST: transactionId and paymentMethod are required.' });
       }
@@ -274,7 +416,7 @@ export default async function handler(req: any, res: any) {
         amount,
         currency,
         settlementStatus,
-      } = req.body || {};
+      } = body;
 
       if (!transactionId || !verifiedEscrowReference) {
         return res.status(400).json({ error: 'INVALID_REQUEST: transactionId and verifiedEscrowReference are required.' });
@@ -374,6 +516,18 @@ export default async function handler(req: any, res: any) {
         timestamp: now,
       };
 
+      await writeAuditLog({
+        actorId: auth.isAdmin ? auth.uid : 'payment_gateway_webhook',
+        actorEmail: auth.email || (auth.isAdmin ? 'admin@hettety.com' : 'webhook@cbe-escrow.local'),
+        actorRole: auth.isAdmin ? 'admin' : 'operations',
+        action: 'ESCROW_DEPOSIT_CONFIRMED',
+        resourceType: 'transaction',
+        resourceId: transactionId,
+        summary: `Escrow confirmed (${verifiedEscrowReference}) for ${tx.depositAmount} ${tx.currency}.`,
+        beforeState: { status: tx.status, depositStatus: tx.depositStatus },
+        afterState: { status: updatedTx.status, depositStatus: updatedTx.depositStatus, escrowReference: verifiedEscrowReference },
+      });
+
       if (adminDbRef) {
         try {
           await adminDbRef.collection('transaction_audit_logs').add(auditLog);
@@ -392,7 +546,7 @@ export default async function handler(req: any, res: any) {
 
     // 5. Action: CANCEL OFFER
     if (action === 'cancel-offer') {
-      const { transactionId, reason } = req.body || {};
+      const { transactionId, reason } = body;
       if (!transactionId) {
         return res.status(400).json({ error: 'INVALID_REQUEST: transactionId is required.' });
       }

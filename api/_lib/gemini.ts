@@ -5,20 +5,25 @@
 import { AIRequest, Provider, ProviderError } from './types.js';
 
 const ENDPOINT = 'https://generativelanguage.googleapis.com/v1beta/models';
+const REQUEST_TIMEOUT_MS = 25_000;
 
 export function createGeminiProvider(): Provider {
   const apiKey = process.env.GEMINI_API_KEY || process.env.VITE_GEMINI_API_KEY || '';
   if (!apiKey) throw new ProviderError('GEMINI_API_KEY is not configured on the server', 500, false);
 
+  const defaultModel = process.env.AI_MODEL || 'gemini-2.5-flash';
+  const fallbackModel =
+    process.env.AI_FALLBACK_MODEL !== undefined
+      ? process.env.AI_FALLBACK_MODEL || undefined
+      : defaultModel !== 'gemini-2.0-flash'
+        ? 'gemini-2.0-flash'
+        : undefined;
+
   return {
     name: 'gemini',
     supportsPdf: true, // Gemini accepts PDFs inline
-    // gemini-2.5-flash is closed to new API keys — Google's 404 points new users
-    // at 3.6-flash. Override with AI_MODEL if your key has access to something else.
-    defaultModel: process.env.AI_MODEL || 'gemini-3.6-flash',
-    // Opt-in only: a hardcoded guess here would 404 on keys that lack that model,
-    // turning a recoverable overload into a hard failure.
-    fallbackModel: process.env.AI_FALLBACK_MODEL,
+    defaultModel,
+    fallbackModel,
 
     async generate(req: AIRequest, model: string): Promise<string> {
       const body: Record<string, unknown> = {
@@ -33,11 +38,20 @@ export function createGeminiProvider(): Provider {
       if (req.responseSchema) generationConfig.responseSchema = req.responseSchema;
       if (Object.keys(generationConfig).length) body.generationConfig = generationConfig;
 
-      const res = await fetch(`${ENDPOINT}/${encodeURIComponent(model)}:generateContent`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey },
-        body: JSON.stringify(body),
-      });
+      let res: Response;
+      try {
+        res = await fetch(`${ENDPOINT}/${encodeURIComponent(model)}:generateContent`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey },
+          body: JSON.stringify(body),
+          signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+        });
+      } catch (err: any) {
+        if (err?.name === 'TimeoutError' || err?.name === 'AbortError') {
+          throw new ProviderError(`Gemini request timed out after ${REQUEST_TIMEOUT_MS / 1000}s`, 504, true);
+        }
+        throw new ProviderError(`Gemini network error: ${err?.message || 'fetch failed'}`, 502, true);
+      }
 
       if (!res.ok) {
         const detail = await res.text().catch(() => '');

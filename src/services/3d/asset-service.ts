@@ -5,8 +5,7 @@
  */
 
 import { CaptureAsset, ThreeDAsset } from '../../types';
-import { db, auth } from '../../firebase';
-import { doc, setDoc } from 'firebase/firestore';
+import { db, auth, doc, setDoc } from '../../firebase';
 
 const captureAssetsRegistry = new Map<string, CaptureAsset[]>();
 const threeDAssetsRegistry = new Map<string, ThreeDAsset[]>();

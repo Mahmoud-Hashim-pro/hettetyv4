@@ -23,12 +23,12 @@ import imageCompression from 'browser-image-compression';
 import { api } from './mockApi';
 import { 
   auth, db, storage, googleProvider, signInWithPopup, signOut, onAuthStateChanged,
+  signInWithEmailAndPassword, createUserWithEmailAndPassword,
   doc, getDoc, setDoc, collection, getDocs, query, where, onSnapshot, writeBatch,
   addDoc, updateDoc, deleteDoc,
   ref, uploadBytes, uploadBytesResumable, getDownloadURL, deleteObject,
   handleFirestoreError, OperationType
 } from './firebase';
-import { createUserWithEmailAndPassword, signInWithEmailAndPassword } from 'firebase/auth';
 import AboutPage from './components/AboutPage';
 import BrandLogo, { BrandMonogram } from './components/BrandLogo';
 import { BuyPropertyPage, VerificationPage, Tours3DPage } from './components/ServicePages';
@@ -44,10 +44,29 @@ import { LoadErrorBoundary } from './components/LoadErrorBoundary';
 import RealEstateAdvisor from './components/RealEstateAdvisor';
 import { parseNaturalLanguageQuery } from './services/search/query-parser';
 import { rankAndFilterProperties } from './services/search/ranking-engine';
-import { PREMIER_LANDMARK_PROPERTIES } from './lib/inventoryData';
+import {
+  DEFAULT_PROPERTY_FILTER_CRITERIA,
+  PropertyDisplayMode,
+  PropertyFilterCriteria,
+} from './core/domain/entities';
+import {
+  filterAndSortProperties,
+  extractDistrictFacets,
+  countActiveFilters,
+} from './core/use-cases/FilterPropertiesUseCase';
+import { seoManager, buildPageSeoMetadata } from './infrastructure/seo/SeoManager';
+import { AdvancedFilterBar, SavedSearchItem } from './features/properties/components/AdvancedFilterBar';
+import { ReshapedPropertyCard } from './features/properties/components/ReshapedPropertyCard';
+import { PropertyComparisonDrawer } from './features/properties/components/PropertyComparisonDrawer';
+import { InventoryEmptyState } from './features/properties/components/InventoryEmptyState';
 
 // Lazy-loaded so the heavy three.js bundle is only fetched when a 3D tour is opened
 const Property3DViewer = lazyWithReload(() => import('./components/Property3DViewer'), 'viewer3d');
+// Lazy-loaded standalone Enterprise Admin Command Center (zero overhead on public routes)
+const AdminPortalApp = lazyWithReload(
+  () => import('./features/admin/AdminPortalApp').then((m) => ({ default: m.AdminPortalApp })),
+  'admin-portal'
+);
 
 const Loading3DFallback = () => (
   <div className="fixed inset-0 z-[70] bg-black flex items-center justify-center">
@@ -3224,953 +3243,7 @@ const PaymentPage = ({ property, onConfirm, onCancel, t, isRtl }: { property: Pr
 
 
 
-// --- Admin Dashboard ---
-// Operations center for admins: live stats, property management, the
-// verification queue and purchase requests. Role management is super-admin only.
-const AdminDashboard = ({ isRtl, isSuperAdmin }: { isRtl: boolean; isSuperAdmin: boolean }) => {
-  const [users, setUsers] = useState<any[]>([]);
-  const [allProperties, setAllProperties] = useState<Property[]>([]);
-  const [purchases, setPurchases] = useState<any[]>([]);
-  const [reports, setReports] = useState<any[]>([]);
-  const [reviewDocs, setReviewDocs] = useState<UserDocument[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [activeTab, setActiveTab] = useState<'stats' | 'properties' | 'verifications' | 'purchases' | 'users' | 'reports' | 'documents'>('stats');
-  const [updating, setUpdating] = useState<string | null>(null);
-  // Document being reviewed, plus the note the reviewer is writing about it.
-  const [reviewingDoc, setReviewingDoc] = useState<UserDocument | null>(null);
-  const [reviewNote, setReviewNote] = useState('');
-  const [reviewFileUrl, setReviewFileUrl] = useState<string | null>(null);
-  const [reviewError, setReviewError] = useState<string | null>(null);
-
-  useEffect(() => {
-    const fetchData = async () => {
-      // Each collection is fetched independently so one denied read
-      // doesn't blank the entire dashboard.
-      const safeGet = async (name: string) => {
-        try {
-          const snap = await getDocs(collection(db, name));
-          return snap.docs.map(d => ({ id: d.id, ...d.data() }));
-        } catch (error) {
-          console.error(`Error fetching ${name}:`, error);
-          return [] as any[];
-        }
-      };
-      // Only the documents actually waiting on a reviewer — the rules run isAdmin()
-      // per returned doc, so pulling the whole collection would cost reads for nothing.
-      const safeQueue = async () => {
-        try {
-          const snap = await getDocs(query(
-            collection(db, 'user_documents'),
-            where('reviewStatus', 'in', ['Uploaded', 'InReview'])
-          ));
-          return snap.docs.map(d => ({ id: d.id, ...d.data() })) as UserDocument[];
-        } catch (error) {
-          console.error('Error fetching document review queue:', error);
-          return [] as UserDocument[];
-        }
-      };
-      const [usersList, propsList, purchasesList, reportsList, docsList] = await Promise.all([
-        safeGet('users'),
-        safeGet('properties'),
-        safeGet('purchases'),
-        safeGet('reports'),
-        safeQueue(),
-      ]);
-      setReviewDocs(docsList);
-      setUsers(usersList);
-      setAllProperties(propsList as Property[]);
-      setPurchases(purchasesList);
-      setReports(reportsList.sort((a: any, b: any) => (b.createdAt || '').localeCompare(a.createdAt || '')));
-      setLoading(false);
-    };
-    fetchData();
-  }, []);
-
-  const pendingProperties = allProperties.filter(p => p.verificationStatus === 'Pending');
-  const verifiedCount = allProperties.filter(p => p.isVerified).length;
-  const forSaleCount = allProperties.filter(p => p.status === 'For Sale').length;
-  const forRentCount = allProperties.filter(p => p.status === 'For Rent').length;
-  const openPurchases = purchases.filter(p => p.status === 'processing');
-
-  const propertyTitle = (id: string) => allProperties.find(p => p.id === id)?.title || `#${id.slice(0, 8)}`;
-  const purchaserEmail = (uid: string) => users.find(u => u.id === uid)?.email || `#${uid.slice(0, 8)}`;
-
-  const handleDeleteReport = async (id: string) => {
-    setUpdating(id);
-    try { await deleteDoc(doc(db, 'reports', id)); setReports(prev => prev.filter(r => r.id !== id)); }
-    catch (e) { console.error('delete report failed', e); }
-    finally { setUpdating(null); }
-  };
-
-  // Firestore stores dates as ISO strings or Timestamps depending on writer
-  const toDate = (v: any): Date | null => {
-    if (!v) return null;
-    if (typeof v?.toDate === 'function') return v.toDate();
-    const d = new Date(v);
-    return isNaN(d.getTime()) ? null : d;
-  };
-  const lastSeen = (u: any) => toDate(u.lastLoginAt) ?? toDate(u.createdAt);
-
-  // One person can end up with several auth accounts on the same email
-  // (e.g. Google sign-in + email/password). Collapse them into a single row:
-  // the admin account wins as the primary doc, the freshest login date is kept.
-  const mergedUsers = (() => {
-    const byEmail = new Map<string, any>();
-    for (const u of users) {
-      const key = (u.email || u.id).toLowerCase();
-      const prev = byEmail.get(key);
-      if (!prev) {
-        byEmail.set(key, { ...u, accounts: 1, accountIds: [u.id] });
-        continue;
-      }
-      const primary = prev.role === 'admin' ? prev
-        : u.role === 'admin' ? u
-        : (lastSeen(u)?.getTime() ?? 0) > (lastSeen(prev)?.getTime() ?? 0) ? u : prev;
-      const latest = [prev, u].map(lastSeen).filter((d): d is Date => !!d).sort((a, b) => b.getTime() - a.getTime())[0];
-      byEmail.set(key, { ...primary, accounts: prev.accounts + 1, accountIds: [...prev.accountIds, u.id], lastLoginAt: latest?.toISOString() ?? primary.lastLoginAt });
-    }
-    // Most recently active first
-    return Array.from(byEmail.values()).sort((a, b) => (lastSeen(b)?.getTime() ?? 0) - (lastSeen(a)?.getTime() ?? 0));
-  })();
-
-  const toggleRole = async (userId: string, currentRole: string) => {
-    setUpdating(userId);
-    const newRole = currentRole === 'admin' ? 'user' : 'admin';
-    try {
-      await updateDoc(doc(db, 'users', userId), { role: newRole });
-      setUsers(users.map(u => u.id === userId ? { ...u, role: newRole } : u));
-    } catch (error) {
-      console.error("Error updating role:", error);
-    } finally {
-      setUpdating(null);
-    }
-  };
-
-  // Removes a person's user document(s). Note: this only clears their Firestore
-  // profile (so they lose admin rights and vanish from the dashboard); their
-  // Firebase Auth login still exists and can only be removed from the Firebase
-  // Console or a Cloud Function with the Admin SDK.
-  const handleDeleteUser = async (mUser: any) => {
-    const email = mUser.email || mUser.id;
-    if (!window.confirm(isRtl
-      ? `متأكد إنك عايز تحذف المستخدم ${email} نهائيًا؟`
-      : `Permanently delete user ${email}?`)) return;
-    setUpdating(mUser.id);
-    const ids: string[] = mUser.accountIds?.length ? mUser.accountIds : [mUser.id];
-    try {
-      await Promise.all(ids.map(id => deleteDoc(doc(db, 'users', id))));
-      setUsers(prev => prev.filter(u => !ids.includes(u.id)));
-    } catch (error) {
-      console.error("Error deleting user:", error);
-      alert(isRtl ? 'فشل حذف المستخدم' : 'Failed to delete the user');
-    } finally {
-      setUpdating(null);
-    }
-  };
-
-  const handleSetAvailability = async (propId: string, availability: 'Available' | 'Sold' | 'Reserved') => {
-    setUpdating(propId);
-    try {
-      await updateDoc(doc(db, 'properties', propId), { availability });
-      setAllProperties(prev => prev.map(p => p.id === propId ? { ...p, availability } : p));
-    } catch (error) {
-      console.error("Error updating availability:", error);
-      alert(isRtl ? 'فشل تحديث حالة التوفر' : 'Failed to update availability');
-    } finally {
-      setUpdating(null);
-    }
-  };
-
-  const handleVerifyProperty = async (propId: string, status: 'Verified' | 'Rejected' | 'Pending', note?: string) => {
-    setUpdating(propId);
-    try {
-      // Who decided, and when — so a badge is always traceable to a person.
-      const patch: Record<string, unknown> = {
-        verificationStatus: status,
-        isVerified: status === 'Verified',
-        verifiedBy: auth.currentUser?.email || '',
-        verifiedAt: new Date().toISOString(),
-      };
-      // Only overwrite the note when this verdict carries one — otherwise a
-      // Verify click would silently erase the reason a listing was pulled.
-      if (note !== undefined) patch.reviewNote = note;
-      if (status === 'Rejected') patch.rejectedAt = new Date().toISOString();
-      if (status === 'Verified') patch.rejectedAt = '';   // approved: the pull is lifted
-      await updateDoc(doc(db, 'properties', propId), patch);
-      setAllProperties(prev => prev.map(p => p.id === propId ? { ...p, ...patch } as Property : p));
-
-      // Tell the owner. isValidNotification allows exactly five keys and there is no
-      // locale field, so both languages go into the one message, Arabic first.
-      const prop = allProperties.find(p => p.id === propId);
-      if (prop?.authorUid && prop.authorUid !== 'anonymous') {
-        const msg = status === 'Verified'
-          ? `راجع فريق حتتي مستندات إعلانك «${prop.title}». — A HETTETY reviewer has reviewed the documents for your listing "${prop.title}".`
-          : status === 'Rejected'
-            ? `إعلانك «${prop.title}» محتاج تعديل. ${note || ''} — Your listing "${prop.title}" needs changes. ${note || ''}`
-            : `رجع إعلانك «${prop.title}» لحالة «لم تتم المراجعة». — Your listing "${prop.title}" is back to "not reviewed".`;
-        await addDoc(collection(db, 'notifications'), {
-          userId: prop.authorUid,
-          title: status === 'Rejected' ? 'إعلانك يحتاج تعديل / Listing needs changes' : 'تحديث مراجعة إعلانك / Listing review update',
-          message: msg.slice(0, 999),
-          date: new Date().toISOString(),
-          read: false,
-        }).catch(err => console.error('Owner notification failed:', err));
-      }
-    } catch (error) {
-      console.error("Error verifying property:", error);
-      // Silence here left the admin staring at a row that never changed.
-      alert(isRtl
-        ? 'تعذّر حفظ القرار. الإعلان زي ما هو — جرّب تاني.'
-        : 'Could not save the verdict. The listing is unchanged — please try again.');
-    } finally {
-      setUpdating(null);
-    }
-  };
-
-  /**
-   * Move a document through the review queue. Only an admin can reach this — the
-   * user_documents rules pin an owner's create to 'Uploaded' and let them change
-   * nothing but the file name afterwards.
-   */
-  const handleReviewDoc = async (target: UserDocument, next: 'InReview' | 'Checked' | 'NeedsAttention', note: string) => {
-    if (next === 'NeedsAttention' && !note.trim()) {
-      setReviewError(isRtl ? 'اكتب سبب الرفض قبل الإرسال.' : 'Write what needs fixing before sending it back.');
-      return;
-    }
-    setUpdating(target.id);
-    setReviewError(null);
-    try {
-      const patch: Record<string, unknown> = {
-        reviewStatus: next,
-        reviewedBy: auth.currentUser?.email || '',
-        reviewedAt: new Date().toISOString(),
-      };
-      if (next !== 'InReview') patch.reviewNote = note.trim();
-      await updateDoc(doc(db, 'user_documents', target.id), patch);
-
-      setReviewDocs(prev => next === 'InReview'
-        ? prev.map(d => d.id === target.id ? { ...d, ...patch } as UserDocument : d)
-        : prev.filter(d => d.id !== target.id));  // leaves the queue once decided
-      if (next !== 'InReview') { setReviewingDoc(null); setReviewNote(''); setReviewFileUrl(null); }
-      else setReviewingDoc(prev => prev && prev.id === target.id ? { ...prev, ...patch } as UserDocument : prev);
-
-      if (next !== 'InReview' && target.ownerUid) {
-        const label = next === 'Checked'
-          ? 'راجع فريق حتتي مستندك. المراجعة مش إثبات إن المستند سليم أو مسجّل في الشهر العقاري. — A HETTETY reviewer read your document. A review is not proof the document is genuine or registered.'
-          : `مستندك محتاج إجراء: ${note.trim()} — Your document needs attention: ${note.trim()}`;
-        await addDoc(collection(db, 'notifications'), {
-          userId: target.ownerUid,
-          title: 'تحديث مراجعة المستند / Document review update',
-          message: `${target.name} — ${label}`.slice(0, 999),
-          date: new Date().toISOString(),
-          read: false,
-        }).catch(err => console.error('Owner notification failed:', err));
-      }
-    } catch (error) {
-      console.error('Error reviewing document:', error);
-      setReviewError(isRtl ? 'تعذّر حفظ المراجعة.' : 'Could not save the review.');
-    } finally {
-      setUpdating(null);
-    }
-  };
-
-  /**
-   * Resolve the file from its Storage path under the reviewer's own auth rather
-   * than from the stored download URL, which is a bearer token.
-   */
-  const openDocForReview = async (target: UserDocument) => {
-    setReviewingDoc(target);
-    setReviewNote(target.reviewNote || '');
-    setReviewError(null);
-    setReviewFileUrl(null);
-    try {
-      if (target.storagePath) setReviewFileUrl(await getDownloadURL(ref(storage, target.storagePath)));
-      else setReviewError(isRtl ? 'المستند ده اترفع قبل تسجيل المسار — افتحه من الكونسول.' : 'This document predates path tracking — open it from the Firebase console.');
-    } catch (error) {
-      console.error('Could not resolve document file:', error);
-      setReviewError(isRtl ? 'تعذّر فتح الملف.' : 'Could not open the file.');
-    }
-  };
-
-  /** Take a listing off the public site without destroying it. Reversible. */
-  const handleHideProperty = async (propId: string, next: 'Live' | 'Removed') => {
-    setUpdating(propId);
-    try {
-      await updateDoc(doc(db, 'properties', propId), { listingState: next });
-      setAllProperties(prev => prev.map(p => p.id === propId ? { ...p, listingState: next } : p));
-    } catch (error) {
-      console.error('Error changing listing state:', error);
-      alert(isRtl ? 'تعذّر تغيير حالة الإعلان.' : 'Could not change the listing state.');
-    } finally {
-      setUpdating(null);
-    }
-  };
-
-  const handleDeleteProperty = async (propId: string) => {
-    const prop = allProperties.find(p => p.id === propId);
-    const name = prop?.title || propId;
-    // A listing deleted here is unrecoverable — there is no trash and no undo.
-    // Name what is going, and point at the reversible option first.
-    if (!window.confirm(isRtl
-      ? `حذف «${name}» نهائيًا؟\n\nمفيش تراجع ومفيش سلة محذوفات — الإعلان وبياناته هيروحوا خالص.\nلو عايز تشيله من الموقع بس، اقفل واستخدم «إخفاء» — دي بترجع.`
-      : `Permanently delete "${name}"?\n\nThere is no undo and no trash — the listing and its data are gone.\nIf you only want it off the site, cancel and use Hide instead — that is reversible.`)) return;
-    setUpdating(propId);
-    try {
-      await deleteDoc(doc(db, 'properties', propId));
-      setAllProperties(prev => prev.filter(p => p.id !== propId));
-    } catch (error) {
-      console.error("Error deleting property:", error);
-      alert(isRtl ? 'فشل حذف العقار' : 'Failed to delete the property');
-    } finally {
-      setUpdating(null);
-    }
-  };
-
-  const handlePurchaseStatus = async (purchaseId: string, status: 'completed' | 'cancelled') => {
-    setUpdating(purchaseId);
-    try {
-      await updateDoc(doc(db, 'purchases', purchaseId), { status });
-      setPurchases(prev => prev.map(p => p.id === purchaseId ? { ...p, status } : p));
-    } catch (error) {
-      console.error("Error updating purchase:", error);
-    } finally {
-      setUpdating(null);
-    }
-  };
-
-  if (loading) return (
-    <div className="flex flex-col items-center justify-center min-h-[60vh]">
-      <Loader2 className="animate-spin text-brand-600 mb-4" size={48} />
-      <p className="text-slate-500 font-medium">Initializing HETTETY Command Center...</p>
-    </div>
-  );
-
-  return (
-    <div className="max-w-7xl mx-auto py-12 px-4 animate-fade-in transition-colors duration-500">
-      <div className="flex flex-col gap-6 mb-8 w-full min-w-0">
-        <div className="flex items-center gap-4 min-w-0">
-          <div className="w-14 h-14 bg-slate-900 dark:bg-black rounded-2xl flex items-center justify-center shadow-lg border border-slate-800 dark:border-slate-700 shrink-0">
-            <Shield className="text-accent-500" size={32} />
-          </div>
-          <div className="min-w-0">
-            <h1 className="text-3xl sm:text-4xl font-heading font-black text-slate-900 dark:text-white tracking-tight">
-              {isSuperAdmin ? (isRtl ? 'لوحة تحكم السوبر أدمن' : 'Super Admin Dashboard') : (isRtl ? 'لوحة تحكم الأدمن' : 'Admin Dashboard')}
-            </h1>
-            <p className="text-slate-500 dark:text-slate-400 font-medium text-sm sm:text-base">
-              {isRtl ? 'مركز إدارة عمليات HETTETY' : 'HETTETY Operations Command Center'}
-            </p>
-          </div>
-        </div>
-
-        <div 
-          className="flex flex-wrap items-center gap-1.5 bg-slate-100 dark:bg-slate-800 p-1.5 rounded-2xl border border-slate-200 dark:border-slate-700 w-full max-w-full min-w-0 shadow-xs" 
-          role="tablist" 
-          aria-label={isRtl ? 'أقسام لوحة التحكم' : 'Admin dashboard sections'}
-        >
-          {[
-            { id: 'stats', label: isRtl ? 'الإحصائيات' : 'Stats', icon: <Target size={16} aria-hidden="true" /> },
-            { id: 'properties', label: isRtl ? 'العقارات' : 'Properties', icon: <Building2 size={16} aria-hidden="true" /> },
-            { id: 'verifications', label: isRtl ? 'التوثيقات' : 'Verifications', icon: <Shield size={16} aria-hidden="true" />, badge: pendingProperties.length },
-            { id: 'purchases', label: isRtl ? 'طلبات الشراء' : 'Purchases', icon: <CreditCard size={16} aria-hidden="true" />, badge: openPurchases.length },
-            { id: 'reports', label: isRtl ? 'البلاغات' : 'Reports', icon: <Shield size={16} aria-hidden="true" />, badge: reports.length },
-            { id: 'documents', label: isRtl ? 'المستندات' : 'Documents', icon: <FileText size={16} aria-hidden="true" />, badge: reviewDocs.length },
-            ...(isSuperAdmin ? [{ id: 'users', label: isRtl ? 'المستخدمين' : 'Users', icon: <Users size={16} aria-hidden="true" /> }] : []),
-          ].map(tab => (
-            <button
-              key={tab.id}
-              role="tab"
-              aria-selected={activeTab === tab.id}
-              onClick={() => setActiveTab(tab.id as any)}
-              className={`flex items-center gap-2 px-3.5 sm:px-4.5 py-2.5 rounded-xl text-xs sm:text-sm font-bold transition-all whitespace-nowrap shrink-0 focus:outline-none focus:ring-2 focus:ring-brand-500 cursor-pointer ${
-                activeTab === tab.id 
-                ? 'bg-white dark:bg-slate-700 text-brand-900 dark:text-white shadow-sm border border-slate-200 dark:border-slate-600' 
-                : 'text-slate-500 dark:text-slate-400 hover:text-brand-600 dark:hover:text-brand-400'
-              }`}
-            >
-              {tab.icon} <span>{tab.label}</span>
-              {tab.badge !== undefined && tab.badge > 0 && (
-                <span className="bg-accent-500 text-white text-[10px] w-5 h-5 rounded-full flex items-center justify-center animate-pulse ms-1">
-                  {tab.badge}
-                </span>
-              )}
-            </button>
-          ))}
-        </div>
-      </div>
-
-      {activeTab === 'stats' && (
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
-          {[
-            { label: isRtl ? 'إجمالي المستخدمين' : 'Total Users', value: mergedUsers.length, icon: <Users />, color: 'bg-blue-50 dark:bg-blue-900/20 text-blue-600 dark:text-blue-400' },
-            { label: isRtl ? 'إجمالي العقارات' : 'Total Properties', value: allProperties.length, icon: <Building2 />, color: 'bg-brand-50 dark:bg-brand-900/20 text-brand-600 dark:text-brand-400' },
-            { label: isRtl ? 'العقارات الموثقة' : 'Verified Units', value: verifiedCount, icon: <CheckCircle />, color: 'bg-green-50 dark:bg-green-900/20 text-green-600 dark:text-green-400' },
-            { label: isRtl ? 'طلبات التوثيق' : 'Pending Verifications', value: pendingProperties.length, icon: <Clock />, color: 'bg-orange-50 dark:bg-orange-900/20 text-orange-600 dark:text-orange-400' },
-            { label: isRtl ? 'بيع / إيجار' : 'For Sale / Rent', value: `${forSaleCount} / ${forRentCount}`, icon: <Key />, color: 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300' },
-            { label: isRtl ? 'طلبات شراء جديدة' : 'Open Purchase Requests', value: openPurchases.length, icon: <CreditCard />, color: 'bg-accent-50 dark:bg-accent-900/20 text-accent-600 dark:text-accent-400' },
-          ].map((stat, i) => (
-            <div key={i} className="bg-white dark:bg-slate-900 p-8 rounded-3xl border border-slate-100 dark:border-slate-800 shadow-sm transition-colors duration-500">
-              <div className={`w-12 h-12 ${stat.color} rounded-2xl flex items-center justify-center mb-6`}>
-                {stat.icon}
-              </div>
-              <p className="text-slate-500 dark:text-slate-400 font-bold text-sm uppercase tracking-wider mb-2">{stat.label}</p>
-              <h3 className="text-4xl font-black text-slate-900 dark:text-white">{stat.value}</h3>
-            </div>
-          ))}
-        </div>
-      )}
-
-      {activeTab === 'verifications' && (
-        <div className="bg-white dark:bg-slate-900 rounded-3xl border border-slate-200 dark:border-slate-800 overflow-hidden shadow-xl animate-scale-up w-full max-w-full min-w-0">
-          <div className="p-6 border-b border-slate-100 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/50">
-            <h2 className="font-bold text-slate-800 dark:text-white flex items-center gap-2">
-              <ShieldCheck className="text-green-600 dark:text-green-400" />
-              {isRtl ? 'طلبات التوثيق المعلقة' : 'Pending Verification Requests'}
-            </h2>
-          </div>
-          {pendingProperties.length === 0 ? (
-            <div className="p-20 text-center text-slate-400 dark:text-slate-600">
-              <CheckCircle size={48} className="mx-auto mb-4 opacity-20" />
-              <p className="font-medium">{isRtl ? 'لا توجد طلبات معلقة حالياً' : 'No pending requests at the moment.'}</p>
-            </div>
-          ) : (
-            <div className="overflow-x-auto w-full max-w-full">
-              <table className="w-full text-start">
-                <thead className="bg-slate-50 dark:bg-slate-800 text-slate-500 dark:text-slate-400 text-xs font-black uppercase tracking-widest">
-                  <tr>
-                    <th className="px-4 sm:px-6 py-4">{isRtl ? 'العقار' : 'Property'}</th>
-                    <th className="px-4 sm:px-6 py-4">{isRtl ? 'الموقع' : 'Location'}</th>
-                    <th className="px-4 sm:px-6 py-4">{isRtl ? 'التاريخ' : 'Date'}</th>
-                    <th className="px-4 sm:px-6 py-4 text-end">{isRtl ? 'الإجراءات' : 'Actions'}</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
-                  {pendingProperties.map((prop) => (
-                    <tr key={prop.id} className="hover:bg-slate-50/50 dark:hover:bg-slate-800/50 transition-colors">
-                      <td className="px-4 sm:px-6 py-4 sm:py-6">
-                        <div className="flex items-center gap-4">
-                          <PropertyImage src={prop.imageUrl} alt={prop.title || (isRtl ? 'صورة العقار' : 'Property thumbnail')} iconSize={18} className="w-12 h-12 rounded-lg object-cover" />
-                          <div>
-                            <div className="font-bold text-slate-900 dark:text-white">{prop.title}</div>
-                            <div className="text-xs text-brand-600 dark:text-brand-400 font-medium">{prop.unitCode}</div>
-                          </div>
-                        </div>
-                      </td>
-                      <td className="px-4 sm:px-6 py-4 sm:py-6 text-slate-600 dark:text-slate-400 text-sm">{prop.location}</td>
-                      <td className="px-4 sm:px-6 py-4 sm:py-6 text-slate-400 dark:text-slate-500 text-xs">
-                        <div>{prop.publishDate}</div>
-                        {/* The verdict says "a reviewer read the documents this seller
-                            uploaded". The reviewer has to be able to open them. */}
-                        {prop.legalDocs?.length ? (
-                          <div className="mt-1 flex flex-col gap-0.5">
-                            {prop.legalDocs.map((docUrl, i) => (
-                              <a key={i} href={docUrl} target="_blank" rel="noopener noreferrer" className="text-brand-600 dark:text-brand-400 font-bold hover:underline">
-                                {isRtl ? `مستند ${i + 1}` : `Document ${i + 1}`}
-                              </a>
-                            ))}
-                          </div>
-                        ) : (
-                          <div className="mt-1 font-bold text-amber-600 dark:text-amber-400">
-                            {isRtl ? 'مفيش مستندات' : 'No documents'}
-                          </div>
-                        )}
-                      </td>
-                      <td className="px-4 sm:px-6 py-4 sm:py-6 text-end">
-                        <div className="flex justify-end gap-2">
-                          <button 
-                            onClick={() => handleVerifyProperty(prop.id, 'Verified')}
-                            disabled={!prop.legalDocs?.length}
-                            title={!prop.legalDocs?.length ? (isRtl ? 'الإعلان ده مرفقش أي مستندات' : 'This listing has no documents attached') : undefined}
-                            className="bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-400 hover:bg-green-600 dark:hover:bg-green-600 hover:text-white px-4 py-2 rounded-lg text-xs font-bold transition-all cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-green-100"
-                          >
-                            {isRtl ? 'توثيق' : 'Verify'}
-                          </button>
-                          <button 
-                            onClick={() => {
-                              // A rejection with no reason leaves the owner staring at
-                              // a red chip and nothing else.
-                              const note = window.prompt(isRtl
-                                ? 'اكتب سبب الرفض — هيوصل لصاحب الإعلان.'
-                                : "Why is this being rejected? The owner will see this.");
-                              if (note === null) return;          // cancelled
-                              if (!note.trim()) {
-                                alert(isRtl ? 'لازم تكتب سبب.' : 'A reason is required.');
-                                return;
-                              }
-                              handleVerifyProperty(prop.id, 'Rejected', note.trim());
-                            }}
-                            className="bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-400 hover:bg-red-600 dark:hover:bg-red-600 hover:text-white px-4 py-2 rounded-lg text-xs font-bold transition-all cursor-pointer"
-                          >
-                            {isRtl ? 'رفض' : 'Reject'}
-                          </button>
-                        </div>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </div>
-      )}
-
-      {activeTab === 'documents' && (
-        <div className="bg-white dark:bg-slate-900 rounded-3xl border border-slate-200 dark:border-slate-800 overflow-hidden shadow-xl animate-scale-up w-full max-w-full min-w-0">
-          <div className="p-6 border-b border-slate-100 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/50">
-            <h2 className="font-bold text-slate-800 dark:text-white flex items-center gap-2">
-              <FileText className="text-brand-600 dark:text-brand-400" aria-hidden="true" />
-              {isRtl ? `مستندات في انتظار المراجعة (${reviewDocs.length})` : `Documents awaiting review (${reviewDocs.length})`}
-            </h2>
-            <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
-              {isRtl
-                ? 'المراجعة معناها إن حد من الفريق قرأ النسخة المرفوعة. مش إثبات إن المستند سليم ولا إنه مسجّل في الشهر العقاري.'
-                : 'A review means a person read the uploaded copy. It is not proof the document is genuine or registered with the Real Estate Publicity Department.'}
-            </p>
-          </div>
-          {reviewDocs.length === 0 ? (
-            <div className="p-20 text-center text-slate-400 dark:text-slate-600">
-              <FileText size={48} className="mx-auto mb-4 opacity-20" aria-hidden="true" />
-              <p className="font-medium">{isRtl ? 'مفيش مستندات مستنية مراجعة.' : 'Nothing waiting for review.'}</p>
-            </div>
-          ) : (
-            <div className="overflow-x-auto w-full max-w-full">
-              <table className="w-full text-start">
-                <thead className="bg-slate-50 dark:bg-slate-800 text-slate-500 dark:text-slate-400 text-xs font-black uppercase tracking-widest">
-                  <tr>
-                    <th className="px-4 sm:px-6 py-4">{isRtl ? 'الملف' : 'File'}</th>
-                    <th className="px-4 sm:px-6 py-4">{isRtl ? 'صاحبه' : 'Owner'}</th>
-                    <th className="px-4 sm:px-6 py-4">{isRtl ? 'التاريخ' : 'Date'}</th>
-                    <th className="px-4 sm:px-6 py-4">{isRtl ? 'الحالة' : 'State'}</th>
-                    <th className="px-4 sm:px-6 py-4 text-end">{isRtl ? 'الإجراءات' : 'Actions'}</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
-                  {reviewDocs.map((d) => (
-                    <tr key={d.id} className="hover:bg-slate-50/50 dark:hover:bg-slate-800/50 transition-colors">
-                      <td className="px-4 sm:px-6 py-4 sm:py-6">
-                        <div className="font-bold text-slate-900 dark:text-white">{d.name}</div>
-                        <div className="text-xs text-brand-600 dark:text-brand-400 font-mono">{d.fileId} • {d.type}</div>
-                      </td>
-                      <td className="px-4 sm:px-6 py-4 sm:py-6 text-slate-600 dark:text-slate-400 text-sm">{users.find(u => u.id === d.ownerUid)?.email || `#${(d.ownerUid || '').slice(0, 8)}`}</td>
-                      <td className="px-4 sm:px-6 py-4 sm:py-6 text-slate-400 dark:text-slate-500 text-xs">{d.uploadDate}</td>
-                      <td className="px-4 sm:px-6 py-4 sm:py-6">
-                        <span className={`px-3 py-1 rounded-full text-xs font-bold border ${d.reviewStatus === 'InReview' ? 'bg-amber-50 dark:bg-amber-900/20 text-amber-700 dark:text-amber-400 border-amber-200 dark:border-amber-800' : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 border-slate-200 dark:border-slate-700'}`}>
-                          {d.reviewStatus === 'InReview' ? (isRtl ? 'قيد المراجعة' : 'Under review') : (isRtl ? 'لم تتم مراجعته' : 'Not reviewed')}
-                        </span>
-                      </td>
-                      <td className="px-4 sm:px-6 py-4 sm:py-6 text-end">
-                        <button
-                          onClick={() => openDocForReview(d)}
-                          disabled={updating === d.id}
-                          className="bg-brand-100 dark:bg-brand-900/30 text-brand-700 dark:text-brand-400 hover:bg-brand-600 dark:hover:bg-brand-600 hover:text-white px-4 py-2 rounded-lg text-xs font-bold transition-all cursor-pointer disabled:opacity-50"
-                        >
-                          {isRtl ? 'مراجعة' : 'Review'}
-                        </button>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </div>
-      )}
-
-      {reviewingDoc && (
-        <div className="fixed inset-0 z-[100] bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4 animate-fade-in" onClick={() => { setReviewingDoc(null); setReviewFileUrl(null); }}>
-          <div role="dialog" aria-modal="true" aria-label={isRtl ? 'مراجعة مستند' : 'Review document'} className="bg-white dark:bg-slate-900 rounded-2xl w-full max-w-4xl max-h-[90vh] flex flex-col overflow-hidden shadow-2xl border border-slate-200 dark:border-slate-800" onClick={(e) => e.stopPropagation()}>
-            <div className="flex justify-between items-center p-4 border-b border-slate-100 dark:border-slate-800 bg-slate-50 dark:bg-slate-800">
-              <div className="min-w-0">
-                <h3 className="font-bold text-slate-900 dark:text-white truncate">{reviewingDoc.name}</h3>
-                <p className="text-xs text-slate-500 dark:text-slate-400 font-mono">{reviewingDoc.fileId} • {reviewingDoc.type}</p>
-              </div>
-              <button type="button" onClick={() => { setReviewingDoc(null); setReviewFileUrl(null); }} aria-label={isRtl ? 'إغلاق' : 'Close'} className="min-w-[48px] min-h-[48px] p-3 text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200 hover:bg-slate-200 dark:hover:bg-slate-700 rounded-full transition-colors cursor-pointer flex items-center justify-center">
-                <X size={20} aria-hidden="true" />
-              </button>
-            </div>
-
-            <div className="flex-1 overflow-y-auto bg-slate-100 dark:bg-slate-950 p-4">
-              {reviewError && <p className="mb-4 p-3 rounded-xl bg-red-50 dark:bg-red-900/20 text-red-700 dark:text-red-400 text-sm font-medium">{reviewError}</p>}
-              {reviewFileUrl ? (
-                reviewingDoc.type === 'Image' ? (
-                  <img src={reviewFileUrl} alt={reviewingDoc.name} className="max-w-full mx-auto rounded-xl" referrerPolicy="no-referrer" />
-                ) : (
-                  <iframe src={reviewFileUrl} title={reviewingDoc.name} className="w-full min-h-[55vh] border-0 rounded-xl bg-white" />
-                )
-              ) : !reviewError ? (
-                <div className="py-20 text-center text-slate-400"><Loader2 className="animate-spin w-6 h-6 mx-auto" aria-hidden="true" /></div>
-              ) : null}
-            </div>
-
-            <div className="p-4 border-t border-slate-100 dark:border-slate-800 space-y-3">
-              <label htmlFor="admin-review-note" className="block text-sm font-bold text-slate-700 dark:text-slate-300">
-                {isRtl ? 'ملاحظة المراجع (إجبارية عند طلب تعديل)' : "Reviewer's note (required when sending back)"}
-              </label>
-              <textarea
-                id="admin-review-note"
-                value={reviewNote}
-                onChange={(e) => setReviewNote(e.target.value)}
-                rows={2}
-                maxLength={1999}
-                placeholder={isRtl ? 'اكتب اللي شفته بالظبط.' : 'Write exactly what you saw.'}
-                className="w-full px-4 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-900 dark:text-white outline-none focus:ring-2 focus:ring-brand-500"
-              />
-              <div className="flex flex-wrap gap-2 justify-end">
-                {reviewingDoc.reviewStatus !== 'InReview' && (
-                  <button onClick={() => handleReviewDoc(reviewingDoc, 'InReview', reviewNote)} disabled={updating === reviewingDoc.id} className="px-4 py-2 rounded-lg text-xs font-bold bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-400 hover:bg-amber-600 hover:text-white transition-all cursor-pointer disabled:opacity-50">
-                    {isRtl ? 'بدء المراجعة' : 'Start review'}
-                  </button>
-                )}
-                <button onClick={() => handleReviewDoc(reviewingDoc, 'NeedsAttention', reviewNote)} disabled={updating === reviewingDoc.id || !reviewFileUrl} className="px-4 py-2 rounded-lg text-xs font-bold bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-400 hover:bg-red-600 hover:text-white transition-all cursor-pointer disabled:opacity-50">
-                  {isRtl ? 'يحتاج إجراء' : 'Needs attention'}
-                </button>
-                <button onClick={() => handleReviewDoc(reviewingDoc, 'Checked', reviewNote)} disabled={updating === reviewingDoc.id || !reviewFileUrl} className="px-4 py-2 rounded-lg text-xs font-bold bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-400 hover:bg-green-600 hover:text-white transition-all cursor-pointer disabled:opacity-50">
-                  {isRtl ? 'تمت المراجعة' : 'Mark reviewed'}
-                </button>
-              </div>
-              <p className="text-[11px] text-slate-400 dark:text-slate-500">
-                {isRtl
-                  ? '«تمت المراجعة» معناها إنك قريت النسخة دي. مش شهادة بصحة المستند ولا بتسجيله في الشهر العقاري.'
-                  : '"Reviewed" means you read this copy. It is not a certificate of authenticity, nor of registration with the Real Estate Publicity Department.'}
-              </p>
-              {!reviewFileUrl && (
-                <p className="text-[11px] font-bold text-amber-600 dark:text-amber-400">
-                  {isRtl
-                    ? 'مينفعش تسجّل مراجعة لملف ما اتفتحش. مستندات المستخدمين مفتوحة للحسابات الرئيسية بس (SUPER_ADMIN_EMAILS).'
-                    : 'You cannot record a review of a file that did not open. User documents are readable only by the accounts in SUPER_ADMIN_EMAILS.'}
-                </p>
-              )}
-            </div>
-          </div>
-        </div>
-      )}
-
-      {activeTab === 'properties' && (
-        <div className="bg-white dark:bg-slate-900 rounded-3xl border border-slate-200 dark:border-slate-800 overflow-hidden shadow-xl animate-scale-up w-full max-w-full min-w-0">
-          <div className="p-6 border-b border-slate-100 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/50 flex items-center justify-between">
-            <h2 className="font-bold text-slate-800 dark:text-white flex items-center gap-2">
-              <Building2 className="text-brand-600 dark:text-brand-400" />
-              {isRtl ? `كل العقارات (${allProperties.length})` : `All Properties (${allProperties.length})`}
-            </h2>
-            {allProperties.length > 0 && (
-              <button onClick={() => downloadCsv('properties.csv', allProperties.map(p => ({ id: p.id, title: p.title, type: p.propertyType, price: p.price, currency: p.currency || 'EGP', location: p.location, compound: p.compound, developer: p.developer, bedrooms: p.bedrooms, bathrooms: p.bathrooms, area: p.area, status: p.status, availability: p.availability, verification: p.verificationStatus, unitCode: p.unitCode, publishDate: p.publishDate })))} className="text-xs bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-300 px-3 py-1.5 rounded-lg font-bold flex items-center gap-1.5 hover:bg-slate-100 dark:hover:bg-slate-700">
-                <Upload size={14} className="rotate-180" /> {isRtl ? 'تصدير CSV' : 'Export CSV'}
-              </button>
-            )}
-          </div>
-          {allProperties.length === 0 ? (
-            <div className="p-20 text-center text-slate-400 dark:text-slate-600">
-              <Building2 size={48} className="mx-auto mb-4 opacity-20" />
-              <p className="font-medium">{isRtl ? 'لا توجد عقارات بعد' : 'No properties yet.'}</p>
-            </div>
-          ) : (
-            <div className="overflow-x-auto w-full max-w-full">
-              <table className="w-full text-start">
-                <thead className="bg-slate-50 dark:bg-slate-800 text-slate-500 dark:text-slate-400 text-xs font-black uppercase tracking-widest">
-                  <tr>
-                    <th className="px-4 sm:px-6 py-4">{isRtl ? 'العقار' : 'Property'}</th>
-                    <th className="px-4 sm:px-6 py-4">{isRtl ? 'الموقع' : 'Location'}</th>
-                    <th className="px-4 sm:px-6 py-4">{isRtl ? 'السعر' : 'Price'}</th>
-                    <th className="px-4 sm:px-6 py-4">{isRtl ? 'الحالة' : 'Status'}</th>
-                    <th className="px-4 sm:px-6 py-4">{isRtl ? 'التوفر' : 'Availability'}</th>
-                    <th className="px-4 sm:px-6 py-4">{isRtl ? 'التوثيق' : 'Verification'}</th>
-                    <th className="px-4 sm:px-6 py-4 text-end">{isRtl ? 'الإجراءات' : 'Actions'}</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
-                  {allProperties.map((prop) => (
-                    <tr key={prop.id} className="hover:bg-slate-50/50 dark:hover:bg-slate-800/50 transition-colors">
-                      <td className="px-4 sm:px-6 py-4">
-                        <div className="flex items-center gap-4">
-                          {prop.imageUrl
-                            ? <PropertyImage src={prop.imageUrl} alt={prop.title || (isRtl ? 'صورة العقار' : 'Property thumbnail')} iconSize={18} className="w-12 h-12 rounded-lg object-cover" />
-                            : <div className="w-12 h-12 rounded-lg bg-slate-100 dark:bg-slate-800 flex items-center justify-center text-slate-400"><Building2 size={20} aria-hidden="true" /></div>}
-                          <div>
-                            <div className="font-bold text-slate-900 dark:text-white line-clamp-1 max-w-[16rem]">{prop.title}</div>
-                            <div className="text-xs text-brand-600 dark:text-brand-400 font-medium">{prop.unitCode}</div>
-                          </div>
-                        </div>
-                      </td>
-                      <td className="px-4 sm:px-6 py-4 text-slate-600 dark:text-slate-400 text-sm">{prop.location}</td>
-                      <td className="px-4 sm:px-6 py-4 text-slate-900 dark:text-white text-sm font-bold whitespace-nowrap">{prop.price?.toLocaleString(isRtl ? 'ar-EG' : 'en-US')} {isRtl ? 'ج.م' : 'EGP'}</td>
-                      <td className="px-4 sm:px-6 py-4">
-                        <span className={`px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-wider whitespace-nowrap ${prop.status === 'For Sale' ? 'bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-400' : 'bg-purple-100 dark:bg-purple-900/30 text-purple-700 dark:text-purple-400'}`}>
-                          {prop.status === 'For Sale' ? (isRtl ? 'للبيع' : 'For Sale') : (isRtl ? 'للإيجار' : 'For Rent')}
-                        </span>
-                      </td>
-                      <td className="px-4 sm:px-6 py-4">
-                        <select
-                          value={prop.availability || 'Available'}
-                          disabled={updating === prop.id}
-                          onChange={(e) => handleSetAvailability(prop.id, e.target.value as 'Available' | 'Sold' | 'Reserved')}
-                          className="px-3 py-1.5 rounded-lg text-xs font-bold bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200 outline-none cursor-pointer"
-                        >
-                          <option value="Available">{isRtl ? 'متاح' : 'Available'}</option>
-                          <option value="Reserved">{isRtl ? 'محجوز' : 'Reserved'}</option>
-                          <option value="Sold">{prop.status === 'For Rent' ? (isRtl ? 'مؤجَّر' : 'Rented') : (isRtl ? 'مباع' : 'Sold')}</option>
-                        </select>
-                      </td>
-                      <td className="px-4 sm:px-6 py-4">
-                        <span className={`px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-wider whitespace-nowrap ${
-                          prop.verificationStatus === 'Verified' ? 'bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-400'
-                          : prop.verificationStatus === 'Rejected' ? 'bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-400'
-                          : 'bg-orange-100 dark:bg-orange-900/30 text-orange-700 dark:text-orange-400'
-                        }`}>
-                          {prop.verificationStatus === 'Verified' ? (isRtl ? 'موثق' : 'Verified') : prop.verificationStatus === 'Rejected' ? (isRtl ? 'مرفوض' : 'Rejected') : (isRtl ? 'معلق' : 'Pending')}
-                        </span>
-                      </td>
-                      <td className="px-4 sm:px-6 py-4 text-end">
-                        <div className="flex justify-end gap-2">
-                          {prop.verificationStatus === 'Verified' ? (
-                            <button
-                              onClick={() => handleVerifyProperty(prop.id, 'Pending')}
-                              disabled={updating === prop.id}
-                              className="bg-orange-100 dark:bg-orange-900/30 text-orange-700 dark:text-orange-400 hover:bg-orange-500 hover:text-white px-4 py-2 rounded-lg text-xs font-bold transition-all cursor-pointer whitespace-nowrap"
-                            >
-                              {isRtl ? 'إلغاء التوثيق' : 'Unverify'}
-                            </button>
-                          ) : (
-                            <button
-                              onClick={() => handleVerifyProperty(prop.id, 'Verified')}
-                              disabled={updating === prop.id}
-                              className="bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-400 hover:bg-green-600 hover:text-white px-4 py-2 rounded-lg text-xs font-bold transition-all cursor-pointer whitespace-nowrap"
-                            >
-                              {isRtl ? 'توثيق' : 'Verify'}
-                            </button>
-                          )}
-                          <button
-                            type="button"
-                            onClick={() => handleHideProperty(prop.id, (prop.listingState || 'Live') === 'Live' ? 'Removed' : 'Live')}
-                            disabled={updating === prop.id}
-                            className="bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 hover:bg-slate-700 hover:text-white px-4 py-2 rounded-lg text-xs font-bold transition-all cursor-pointer whitespace-nowrap disabled:opacity-50"
-                          >
-                            {(prop.listingState || 'Live') === 'Live' ? (isRtl ? 'إخفاء' : 'Hide') : (isRtl ? 'إظهار' : 'Show')}
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => { window.location.hash = `edit-listing/${prop.id}`; }}
-                            aria-label={isRtl ? `تعديل العقار ${prop.title}` : `Edit property ${prop.title}`}
-                            className="bg-brand-100 dark:bg-brand-900/30 text-brand-700 dark:text-brand-400 hover:bg-brand-600 hover:text-white px-4 py-2 rounded-lg text-xs font-bold transition-all cursor-pointer whitespace-nowrap"
-                          >
-                            {isRtl ? 'تعديل' : 'Edit'}
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => handleDeleteProperty(prop.id)}
-                            disabled={updating === prop.id}
-                            aria-label={isRtl ? `حذف العقار ${prop.title}` : `Delete property ${prop.title}`}
-                            className="bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-400 hover:bg-red-600 hover:text-white px-3 py-2 rounded-lg text-xs font-bold transition-all cursor-pointer"
-                            title={isRtl ? 'حذف' : 'Delete'}
-                          >
-                            {updating === prop.id ? <Loader2 className="animate-spin" size={14} aria-hidden="true" /> : <Trash2 size={14} aria-hidden="true" />}
-                          </button>
-                        </div>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </div>
-      )}
-
-      {activeTab === 'purchases' && (
-        <div className="bg-white dark:bg-slate-900 rounded-3xl border border-slate-200 dark:border-slate-800 overflow-hidden shadow-xl animate-scale-up w-full max-w-full min-w-0">
-          <div className="p-6 border-b border-slate-100 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/50">
-            <h2 className="font-bold text-slate-800 dark:text-white flex items-center gap-2">
-              <CreditCard className="text-accent-600 dark:text-accent-400" />
-              {isRtl ? 'طلبات الشراء' : 'Purchase Requests'}
-            </h2>
-          </div>
-          {purchases.length === 0 ? (
-            <div className="p-20 text-center text-slate-400 dark:text-slate-600">
-              <CreditCard size={48} className="mx-auto mb-4 opacity-20" />
-              <p className="font-medium">{isRtl ? 'لا توجد طلبات شراء بعد' : 'No purchase requests yet.'}</p>
-            </div>
-          ) : (
-            <div className="overflow-x-auto w-full max-w-full">
-              <table className="w-full text-start">
-                <thead className="bg-slate-50 dark:bg-slate-800 text-slate-500 dark:text-slate-400 text-xs font-black uppercase tracking-widest">
-                  <tr>
-                    <th className="px-4 sm:px-6 py-4">{isRtl ? 'العقار' : 'Property'}</th>
-                    <th className="px-4 sm:px-6 py-4">{isRtl ? 'المشتري' : 'Buyer'}</th>
-                    <th className="px-4 sm:px-6 py-4">{isRtl ? 'التاريخ' : 'Date'}</th>
-                    <th className="px-4 sm:px-6 py-4">{isRtl ? 'الحالة' : 'Status'}</th>
-                    <th className="px-4 sm:px-6 py-4 text-end">{isRtl ? 'الإجراءات' : 'Actions'}</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
-                  {purchases.map((purchase) => (
-                    <tr key={purchase.id} className="hover:bg-slate-50/50 dark:hover:bg-slate-800/50 transition-colors">
-                      <td className="px-4 sm:px-6 py-4 font-bold text-slate-900 dark:text-white text-sm">{propertyTitle(purchase.propertyId)}</td>
-                      <td className="px-4 sm:px-6 py-4 text-slate-600 dark:text-slate-400 text-sm">{purchaserEmail(purchase.userId)}</td>
-                      <td className="px-4 sm:px-6 py-4 text-slate-400 dark:text-slate-500 text-xs whitespace-nowrap">{purchase.createdAt ? new Date(purchase.createdAt).toLocaleDateString(isRtl ? 'ar-EG' : 'en-US') : '—'}</td>
-                      <td className="px-4 sm:px-6 py-4">
-                        <span className={`px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-wider whitespace-nowrap ${
-                          purchase.status === 'completed' ? 'bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-400'
-                          : purchase.status === 'cancelled' ? 'bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-400'
-                          : 'bg-orange-100 dark:bg-orange-900/30 text-orange-700 dark:text-orange-400'
-                        }`}>
-                          {purchase.status === 'completed' ? (isRtl ? 'مكتمل' : 'Completed') : purchase.status === 'cancelled' ? (isRtl ? 'ملغي' : 'Cancelled') : (isRtl ? 'قيد المعالجة' : 'Processing')}
-                        </span>
-                      </td>
-                      <td className="px-4 sm:px-6 py-4 text-end">
-                        {purchase.status === 'processing' ? (
-                          <div className="flex justify-end gap-2">
-                            <button
-                              onClick={() => handlePurchaseStatus(purchase.id, 'completed')}
-                              disabled={updating === purchase.id}
-                              className="bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-400 hover:bg-green-600 hover:text-white px-4 py-2 rounded-lg text-xs font-bold transition-all cursor-pointer whitespace-nowrap"
-                            >
-                              {isRtl ? 'إتمام' : 'Complete'}
-                            </button>
-                            <button
-                              onClick={() => handlePurchaseStatus(purchase.id, 'cancelled')}
-                              disabled={updating === purchase.id}
-                              className="bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-400 hover:bg-red-600 hover:text-white px-4 py-2 rounded-lg text-xs font-bold transition-all cursor-pointer whitespace-nowrap"
-                            >
-                              {isRtl ? 'إلغاء' : 'Cancel'}
-                            </button>
-                          </div>
-                        ) : (
-                          <span className="text-xs text-slate-400">—</span>
-                        )}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </div>
-      )}
-
-      {activeTab === 'reports' && (
-        <div className="bg-white dark:bg-slate-900 rounded-3xl border border-slate-200 dark:border-slate-800 overflow-hidden shadow-xl animate-scale-up p-6 w-full max-w-full min-w-0">
-          <div className="flex items-center justify-between mb-4">
-            <h3 className="font-bold text-slate-900 dark:text-white">{isRtl ? 'بلاغات على الإعلانات' : 'Listing Reports'} ({reports.length})</h3>
-            {reports.length > 0 && (
-              <button onClick={() => downloadCsv('reports.csv', reports.map(r => ({ property: propertyTitle(r.propertyId), reason: r.reason, reporter: purchaserEmail(r.userId), date: r.createdAt })))} className="text-xs bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 px-3 py-1.5 rounded-lg font-bold flex items-center gap-1.5 hover:bg-slate-200 dark:hover:bg-slate-700">
-                <Upload size={14} className="rotate-180" /> {isRtl ? 'تصدير CSV' : 'Export CSV'}
-              </button>
-            )}
-          </div>
-          {reports.length === 0 ? (
-            <p className="text-slate-400 text-sm">{isRtl ? 'مفيش بلاغات.' : 'No reports.'}</p>
-          ) : (
-            <div className="space-y-3">
-              {reports.map(r => (
-                <div key={r.id} className="flex items-start justify-between gap-4 bg-slate-50 dark:bg-slate-800/50 rounded-xl p-4 border border-slate-100 dark:border-slate-800">
-                  <div className="flex-1 min-w-0">
-                    <div className="font-bold text-slate-900 dark:text-white text-sm">{propertyTitle(r.propertyId)}</div>
-                    <p className="text-sm text-slate-600 dark:text-slate-300 mt-1 whitespace-pre-wrap">{r.reason}</p>
-                    <div className="text-[11px] text-slate-400 mt-1">{purchaserEmail(r.userId)} · {(r.createdAt || '').slice(0, 10)}</div>
-                  </div>
-                  <button 
-                    type="button"
-                    onClick={() => handleDeleteReport(r.id)} 
-                    disabled={updating === r.id} 
-                    aria-label={isRtl ? 'حذف البلاغ' : 'Dismiss report'}
-                    className="shrink-0 text-red-500 hover:text-red-600 p-2 disabled:opacity-50 cursor-pointer focus:outline-none focus:ring-2 focus:ring-red-400 rounded-lg min-w-[36px] min-h-[36px] flex items-center justify-center" 
-                    title={isRtl ? 'حذف البلاغ' : 'Dismiss report'}
-                  >
-                    {updating === r.id ? <Loader2 size={16} className="animate-spin" aria-hidden="true" /> : <Trash2 size={16} aria-hidden="true" />}
-                  </button>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-      )}
-
-      {activeTab === 'users' && isSuperAdmin && (
-        <div className="bg-white dark:bg-slate-900 rounded-3xl border border-slate-200 dark:border-slate-800 overflow-hidden shadow-xl animate-scale-up w-full max-w-full min-w-0">
-           <div className="p-4 border-b border-slate-100 dark:border-slate-800 flex justify-end">
-             <button onClick={() => downloadCsv('users.csv', users.map(u => ({ id: u.id, name: u.name, email: u.email, phone: u.phone, role: u.role, createdAt: u.createdAt, lastLoginAt: u.lastLoginAt })))} className="text-xs bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 px-3 py-1.5 rounded-lg font-bold flex items-center gap-1.5 hover:bg-slate-200 dark:hover:bg-slate-700">
-               <Upload size={14} className="rotate-180" /> {isRtl ? 'تصدير CSV' : 'Export CSV'}
-             </button>
-           </div>
-           <div className="overflow-x-auto w-full max-w-full">
-             <table className="w-full text-start border-collapse">
-               <thead className="bg-slate-50 dark:bg-slate-800 text-slate-500 dark:text-slate-400 text-xs font-black uppercase tracking-widest">
-                 <tr>
-                   <th className="px-4 sm:px-6 py-4">{isRtl ? 'المستخدم' : 'User'}</th>
-                   <th className="px-4 sm:px-6 py-4">{isRtl ? 'البريد الإلكتروني' : 'Email'}</th>
-                   <th className="px-4 sm:px-6 py-4">{isRtl ? 'آخر دخول' : 'Last Login'}</th>
-                   <th className="px-4 sm:px-6 py-4">{isRtl ? 'الدور' : 'Role'}</th>
-                   <th className="px-4 sm:px-6 py-4 text-end">{isRtl ? 'تغيير الامتيازات' : 'Permissions'}</th>
-                 </tr>
-               </thead>
-               <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
-                 {mergedUsers.map((user) => (
-                   <tr key={user.id} className="hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors">
-                     <td className="px-4 sm:px-6 py-4">
-                       <div className="flex items-center gap-3">
-                         <div className="w-8 h-8 rounded-full bg-brand-100 dark:bg-brand-900/30 text-brand-600 dark:text-brand-400 flex items-center justify-center font-bold text-xs uppercase">
-                           {user.name?.charAt(0) || 'U'}
-                         </div>
-                         <div className="font-bold text-slate-900 dark:text-white">{user.name || 'Anonymous'}</div>
-                         {user.accounts > 1 && (
-                           <span
-                             className="bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400 text-[10px] font-black px-2 py-0.5 rounded-full"
-                             title={isRtl ? `${user.accounts} حسابات بنفس البريد تم دمجها` : `${user.accounts} accounts with this email merged`}
-                           >
-                             ×{user.accounts}
-                           </span>
-                         )}
-                       </div>
-                     </td>
-                     <td className="px-4 sm:px-6 py-4 text-slate-600 dark:text-slate-400 text-sm">{user.email}</td>
-                     <td className="px-4 sm:px-6 py-4 text-slate-500 dark:text-slate-400 text-xs whitespace-nowrap">
-                       {lastSeen(user)?.toLocaleString(isRtl ? 'ar-EG' : 'en-US', { dateStyle: 'medium', timeStyle: 'short' }) ?? (isRtl ? 'غير مسجل' : '—')}
-                     </td>
-                     <td className="px-4 sm:px-6 py-4">
-                       <span className={`px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-wider ${
-                         user.role === 'admin' ? 'bg-accent-100 dark:bg-accent-900/30 text-accent-700 dark:text-accent-400' : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400'
-                       }`}>
-                         {user.role}
-                       </span>
-                     </td>
-                     <td className="px-4 sm:px-6 py-4 text-end">
-                       {!SUPER_ADMIN_EMAILS.includes((user.email || '').toLowerCase()) ? (
-                         <div className="flex justify-end gap-2">
-                           <Button
-                             onClick={() => toggleRole(user.id, user.role)}
-                             disabled={updating === user.id}
-                             variant="outline"
-                             className="text-xs py-1.5 px-4 rounded-lg font-bold"
-                           >
-                             {updating === user.id ? <Loader2 className="animate-spin" size={14} /> : (user.role === 'admin' ? (isRtl ? 'إزالة مشرف' : 'Demote') : (isRtl ? 'ترقية لمشرف' : 'Promote'))}
-                           </Button>
-                           <button
-                             type="button"
-                             onClick={() => handleDeleteUser(user)}
-                             disabled={updating === user.id}
-                             aria-label={isRtl ? `حذف المستخدم ${user.name || user.email}` : `Delete user ${user.name || user.email}`}
-                             className="bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-400 hover:bg-red-600 hover:text-white px-3 py-2 rounded-lg text-xs font-bold transition-all cursor-pointer disabled:opacity-50 min-w-[36px] min-h-[36px] flex items-center justify-center focus:outline-none focus:ring-2 focus:ring-red-400"
-                             title={isRtl ? 'حذف المستخدم' : 'Delete user'}
-                           >
-                             <Trash2 size={14} aria-hidden="true" />
-                           </button>
-                         </div>
-                       ) : (
-                         <div className="flex items-center justify-end gap-2 text-xs font-bold text-brand-600 dark:text-brand-400 uppercase">
-                            <Sparkles size={12} className="text-accent-500" />
-                            <span>{isRtl ? 'سوبر أدمن' : 'Super Admin'}</span>
-                         </div>
-                       )}
-                     </td>
-                   </tr>
-                 ))}
-               </tbody>
-             </table>
-           </div>
-        </div>
-      )}
-    </div>
-  );
-};
-
+// Legacy single-tab AdminDashboard replaced by modular standalone AdminPortalApp (src/features/admin/)
 
 // --- Legal Sessions Page ---
 // --- Main App ---
@@ -4182,45 +3255,68 @@ export default function App() {
   const [selectedPropertyId, setSelectedPropertyId] = useState<string | null>(null);
   const [selectedProject, setSelectedProject] = useState<string | null>(null);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
-  const [properties, setProperties] = useState<Property[]>(PREMIER_LANDMARK_PROPERTIES);
+  // Clean reset state: zero demo/fixture properties injected into live inventory.
+  const [properties, setProperties] = useState<Property[]>([]);
   const [editingPropertyId, setEditingPropertyId] = useState<string | null>(null);
   const [loadingProps, setLoadingProps] = useState(false);
   const [lang, setLang] = useState<'en' | 'ar'>('en');
-  const [listingSearchQuery, setListingSearchQuery] = useState('');
-  const [minPrice, setMinPrice] = useState<number | ''>('');
-  const [maxPrice, setMaxPrice] = useState<number | ''>('');
-  const [sortBy, setSortBy] = useState<'default' | 'newest' | 'price-asc' | 'price-desc' | 'name-asc' | 'name-desc'>('default');
-  const [typeFilter, setTypeFilter] = useState('all');
-  const [listingView, setListingView] = useState<'units' | 'projects'>('units');
-  const [savedSearches, setSavedSearches] = useState<any[]>(() => { try { return JSON.parse(localStorage.getItem('hettety_saved_searches') || '[]'); } catch { return []; } });
+  const [filterCriteria, setFilterCriteria] = useState<PropertyFilterCriteria>(DEFAULT_PROPERTY_FILTER_CRITERIA);
+  const [displayMode, setDisplayMode] = useState<PropertyDisplayMode>('grid');
+  const [savedSearches, setSavedSearches] = useState<SavedSearchItem[]>(() => {
+    try { return JSON.parse(localStorage.getItem('hettety_saved_searches') || '[]'); } catch { return []; }
+  });
+  const resetFilterCriteria = useCallback(() => {
+    setFilterCriteria(DEFAULT_PROPERTY_FILTER_CRITERIA);
+  }, []);
   const saveCurrentSearch = () => {
-    const s = { id: `${minPrice}-${maxPrice}-${typeFilter}-${sortBy}-${listingSearchQuery}`.slice(0, 60) || 'search', q: listingSearchQuery, minPrice, maxPrice, typeFilter, sortBy };
+    const s: SavedSearchItem = {
+      id: `${filterCriteria.minPrice}-${filterCriteria.maxPrice}-${filterCriteria.type}-${filterCriteria.sortBy}-${filterCriteria.query}`.slice(0, 60) || 'search',
+      q: filterCriteria.query,
+      minPrice: filterCriteria.minPrice,
+      maxPrice: filterCriteria.maxPrice,
+      typeFilter: filterCriteria.type,
+      sortBy: filterCriteria.sortBy,
+      criteria: { ...filterCriteria, aiFilteredIds: null },
+    };
     const next = [s, ...savedSearches.filter(x => x.id !== s.id)].slice(0, 10);
     setSavedSearches(next);
     localStorage.setItem('hettety_saved_searches', JSON.stringify(next));
   };
-  const applySavedSearch = (s: any) => { setListingSearchQuery(s.q || ''); setMinPrice(s.minPrice ?? ''); setMaxPrice(s.maxPrice ?? ''); setTypeFilter(s.typeFilter || 'all'); setSortBy(s.sortBy || 'default'); setAiFilteredIds(null); };
-  const removeSavedSearch = (id: string) => { const next = savedSearches.filter(x => x.id !== id); setSavedSearches(next); localStorage.setItem('hettety_saved_searches', JSON.stringify(next)); };
+  const applySavedSearch = (s: SavedSearchItem) => {
+    setFilterCriteria({
+      ...DEFAULT_PROPERTY_FILTER_CRITERIA,
+      ...(s.criteria || {}),
+      query: s.criteria?.query ?? s.q ?? '',
+      minPrice: String(s.criteria?.minPrice ?? s.minPrice ?? ''),
+      maxPrice: String(s.criteria?.maxPrice ?? s.maxPrice ?? ''),
+      type: s.criteria?.type ?? s.typeFilter ?? 'all',
+      sortBy: s.criteria?.sortBy ?? s.sortBy ?? 'default',
+      aiFilteredIds: null,
+    });
+  };
+  const removeSavedSearch = (id: string) => {
+    const next = savedSearches.filter(x => x.id !== id);
+    setSavedSearches(next);
+    localStorage.setItem('hettety_saved_searches', JSON.stringify(next));
+  };
   const subscribeAlert = async () => {
     if (!auth.currentUser) { alert(isRtl ? 'سجّل الدخول عشان تفعّل التنبيهات.' : 'Sign in to enable email alerts.'); return; }
-    // Must be the account's own verified email (the security rule enforces this).
     const email = auth.currentUser.email || '';
     if (!/.+@.+\..+/.test(email)) { alert(isRtl ? 'حسابك ملوش إيميل. سجّل دخول بإيميل عشان تفعّل التنبيهات.' : 'Your account has no email. Sign in with an email to enable alerts.'); return; }
     try {
       await addDoc(collection(db, 'alertSubscriptions'), {
         userId: auth.currentUser.uid,
         email,
-        q: listingSearchQuery,
-        minPrice: minPrice === '' ? null : minPrice,
-        maxPrice: maxPrice === '' ? null : maxPrice,
-        typeFilter,
+        q: filterCriteria.query,
+        minPrice: filterCriteria.minPrice === '' ? null : Number(filterCriteria.minPrice),
+        maxPrice: filterCriteria.maxPrice === '' ? null : Number(filterCriteria.maxPrice),
+        typeFilter: filterCriteria.type,
         createdAt: new Date().toISOString(),
       });
       alert(isRtl ? 'تم تفعيل التنبيهات ✅ هيوصلك إيميل لما يظهر عقار مطابق.' : "Alerts enabled ✅ you'll get an email when a matching listing appears.");
     } catch (e) { console.error('alert subscribe failed', e); alert(isRtl ? 'تعذّر تفعيل التنبيهات.' : 'Could not enable alerts.'); }
   };
   const [paymentProperty, setPaymentProperty] = useState<Property | null>(null);
-  const [aiFilteredIds, setAiFilteredIds] = useState<string[] | null>(null);
   const [isAiSearching, setIsAiSearching] = useState(false);
   const [userEmail, setUserEmail] = useState<string | null>(null);
   const [userName, setUserName] = useState<string | null>(null);
@@ -4335,6 +3431,8 @@ export default function App() {
         // Project pages carry the compound name: #project/<encoded name>
         setSelectedProject(decodeURIComponent(param));
         setCurrentPage('project');
+      } else if (page === 'admin') {
+        setCurrentPage('manage-users');
       } else if (page) {
         setCurrentPage(page as Page);
       } else {
@@ -4536,118 +3634,86 @@ export default function App() {
   };
 
   const handleAiSearch = async () => {
-    if (!listingSearchQuery.trim()) {
-      setAiFilteredIds(null);
+    const queryText = filterCriteria.query.trim();
+    if (!queryText) {
+      setFilterCriteria(prev => ({ ...prev, aiFilteredIds: null }));
       return;
     }
-    
+
     setIsAiSearching(true);
     try {
       // Grounded Natural Language Structured Filter Extraction & Ranking
-      const parsedFilters = parseNaturalLanguageQuery(listingSearchQuery);
+      const parsedFilters = parseNaturalLanguageQuery(queryText);
       const ranked = rankAndFilterProperties(publicProperties, parsedFilters);
 
       if (ranked.length > 0) {
-        setAiFilteredIds(ranked.map(r => r.property.id));
+        setFilterCriteria(prev => ({ ...prev, aiFilteredIds: ranked.map(r => r.property.id) }));
       } else {
-        // Fallback: match title, location, or compound substrings
-        const q = listingSearchQuery.toLowerCase();
+        const q = queryText.toLowerCase();
         const fallback = publicProperties.filter(p =>
-          p.title.toLowerCase().includes(q) ||
-          p.location.toLowerCase().includes(q) ||
-          (p.compound || '').toLowerCase().includes(q)
+          (p.title || '').toLowerCase().includes(q) ||
+          (p.location || '').toLowerCase().includes(q) ||
+          (p.compound || '').toLowerCase().includes(q) ||
+          (p.developer || '').toLowerCase().includes(q)
         );
-        setAiFilteredIds(fallback.map(p => p.id));
+        setFilterCriteria(prev => ({ ...prev, aiFilteredIds: fallback.map(p => p.id) }));
       }
     } catch (err: any) {
       console.error("AI Search Error:", err);
-      // Fall back to plain text search instead of interrupting the user with an alert
-      setAiFilteredIds(null);
+      setFilterCriteria(prev => ({ ...prev, aiFilteredIds: null }));
     } finally {
       setIsAiSearching(false);
     }
   };
 
-  // What a visitor is allowed to see. `properties` stays complete because My
-  // Listings needs the owner's own drafts. This is a UI-level hide, not a privacy
-  // boundary — the collection is world-readable by design so the list query works.
-  const publicProperties = properties.filter(p => {
+  // Publicly visible properties (excludes Draft, Removed, and Rejected listings).
+  const publicProperties = useMemo(() => properties.filter(p => {
     if ((p.listingState || 'Live') !== 'Live') return false;
     if (p.verificationStatus === 'Rejected') return false;
-    // Once a reviewer has pulled a listing, editing it puts it back in the queue —
-    // not back in front of buyers. Only a reviewer's approval does that.
     if (p.rejectedAt && p.verificationStatus !== 'Verified') return false;
     return true;
-  });
+  }), [properties]);
 
-  let filteredProperties = publicProperties.filter(p => {
-    const matchesPrice = (minPrice === '' || (p.price != null && p.price >= Number(minPrice))) &&
-                         (maxPrice === '' || (p.price != null && p.price <= Number(maxPrice)));
-    const matchesType = typeFilter === 'all' || p.propertyType === typeFilter;
+  // SOLID Specification-based Filtering & Sorting Use Case (zero demo fallback injection)
+  const filteredProperties = useMemo(
+    () => filterAndSortProperties(publicProperties, filterCriteria),
+    [publicProperties, filterCriteria]
+  );
 
-    if (aiFilteredIds !== null) {
-      return aiFilteredIds.includes(p.id) && matchesPrice && matchesType;
-    }
-    const q = (listingSearchQuery || '').toLowerCase();
-    const matchesSearch = (p.title || '').toLowerCase().includes(q) ||
-      (p.location || '').toLowerCase().includes(q) ||
-      (p.compound || '').toLowerCase().includes(q) ||
-      (p.developer || '').toLowerCase().includes(q);
-    return matchesSearch && matchesPrice && matchesType;
-  });
+  const districtFacets = useMemo(
+    () => extractDistrictFacets(publicProperties),
+    [publicProperties]
+  );
 
-  const isDefaultFilters = listingSearchQuery.trim() === '' &&
-    minPrice === '' &&
-    maxPrice === '' &&
-    typeFilter === 'all' &&
-    sortBy === 'default' &&
-    aiFilteredIds === null;
-
-  if (isDefaultFilters && filteredProperties.length === 0 && PREMIER_LANDMARK_PROPERTIES.length > 0) {
-    filteredProperties = [...PREMIER_LANDMARK_PROPERTIES];
-  }
-
-  if (sortBy === 'newest') {
-    filteredProperties.sort((a, b) => (b.publishDate || '').localeCompare(a.publishDate || ''));
-  } else if (sortBy === 'price-asc') {
-    filteredProperties.sort((a, b) => a.price - b.price);
-  } else if (sortBy === 'price-desc') {
-    filteredProperties.sort((a, b) => b.price - a.price);
-  } else if (sortBy === 'name-asc') {
-    filteredProperties.sort((a, b) => a.title.localeCompare(b.title));
-  } else if (sortBy === 'name-desc') {
-    filteredProperties.sort((a, b) => b.title.localeCompare(a.title));
-  }
+  const activeFilterCount = useMemo(
+    () => countActiveFilters(filterCriteria),
+    [filterCriteria]
+  );
 
   /**
-   * Reload every property. Owner edits and deletes happen inside ProfilePage, so
-   * without a shared refresh the listings, home and 3D pages would stay stale
-   * until a full reload.
+   * Reload every property from Neon Postgres (via compatibility layer).
+   * Respects an empty/reset database truthfully — zero demo listings injected.
    */
   const refreshProperties = useCallback(async () => {
     try {
       const snap = await getDocs(collection(db, 'properties'));
       const fetched = snap.docs.map(d => ({ id: d.id, ...d.data() })) as Property[];
-      if (fetched.length > 0) {
-        setProperties(fetched);
-      } else {
-        setProperties(PREMIER_LANDMARK_PROPERTIES);
-      }
+      setProperties(fetched);
     } catch (err) {
-      console.warn("Could not refresh properties from Firestore, keeping landmark inventory:", err);
-      setProperties(PREMIER_LANDMARK_PROPERTIES);
+      console.warn("Could not refresh properties from Neon database:", err);
+      setProperties([]);
     }
   }, []);
 
-  // Initial Fetch from Firestore
+  // Initial Fetch from Neon Postgres
   useEffect(() => {
     const fetchProps = async () => {
       setLoadingProps(true);
       try {
         await refreshProperties();
       } catch (err) {
-        console.error("Error fetching properties from Firestore:", err);
-        setProperties(PREMIER_LANDMARK_PROPERTIES);
+        console.error("Error fetching properties from Neon database:", err);
+        setProperties([]);
       } finally {
         setLoadingProps(false);
       }
@@ -4655,23 +3721,18 @@ export default function App() {
     fetchProps();
   }, [refreshProperties]);
 
-  // SEO Schema
+  // Dynamic Technical SEO Engine (Meta tags, Canonical, OpenGraph, Twitter Cards & Schema.org JSON-LD)
   useEffect(() => {
-    if (document.getElementById('schema-json-ld')) return;
-    const script = document.createElement('script');
-    script.id = 'schema-json-ld';
-    script.type = 'application/ld+json';
-    script.text = JSON.stringify({
-      "@context": "https://schema.org",
-      "@type": "RealEstateAgent",
-      "name": "HETTETY",
-      "url": "https://hettety.vercel.app/",
-      "image": "https://hettety.vercel.app/logo.jpg",
-      "description": INITIAL_ENTITY_DATA.shortDescription,
-      "address": { "@type": "PostalAddress", "addressCountry": "EG" }
+    const activeProperty = selectedPropertyId
+      ? properties.find(p => p.id === selectedPropertyId)
+      : undefined;
+    const seoMeta = buildPageSeoMetadata(currentPage, {
+      isRtl,
+      property: activeProperty,
+      projectName: selectedProject || undefined,
     });
-    document.head.appendChild(script);
-  }, []);
+    seoManager.apply(seoMeta);
+  }, [currentPage, isRtl, selectedPropertyId, selectedProject, properties]);
 
   /**
    * The single place a page is pushed. Records where the reader was on the page
@@ -4751,6 +3812,41 @@ export default function App() {
       <div className="min-h-screen flex items-center justify-center bg-slate-50 dark:bg-slate-950 transition-colors duration-500">
         <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-brand-600"></div>
       </div>
+    );
+  }
+
+  // Standalone Full-Viewport Enterprise Admin Command Center ("HETTETY Admin OS")
+  // Operates as an independent management platform with dedicated navigation & return-to-site exit.
+  if (!showSplash && currentPage === 'manage-users' && isAdmin) {
+    return (
+      <LoadErrorBoundary isRtl={isRtl} onClose={() => handleNav('home')}>
+        <React.Suspense
+          fallback={
+            <div className="min-h-screen flex flex-col items-center justify-center bg-slate-950 text-white gap-4">
+              <Loader2 className="w-10 h-10 text-accent-500 animate-spin" />
+              <p className="text-sm font-bold tracking-wide text-slate-300">
+                {isRtl ? 'جاري تشغيل مركز قيادة حِتّتي الإداري...' : 'Launching HETTETY Admin OS...'}
+              </p>
+            </div>
+          }
+        >
+          <AdminPortalApp
+            isRtl={isRtl}
+            isSuperAdmin={isSuperAdmin}
+            userEmail={userEmail}
+            userName={userName}
+            darkMode={isDarkMode}
+            onToggleDarkMode={() => setIsDarkMode((d) => !d)}
+            onToggleLanguage={() => setLang((l) => (l === 'ar' ? 'en' : 'ar'))}
+            onExitAdmin={() => handleNav('home')}
+            onOpenAddListing={() => handleNav('add-listing')}
+            onOpenEditListing={(prop) => openEditListing(prop.id)}
+            onOpenProperty={openProperty}
+            onOpen3D={open3D}
+            onPropertiesChanged={refreshProperties}
+          />
+        </React.Suspense>
+      </LoadErrorBoundary>
     );
   }
 
@@ -5060,157 +4156,111 @@ export default function App() {
                  onViewAll={() => handleNav('3d-experience')}
                />
             </div>
-            <div className="py-20 max-w-7xl mx-auto px-4">
+            <section className="py-20 max-w-7xl mx-auto px-4" aria-label={t.prop_featured}>
               <div className="flex justify-between items-end mb-10">
                 <div><h2 className="text-3xl font-heading font-bold text-brand-900 dark:text-white mb-2">{t.prop_featured}</h2><p className="text-slate-600 dark:text-slate-400">{t.prop_subtitle}</p></div>
                 <button onClick={() => handleNav('listings')} className="text-accent-600 dark:text-accent-400 font-bold flex items-center gap-1 hover:gap-2 transition-all cursor-pointer">{t.prop_view_all} {isRtl ? <ArrowLeft size={18} /> : <ArrowRight size={18} />}</button>
               </div>
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-8">
-                {loadingProps 
-                  ? [1,2,3].map(i => <div key={i} className="h-96 bg-slate-200 rounded-2xl animate-pulse"></div>)
-                  : publicProperties.slice(0, 3).map(p => (
-                    <PropertyCard 
-                      key={p.id} 
-                      property={p} 
-                      onView3D={() => open3D(p.id)} 
+              {loadingProps ? (
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-8">
+                  {[1,2,3].map(i => <div key={i} className="h-96 bg-slate-200 dark:bg-slate-800 rounded-3xl animate-pulse"></div>)}
+                </div>
+              ) : publicProperties.length === 0 ? (
+                <InventoryEmptyState
+                  mode="clean-database"
+                  isRtl={isRtl}
+                  isAdmin={isAdmin}
+                  totalInventoryCount={0}
+                  onAddProperty={() => handleNav(auth.currentUser ? 'add-listing' : 'login')}
+                  onOpenAdmin={isAdmin ? () => handleNav('manage-users') : undefined}
+                  onOpenAdvisor={() => handleNav('ai-chat')}
+                />
+              ) : (
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-8">
+                  {publicProperties.slice(0, 3).map(p => (
+                    <ReshapedPropertyCard
+                      key={p.id}
+                      property={p}
+                      variant="grid"
+                      onView3D={() => open3D(p.id)}
                       onToggleFavorite={() => toggleFavorite(p.id)}
                       isFavorited={userFavorites.includes(p.id)}
                       onToggleCompare={() => toggleCompare(p.id)}
                       isComparing={compareIds.includes(p.id)}
                       onClick={() => openProperty(p.id)}
+                      onOpenProject={openProject}
                       t={t}
                       isRtl={isRtl}
                     />
-                  ))
-                }
-              </div>
-            </div>
+                  ))}
+                </div>
+              )}
+            </section>
           </>
         )}
 
         {currentPage === 'listings' && (
-          <div className="py-12 max-w-7xl mx-auto px-4">
-            <div className="mb-8 flex flex-col gap-6 w-full min-w-0">
-               <h1 className="text-3xl lg:text-4xl font-heading font-black text-slate-900 dark:text-white uppercase tracking-tight">{t.prop_avail}</h1>
-               <div className="flex flex-col sm:flex-row flex-wrap gap-3.5 w-full min-w-0 items-stretch sm:items-center">
-                 <div className="relative flex-1 min-w-[240px] sm:min-w-[280px] lg:min-w-[320px] flex gap-2">
-                   <div className="relative flex-1 min-w-0">
-                     <Search className={"absolute top-3 text-slate-400 w-4 h-4 start-3 pointer-events-none"} />
-                     <input 
-                       placeholder={t.prop_search} 
-                       value={listingSearchQuery}
-                       onChange={(e) => {
-                         setListingSearchQuery(e.target.value);
-                         setAiFilteredIds(null);
-                       }}
-                       onKeyDown={(e) => e.key === 'Enter' && handleAiSearch()}
-                       className={`w-full py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 focus:ring-2 focus:ring-brand-500 outline-none text-black dark:text-white ps-9 pe-4 text-xs sm:text-sm font-medium`} 
-                     />
-                   </div>
-                   <button 
-                     onClick={handleAiSearch}
-                     disabled={isAiSearching || !listingSearchQuery.trim()}
-                     className="bg-brand-600 hover:bg-brand-700 text-white px-3.5 sm:px-4 py-2.5 rounded-xl flex items-center gap-1.5 transition-colors disabled:opacity-50 disabled:cursor-not-allowed shrink-0"
-                     title={isRtl ? 'بحث بالذكاء الاصطناعي' : 'AI Search'}
-                   >
-                     {isAiSearching ? <Loader2 className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4" />}
-                   </button>
-                 </div>
-                 <div className="relative flex-1 sm:flex-initial sm:w-40 md:w-44 min-w-[130px]">
-                   <DollarSign className={"absolute top-3 text-slate-400 w-4 h-4 start-3 pointer-events-none"} />
-                   <input 
-                     type="number"
-                     min="0"
-                     placeholder={isRtl ? 'الحد الأدنى' : 'Min Price'} 
-                     value={minPrice}
-                     onChange={(e) => {
-                       const val = e.target.value;
-                       if (val === '') setMinPrice('');
-                       else if (Number(val) >= 0) setMinPrice(Number(val));
-                     }}
-                     className={`w-full py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 focus:ring-2 focus:ring-brand-500 outline-none text-black dark:text-white ps-8 pe-2 text-xs sm:text-sm font-medium [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none`} 
-                   />
-                 </div>
-                 <div className="relative flex-1 sm:flex-initial sm:w-40 md:w-44 min-w-[130px]">
-                   <DollarSign className={"absolute top-3 text-slate-400 w-4 h-4 start-3 pointer-events-none"} />
-                   <input 
-                     type="number"
-                     min="0"
-                     placeholder={isRtl ? 'الحد الأقصى' : 'Max Price'} 
-                     value={maxPrice}
-                     onChange={(e) => {
-                       const val = e.target.value;
-                       if (val === '') setMaxPrice('');
-                       else if (Number(val) >= 0) setMaxPrice(Number(val));
-                     }}
-                     className={`w-full py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 focus:ring-2 focus:ring-brand-500 outline-none text-black dark:text-white ps-8 pe-2 text-xs sm:text-sm font-medium [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none`} 
-                   />
-                 </div>
-                 <select
-                   value={typeFilter}
-                   onChange={(e) => setTypeFilter(e.target.value)}
-                   className="py-2.5 px-3 sm:px-4 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 focus:ring-2 focus:ring-brand-500 outline-none text-black dark:text-white flex-1 sm:flex-none sm:min-w-[140px] text-xs sm:text-sm font-medium"
-                 >
-                   <option value="all">{isRtl ? 'كل الأنواع' : 'All Types'}</option>
-                   {PROPERTY_TYPES.map(o => <option key={o.value} value={o.value}>{isRtl ? o.ar : o.en}</option>)}
-                 </select>
-                 <select
-                   value={sortBy}
-                   onChange={(e) => setSortBy(e.target.value as any)}
-                   className="py-2.5 px-3 sm:px-4 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 focus:ring-2 focus:ring-brand-500 outline-none text-black dark:text-white flex-1 sm:flex-none sm:min-w-[160px] text-xs sm:text-sm font-medium"
-                 >
-                   <option value="default">{isRtl ? 'الترتيب الافتراضي' : 'Default Sort'}</option>
-                   <option value="newest">{isRtl ? 'الأحدث' : 'Newest'}</option>
-                   <option value="price-asc">{isRtl ? 'السعر: من الأقل للأعلى' : 'Price: Low to High'}</option>
-                   <option value="price-desc">{isRtl ? 'السعر: من الأعلى للأقل' : 'Price: High to Low'}</option>
-                   <option value="name-asc">{isRtl ? 'الاسم: أ إلى ي' : 'Name: A to Z'}</option>
-                   <option value="name-desc">{isRtl ? 'الاسم: ي إلى أ' : 'Name: Z to A'}</option>
-                 </select>
-                 <div className="flex items-center gap-2">
-                   <button onClick={saveCurrentSearch} className="py-2.5 px-3.5 rounded-xl border border-brand-200 dark:border-brand-800 bg-brand-50 dark:bg-brand-900/20 text-brand-700 dark:text-brand-300 font-bold text-sm flex items-center gap-1.5 hover:bg-brand-100 dark:hover:bg-brand-900/40 transition-colors whitespace-nowrap shrink-0">
-                     <Save size={15} /> {isRtl ? 'احفظ البحث' : 'Save search'}
-                   </button>
-                   <button onClick={subscribeAlert} className="py-2.5 px-3.5 rounded-xl border border-accent-200 dark:border-accent-800 bg-accent-50 dark:bg-accent-900/20 text-accent-700 dark:text-accent-300 font-bold text-sm flex items-center gap-1.5 hover:bg-accent-100 dark:hover:bg-accent-900/40 transition-colors whitespace-nowrap shrink-0">
-                     <Bell size={15} /> {isRtl ? 'نبّهني بالإيميل' : 'Email alert'}
-                   </button>
-                 </div>
-               </div>
-            </div>
-            {savedSearches.length > 0 && (
-              <div className="flex flex-wrap gap-2 mb-6 -mt-2">
-                {savedSearches.map(s => (
-                  <span key={s.id} className="inline-flex items-center gap-1.5 bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 text-xs font-bold px-3 py-1.5 rounded-full">
-                    <button onClick={() => applySavedSearch(s)} className="hover:text-brand-600 dark:hover:text-brand-400">{s.q || (s.typeFilter !== 'all' ? s.typeFilter : (isRtl ? 'بحث محفوظ' : 'Saved search'))}</button>
-                    <button 
-                      type="button"
-                      onClick={() => removeSavedSearch(s.id)} 
-                      aria-label={isRtl ? `حذف البحث المحفوظ ${s.q || 'بحث'}` : `Delete saved search ${s.q || 'search'}`}
-                      className="text-slate-400 hover:text-red-500 p-1 focus:outline-none focus:ring-2 focus:ring-red-400 rounded-full cursor-pointer"
-                    >
-                      <X size={12} aria-hidden="true" />
-                    </button>
-                  </span>
-                ))}
+          <section className="py-12 max-w-7xl mx-auto px-4" aria-label={t.prop_avail}>
+            <div className="mb-8 flex flex-col gap-5 w-full min-w-0">
+              <div className="flex flex-wrap items-end justify-between gap-4">
+                <div>
+                  <h1 className="text-3xl lg:text-4xl font-heading font-black text-slate-900 dark:text-white tracking-tight">{t.prop_avail}</h1>
+                  <p className="text-sm text-slate-500 dark:text-slate-400 mt-1 font-medium">
+                    {isRtl
+                      ? 'ابحث وقارن الوحدات الحقيقية الموثّقة بفلترة ذكية وجولات 3D.'
+                      : 'Discover, filter, and compare verified listings with real 3D spatial tours.'}
+                  </p>
+                </div>
+                {auth.currentUser && (
+                  <button
+                    type="button"
+                    onClick={() => handleNav('add-listing')}
+                    className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-accent-500 hover:bg-accent-600 text-white text-xs sm:text-sm font-black shadow-md shadow-accent-500/20 transition-all cursor-pointer"
+                  >
+                    <PlusCircle size={16} aria-hidden="true" />
+                    <span>{isRtl ? 'أضف عقارك' : 'Add Listing'}</span>
+                  </button>
+                )}
               </div>
-            )}
-            {/* View toggle: individual units vs grouped projects */}
-            <div className="flex gap-1 bg-slate-100 dark:bg-slate-800 p-1 rounded-xl w-fit mb-6" role="tablist" aria-label={isRtl ? 'طريقة العرض' : 'Listing view'}>
-              {(['units', 'projects'] as const).map(v => (
-                <button 
-                  key={v} 
-                  type="button"
-                  role="tab"
-                  aria-selected={listingView === v}
-                  onClick={() => setListingView(v)} 
-                  className={`px-4 py-1.5 rounded-lg text-sm font-bold transition-all whitespace-nowrap focus:outline-none focus:ring-2 focus:ring-brand-500 ${listingView === v ? 'bg-white dark:bg-slate-900 text-brand-600 dark:text-brand-400 shadow' : 'text-slate-600 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-300'}`}
-                >
-                  {v === 'units' ? (isRtl ? 'الوحدات' : 'Units') : (isRtl ? 'المشاريع' : 'Projects')}
-                </button>
-              ))}
+
+              <AdvancedFilterBar
+                criteria={filterCriteria}
+                onChange={setFilterCriteria}
+                onReset={resetFilterCriteria}
+                onAiSearch={handleAiSearch}
+                isAiSearching={isAiSearching}
+                displayMode={displayMode}
+                onDisplayModeChange={setDisplayMode}
+                totalCount={publicProperties.length}
+                filteredCount={filteredProperties.length}
+                districtFacets={districtFacets}
+                savedSearches={savedSearches}
+                onSaveSearch={saveCurrentSearch}
+                onApplySavedSearch={applySavedSearch}
+                onRemoveSavedSearch={removeSavedSearch}
+                onSubscribeAlert={subscribeAlert}
+                t={t}
+                isRtl={isRtl}
+              />
             </div>
 
-            {listingView === 'projects' ? (
+            {displayMode === 'projects' ? (
               (() => {
+                if (filteredProperties.length === 0 && !loadingProps) {
+                  return (
+                    <InventoryEmptyState
+                      mode={publicProperties.length === 0 ? 'clean-database' : 'no-matches'}
+                      isRtl={isRtl}
+                      isAdmin={isAdmin}
+                      activeFilterCount={activeFilterCount}
+                      totalInventoryCount={publicProperties.length}
+                      onAddProperty={() => handleNav(auth.currentUser ? 'add-listing' : 'login')}
+                      onOpenAdmin={isAdmin ? () => handleNav('manage-users') : undefined}
+                      onClearFilters={resetFilterCriteria}
+                      onOpenAdvisor={() => handleNav('ai-chat')}
+                    />
+                  );
+                }
                 const groups = new Map<string, Property[]>();
                 filteredProperties.forEach(p => { const k = p.compound || (isRtl ? 'وحدات فردية' : 'Individual units'); if (!groups.has(k)) groups.set(k, []); groups.get(k)!.push(p); });
                 const projects = [...groups.entries()];
@@ -5221,18 +4271,15 @@ export default function App() {
                       const min = prices.length ? Math.min(...prices) : 0;
                       const max = prices.length ? Math.max(...prices) : 0;
                       const cur = units[0].currency || 'EGP';
-                      // Real compounds get their own page; the "individual units" bucket
-                      // isn't a project, so it just filters the units list as before.
                       const openGroup = () => {
                         if (units[0].compound) { openProject(name); return; }
-                        setListingView('units');
-                        setListingSearchQuery(name);
-                        setAiFilteredIds(null);
+                        setDisplayMode('grid');
+                        setFilterCriteria(prev => ({ ...prev, query: name, aiFilteredIds: null }));
                       };
                       return (
-                        <div 
-                          key={name} 
-                          onClick={openGroup} 
+                        <article
+                          key={name}
+                          onClick={openGroup}
                           onKeyDown={(e) => {
                             if (e.key === 'Enter' || e.key === ' ') {
                               e.preventDefault();
@@ -5242,56 +4289,54 @@ export default function App() {
                           role="button"
                           tabIndex={0}
                           aria-label={`${name}, ${units.length} ${isRtl ? 'وحدة' : 'units'}`}
-                          className="group bg-white dark:bg-slate-900 rounded-2xl border border-slate-100 dark:border-slate-800 shadow-sm hover:shadow-xl transition-all overflow-hidden cursor-pointer animate-fade-in focus:outline-none focus:ring-2 focus:ring-brand-500"
+                          className="group bg-white dark:bg-slate-900 rounded-3xl border border-slate-200/80 dark:border-slate-800 shadow-sm hover:shadow-xl transition-all overflow-hidden cursor-pointer animate-fade-in focus:outline-none focus:ring-2 focus:ring-brand-500"
                         >
                           <div className="relative h-56 overflow-hidden">
                             <PropertyImage src={units[0].imageUrl} alt={name} iconSize={48} className="w-full h-full object-cover transition-transform duration-700 group-hover:scale-110" />
-                            <div className="absolute bottom-0 left-0 right-0 p-4 bg-gradient-to-t from-black/80 to-transparent">
+                            <div className="absolute bottom-0 left-0 right-0 p-4 bg-gradient-to-t from-brand-950/90 to-transparent">
                               <h3 className="text-white font-heading font-black text-lg line-clamp-1">{name}</h3>
-                              {units[0].developer && <p className="text-white/70 text-xs">{units[0].developer}</p>}
+                              {units[0].developer && <p className="text-white/75 text-xs">{units[0].developer}</p>}
                             </div>
-                            <span className="absolute top-4 right-4 bg-brand-600 text-white text-xs font-bold px-3 py-1 rounded-full">{units.length} {isRtl ? 'وحدة' : 'units'}</span>
+                            <span className="absolute top-4 end-4 bg-accent-500 text-white text-xs font-black px-3 py-1 rounded-full shadow-md">{units.length} {isRtl ? 'وحدة' : 'units'}</span>
                           </div>
                           <div className="p-5">
-                            <p className="flex items-center text-slate-500 dark:text-slate-400 text-sm mb-2"><MapPin size={14} className="me-1" /> {units[0].location}</p>
-                            <div className="font-bold text-brand-600 dark:text-brand-400">{min === max ? min.toLocaleString() : `${min.toLocaleString()} – ${max.toLocaleString()}`} {cur}</div>
+                            <p className="flex items-center text-slate-500 dark:text-slate-400 text-sm mb-2"><MapPin size={14} className="me-1 text-accent-500" /> {units[0].location}</p>
+                            <div className="font-black text-brand-700 dark:text-accent-400">{min === max ? min.toLocaleString() : `${min.toLocaleString()} – ${max.toLocaleString()}`} {cur}</div>
                           </div>
-                        </div>
+                        </article>
                       );
                     })}
                   </div>
                 );
               })()
             ) : filteredProperties.length === 0 && !loadingProps ? (
-              <EmptyState
-                variant="search"
-                title={isRtl ? 'لم نجد أي عقارات تطابق بحثك' : 'No properties found'}
-                description={isRtl ? 'جرب تغيير معايير البحث أو تصفير الفلاتر لرؤية جميع العقارات المتاحة.' : 'Try adjusting your filters or clearing search criteria to see available properties.'}
-                actionLabel={isRtl ? 'إعادة ضبط الفلاتر' : 'Clear All Filters'}
-                onAction={() => {
-                  setListingSearchQuery('');
-                  setMinPrice('');
-                  setMaxPrice('');
-                  setTypeFilter('all');
-                  setSortBy('default');
-                  setAiFilteredIds(null);
-                }}
+              <InventoryEmptyState
+                mode={publicProperties.length === 0 ? 'clean-database' : 'no-matches'}
                 isRtl={isRtl}
+                isAdmin={isAdmin}
+                activeFilterCount={activeFilterCount}
+                totalInventoryCount={publicProperties.length}
+                onAddProperty={() => handleNav(auth.currentUser ? 'add-listing' : 'login')}
+                onOpenAdmin={isAdmin ? () => handleNav('manage-users') : undefined}
+                onClearFilters={resetFilterCriteria}
+                onOpenAdvisor={() => handleNav('ai-chat')}
               />
             ) : (
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-8">
+              <div className={displayMode === 'list' ? 'flex flex-col gap-6' : 'grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-8'}>
                 {loadingProps
-                  ? [1,2,3,4,5,6].map(i => <div key={i} className="h-96 bg-slate-200 dark:bg-slate-800 rounded-2xl animate-pulse"></div>)
+                  ? [1,2,3,4,5,6].map(i => <div key={i} className="h-96 bg-slate-200 dark:bg-slate-800 rounded-3xl animate-pulse"></div>)
                   : filteredProperties.map(p => (
-                    <PropertyCard
+                    <ReshapedPropertyCard
                       key={p.id}
                       property={p}
+                      variant={displayMode === 'list' ? 'list' : 'grid'}
                       onView3D={() => open3D(p.id)}
                       onToggleFavorite={() => toggleFavorite(p.id)}
                       isFavorited={userFavorites.includes(p.id)}
                       onToggleCompare={() => toggleCompare(p.id)}
                       isComparing={compareIds.includes(p.id)}
                       onClick={() => openProperty(p.id)}
+                      onOpenProject={openProject}
                       t={t}
                       isRtl={isRtl}
                     />
@@ -5299,10 +4344,9 @@ export default function App() {
                 }
               </div>
             )}
-          </div>
+          </section>
         )}
 
-        {currentPage === 'manage-users' && isAdmin && <AdminDashboard isRtl={isRtl} isSuperAdmin={isSuperAdmin} />}
         {currentPage === 'ai-chat' && (
           <RealEstateAdvisor
             t={t}
@@ -5698,94 +4742,28 @@ export default function App() {
         )}
       </main>
 
-      {/* Compare bar */}
-      {compareIds.length > 0 && !showCompare && (
-        <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-40 bg-slate-900 text-white rounded-2xl shadow-2xl border border-white/10 px-4 py-3 flex items-center gap-4 animate-fade-in">
-          <span className="text-sm font-bold">{isRtl ? `مقارنة ${compareIds.length}` : `Compare ${compareIds.length}`}</span>
-          <button onClick={() => setShowCompare(true)} disabled={compareIds.length < 2} className="bg-brand-600 hover:bg-brand-700 disabled:opacity-40 text-white text-sm font-bold px-4 py-2 min-h-[44px] rounded-lg cursor-pointer focus:outline-none focus:ring-2 focus:ring-brand-400">{isRtl ? 'قارن الآن' : 'Compare now'}</button>
-          <button 
-            type="button"
-            onClick={() => setCompareIds([])} 
-            aria-label={isRtl ? 'مسح كل العقارات من المقارنة' : 'Clear all properties from comparison'}
-            className="text-white/60 hover:text-white p-2 min-w-[36px] min-h-[36px] flex items-center justify-center cursor-pointer focus:outline-none focus:ring-2 focus:ring-brand-400 rounded-lg"
-          >
-            <X size={18} aria-hidden="true" />
-          </button>
-        </div>
-      )}
-
-      {/* Compare modal */}
-      {showCompare && (
-        <div className="fixed inset-0 z-[75] bg-black/70 backdrop-blur-sm flex items-center justify-center p-4" onClick={() => setShowCompare(false)}>
-          <div 
-            ref={compareModalRef}
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="compare-modal-title"
-            className="bg-white dark:bg-slate-900 rounded-3xl shadow-2xl max-w-5xl w-full max-h-[90vh] overflow-auto" 
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className="flex items-center justify-between p-5 border-b border-slate-100 dark:border-slate-800 sticky top-0 bg-white dark:bg-slate-900 z-10">
-              <h3 id="compare-modal-title" className="font-black text-lg text-slate-900 dark:text-white">{isRtl ? 'مقارنة العقارات' : 'Compare Properties'}</h3>
-              <button 
-                type="button"
-                onClick={() => setShowCompare(false)} 
-                aria-label={isRtl ? 'إغلاق نافذة المقارنة' : 'Close comparison dialog'}
-                className="min-w-[48px] min-h-[48px] p-3 text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-white rounded-full flex items-center justify-center focus:outline-none focus:ring-2 focus:ring-brand-500 cursor-pointer"
-              >
-                <X size={20} aria-hidden="true" />
-              </button>
-            </div>
-            <div className="overflow-x-auto">
-              {(() => {
-                const items = compareIds.map(id => properties.find(p => p.id === id)).filter(Boolean) as Property[];
-                const rows: [string, (p: Property) => React.ReactNode][] = [
-                  [isRtl ? 'السعر' : 'Price', p => `${p.price.toLocaleString()} ${p.currency || 'EGP'}`],
-                  [isRtl ? 'النوع' : 'Type', p => p.propertyType || '—'],
-                  [isRtl ? 'الموقع' : 'Location', p => p.location],
-                  [isRtl ? 'الغرف' : 'Beds', p => p.bedrooms],
-                  [isRtl ? 'الحمامات' : 'Baths', p => p.bathrooms],
-                  [isRtl ? 'المساحة' : 'Area', p => `${p.area}${p.areaTo ? `–${p.areaTo}` : ''} m²`],
-                  [isRtl ? 'التشطيب' : 'Finishing', p => p.finishing || '—'],
-                  [isRtl ? 'الاستلام' : 'Delivery', p => p.deliveryDate || '—'],
-                  [isRtl ? 'الحالة' : 'Status', p => p.status === 'For Sale' ? (isRtl ? 'للبيع' : 'For Sale') : (isRtl ? 'للإيجار' : 'For Rent')],
-                ];
-                return (
-                  <table className="w-full text-sm">
-                    <thead>
-                      <tr>
-                        <th className={`p-3 sticky start-0 bg-white dark:bg-slate-900 z-10`}></th>
-                        {items.map(p => (
-                          <th key={p.id} className="p-3 min-w-[160px]">
-                            <PropertyImage src={p.imageUrl} alt={p.title || (isRtl ? 'صورة العقار' : 'Property thumbnail')} className="w-full h-24 object-cover rounded-xl mb-2" />
-                            <div className="font-bold text-slate-900 dark:text-white text-xs line-clamp-2">{p.title}</div>
-                            <button 
-                              type="button"
-                              onClick={() => toggleCompare(p.id)} 
-                              aria-label={isRtl ? `إزالة ${p.title} من المقارنة` : `Remove ${p.title} from comparison`}
-                              className="text-red-500 hover:text-red-600 font-semibold text-xs mt-1 p-1 focus:outline-none focus:ring-2 focus:ring-red-400 rounded cursor-pointer"
-                            >
-                              {isRtl ? 'إزالة' : 'Remove'}
-                            </button>
-                          </th>
-                        ))}
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {rows.map(([label, fn], ri) => (
-                        <tr key={ri} className={ri % 2 ? 'bg-slate-50 dark:bg-slate-800/40' : ''}>
-                          <td className={`p-3 font-bold text-slate-600 dark:text-slate-400 whitespace-nowrap sticky start-0 bg-white dark:bg-slate-900 z-10`}>{label}</td>
-                          {items.map(p => <td key={p.id} className="p-3 text-center font-medium text-slate-800 dark:text-slate-200">{fn(p)}</td>)}
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                );
-              })()}
-            </div>
-          </div>
-        </div>
-      )}
+      {/* Reshaped Sticky Property Comparison Bar & Side-by-Side Modal */}
+      <PropertyComparisonDrawer
+        properties={compareIds.map(id => properties.find(p => p.id === id)).filter(Boolean) as Property[]}
+        isOpen={showCompare}
+        onOpen={() => setShowCompare(true)}
+        onClose={() => setShowCompare(false)}
+        onRemove={toggleCompare}
+        onClearAll={() => {
+          setCompareIds([]);
+          setShowCompare(false);
+        }}
+        onSelectProperty={(id) => {
+          setShowCompare(false);
+          openProperty(id);
+        }}
+        onView3D={(id) => {
+          setShowCompare(false);
+          open3D(id);
+        }}
+        isRtl={isRtl}
+        t={t}
+      />
 
       {/* Cookie Consent Modal */}
       <CookieConsent t={t} isRtl={isRtl} onNavigateToLegal={handleNav} />

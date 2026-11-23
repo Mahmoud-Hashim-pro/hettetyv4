@@ -6,8 +6,7 @@
  */
 
 import { ReconstructionJob, ReconstructionJobStatus, ReconstructionErrorCode } from '../../types';
-import { db } from '../../firebase';
-import { doc, getDoc, collection, query, where, getDocs, onSnapshot } from 'firebase/firestore';
+import { db, doc, getDoc, collection, query, where, getDocs, onSnapshot } from '../../firebase';
 
 export interface CreateJobParams {
   id?: string;

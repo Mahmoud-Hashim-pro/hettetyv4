@@ -1,9 +1,16 @@
 /**
  * Multi-tier rate limiter for serverless AI API endpoints.
- * Supports distributed Redis-backed rate limiting when REDIS_URL is configured,
- * with atomic sliding windows, per-IP, per-user, per-task limits, and concurrency protection.
- * Automatically falls back to an in-memory sliding window when Redis is unconfigured or in tests.
+ * Backends (in priority order):
+ *   1. Redis (when REDIS_URL is configured) — indivisible Lua multi-tier sliding window
+ *   2. Neon Serverless PostgreSQL (`rate_limit_buckets`) — atomic multi-tier SQL transaction
+ *   3. In-memory sliding window (non-production local dev / tests ONLY)
+ *
+ * Strict security invariant:
+ *   In production (`NODE_ENV === 'production'`), if NEITHER Redis NOR Neon Postgres is
+ *   configured, requests strictly fail closed with HTTP 429 and never fall back to local memory.
  */
+
+import { isNeonConfigured, checkNeonDistributedRateLimit } from './neon.js';
 
 interface RateLimitRecord {
   timestamps: number[];
@@ -49,9 +56,26 @@ export function sanitizeClientIdentifier(rawIp: string): string {
   return ip || '127.0.0.1';
 }
 
-/** In-memory sliding-window fallback check */
+function hasValidRedisUrl(): boolean {
+  const url = process.env.REDIS_URL;
+  return Boolean(url && !url.startsWith('mock://'));
+}
+
+/** Reports the active rate-limiter storage backend for health checks & Admin Ops. */
+export function getActiveRateLimiterBackend(): 'redis' | 'neon_postgres' | 'memory' {
+  if (testRedisClient || hasValidRedisUrl()) return 'redis';
+  if (isNeonConfigured()) return 'neon_postgres';
+  return 'memory';
+}
+
+/** In-memory sliding-window fallback check (synchronous) */
 export function checkRateLimit(clientId: string, limit: number = maxRequestsPerWindow): RateLimitResult {
-  if (process.env.NODE_ENV === 'production' && !testRedisClient && (!process.env.REDIS_URL || process.env.REDIS_URL.startsWith('mock://'))) {
+  if (
+    process.env.NODE_ENV === 'production' &&
+    !testRedisClient &&
+    !hasValidRedisUrl() &&
+    !isNeonConfigured()
+  ) {
     return {
       allowed: false,
       remaining: 0,
@@ -251,8 +275,8 @@ function commitRateLimit(key: string): void {
  * 1. Per IP limit (default 20 req/min)
  * 2. Per User ID limit (default 60 req/min)
  * 3. Per Task limit (default 10 req/min)
- * 4. Truly indivisible atomic Redis Lua multi-key check: No partial quota consumption on rejection!
- * 5. Strict fail-closed production policy when Redis fails or is unavailable.
+ * 4. Atomic Redis Lua OR atomic Neon Postgres (`rate_limit_buckets`) — zero partial consumption!
+ * 5. Strict fail-closed production policy when neither Redis nor Neon Postgres is configured/reachable.
  */
 export async function checkDistributedRateLimit(options: DistributedRateLimitOptions): Promise<RateLimitResult> {
   const cleanIp = sanitizeClientIdentifier(options.ip);
@@ -260,9 +284,16 @@ export async function checkDistributedRateLimit(options: DistributedRateLimitOpt
   const userLimit = options.userLimit ?? 60;
   const taskLimit = options.taskLimit ?? 10;
   const isStrictFailClosed = process.env.RATE_LIMIT_FAIL_CLOSED === 'true' || process.env.NODE_ENV === 'production';
+  const neonAvailable = isNeonConfigured();
 
-  // Strict Fail-Closed in production when Redis is unconfigured
-  if (process.env.NODE_ENV === 'production' && !testRedisClient && !testRedisError && (!process.env.REDIS_URL || process.env.REDIS_URL.startsWith('mock://'))) {
+  // Strict Fail-Closed in production when NEITHER Redis NOR Neon Postgres is configured
+  if (
+    process.env.NODE_ENV === 'production' &&
+    !testRedisClient &&
+    !testRedisError &&
+    !hasValidRedisUrl() &&
+    !neonAvailable
+  ) {
     return {
       allowed: false,
       remaining: 0,
@@ -271,73 +302,96 @@ export async function checkDistributedRateLimit(options: DistributedRateLimitOpt
     };
   }
 
-  // Try Redis distributed limiter
-  try {
-    const redis = await getRedisClient();
-    if (redis) {
-      const now = Date.now();
-      const keys: string[] = [`ratelimit:ip:${cleanIp}`];
-      const limits: number[] = [ipLimit];
+  // 1. Primary: Redis distributed limiter (when REDIS_URL or test Redis hook is active)
+  if (testRedisError || testRedisClient || hasValidRedisUrl()) {
+    try {
+      const redis = await getRedisClient();
+      if (redis) {
+        const now = Date.now();
+        const keys: string[] = [`ratelimit:ip:${cleanIp}`];
+        const limits: number[] = [ipLimit];
 
-      if (options.userId) {
-        keys.push(`ratelimit:user:${options.userId}`);
-        limits.push(userLimit);
-      }
-      if (options.task) {
-        keys.push(`ratelimit:task:${options.task}:${cleanIp}`);
-        limits.push(taskLimit);
-      }
-
-      const [allowed, info, retrySeconds] = await executeMultiTierRateLimitLua(
-        redis,
-        keys,
-        limits,
-        now,
-        windowMs
-      );
-
-      if (allowed === 0) {
-        let reason = 'Distributed IP rate limit exceeded';
-        if (info === 2 && options.userId) {
-          reason = 'Distributed user account rate limit exceeded';
-        } else if ((info === 3 && options.task) || (info === 2 && !options.userId && options.task)) {
-          reason = `Distributed task rate limit exceeded: ${options.task}`;
+        if (options.userId) {
+          keys.push(`ratelimit:user:${options.userId}`);
+          limits.push(userLimit);
         }
+        if (options.task) {
+          keys.push(`ratelimit:task:${options.task}:${cleanIp}`);
+          limits.push(taskLimit);
+        }
+
+        const [allowed, info, retrySeconds] = await executeMultiTierRateLimitLua(
+          redis,
+          keys,
+          limits,
+          now,
+          windowMs
+        );
+
+        if (allowed === 0) {
+          let reason = 'Distributed IP rate limit exceeded';
+          if (info === 2 && options.userId) {
+            reason = 'Distributed user account rate limit exceeded';
+          } else if ((info === 3 && options.task) || (info === 2 && !options.userId && options.task)) {
+            reason = `Distributed task rate limit exceeded: ${options.task}`;
+          }
+          return {
+            allowed: false,
+            remaining: 0,
+            retryAfterSeconds: retrySeconds || 60,
+            reason,
+          };
+        }
+
         return {
-          allowed: false,
-          remaining: 0,
-          retryAfterSeconds: retrySeconds || 60,
-          reason,
+          allowed: true,
+          remaining: info,
+          retryAfterSeconds: 0,
         };
       }
-
-      return {
-        allowed: true,
-        remaining: info,
-        retryAfterSeconds: 0,
-      };
-    } else if (isStrictFailClosed) {
-      return {
-        allowed: false,
-        remaining: 0,
-        retryAfterSeconds: 30,
-        reason: 'Rate limit service unavailable in strict production mode',
-      };
-    }
-  } catch (redisErr) {
-    console.warn('[RateLimiter] Distributed check failed, evaluating degraded policy:', redisErr);
-    if (isStrictFailClosed) {
-      return {
-        allowed: false,
-        remaining: 0,
-        retryAfterSeconds: 30,
-        reason: 'Rate limit service unavailable in strict production mode',
-      };
+    } catch (redisErr) {
+      console.warn('[RateLimiter] Redis distributed check failed:', redisErr);
+      // If a Redis failure is explicitly injected for testing, or Neon is not configured, respect fail-closed
+      if (testRedisError || !neonAvailable) {
+        if (isStrictFailClosed) {
+          return {
+            allowed: false,
+            remaining: 0,
+            retryAfterSeconds: 30,
+            reason: 'Rate limit service unavailable in strict production mode',
+          };
+        }
+      }
     }
   }
 
-  // In production mode, NEVER fall through to in-memory fallback
-  if (process.env.NODE_ENV === 'production') {
+  // 2. Native Serverless Backend: Neon Postgres (`rate_limit_buckets`) atomic multi-tier rate limiting
+  if (neonAvailable && process.env.NODE_ENV !== 'test') {
+    try {
+      return await checkNeonDistributedRateLimit({
+        ip: cleanIp,
+        userId: options.userId,
+        task: options.task,
+        ipLimit,
+        userLimit,
+        taskLimit,
+        windowMs,
+      });
+    } catch (neonErr) {
+      console.warn('[RateLimiter] Neon Postgres distributed check failed:', neonErr);
+      if (isStrictFailClosed) {
+        return {
+          allowed: false,
+          remaining: 0,
+          retryAfterSeconds: 30,
+          reason: 'Rate limit service unavailable in strict production mode',
+        };
+      }
+    }
+  }
+
+  // In production or strict fail-closed mode, NEVER fall through to local memory
+  if (isStrictFailClosed || process.env.NODE_ENV === 'production') {
     return {
       allowed: false,
       remaining: 0,
@@ -346,7 +400,7 @@ export async function checkDistributedRateLimit(options: DistributedRateLimitOpt
     };
   }
 
-  // Fallback to in-memory atomic multi-tier check (check all, then commit all)
+  // 3. Local dev / test in-memory atomic multi-tier fallback (check all, then commit all)
   const ipSim = simulateRateLimit(`ip:${cleanIp}`, ipLimit);
   if (!ipSim.allowed) {
     return { ...ipSim, reason: 'IP rate limit exceeded' };
@@ -406,4 +460,3 @@ export function releaseConcurrencySlot(clientId: string): void {
     activeConcurrency.set(id, active - 1);
   }
 }
-

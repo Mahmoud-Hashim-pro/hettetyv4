@@ -1,4 +1,5 @@
 /**
+ * GET /api/ai?health=1 — live advisor health & configuration probe.
  * POST /api/ai — the app's single AI entry point.
  *
  * The browser posts a provider-neutral request here; this function holds the
@@ -7,7 +8,7 @@
  *
  * Global env:
  *   AI_PROVIDER   gemini (default) | nvidia | openrouter | together | groq | openai
- *   AI_MODEL      override the provider's default model
+ *   AI_MODEL      override the provider's default model (Gemini default: gemini-2.5-flash)
  *   <VENDOR>_API_KEY  e.g. GEMINI_API_KEY, NVIDIA_API_KEY, GROQ_API_KEY
  *
  * Per-task routing (all optional — see _lib/router.ts):
@@ -17,15 +18,22 @@
  *   AI_TASK_BROCHURE_PROVIDER / _MODEL   brochure import (needs PDF support)
  *   AI_TASK_OCR_PROVIDER / _MODEL        registry-number extraction from a deed
  */
+import type { AdvisorHealthStatus } from '../src/core/domain/entities.js';
 import { resolveFileUrls } from './_lib/fetchFile.js';
-import { resolve } from './_lib/router.js';
+import { resolve, buildProvider } from './_lib/router.js';
 import { AI_TASKS, AIRequest, Message, ProviderError, isTransientStatus } from './_lib/types.js';
 import {
   checkDistributedRateLimit,
   acquireConcurrencySlot,
   releaseConcurrencySlot,
   sanitizeClientIdentifier,
+  getActiveRateLimiterBackend,
 } from './_lib/rateLimiter.js';
+import {
+  verifyAuthHeader,
+  verifyFirebaseIdTokenLightweight,
+  getQueryParams,
+} from './_lib/auth.js';
 
 // Vercel rejects a body over ~4.5MB at the edge before this function runs, so a
 // larger ceiling here would just be a number that never applies. Measured on
@@ -86,10 +94,78 @@ function validate(body: any): AIRequest {
   };
 }
 
+/** Computes a safe, secret-free diagnostic snapshot for GET /api/ai?health=1 */
+export function buildAdvisorHealthStatus(): AdvisorHealthStatus {
+  const start = Date.now();
+  const providerName = (process.env.AI_PROVIDER || 'gemini').toLowerCase().trim();
+  const rateLimiterBackend = getActiveRateLimiterBackend();
+  const timestamp = new Date().toISOString();
+
+  let hasApiKey = false;
+  let model = process.env.AI_MODEL || (providerName === 'gemini' ? 'gemini-2.5-flash' : '');
+  let fallbackModel: string | undefined =
+    process.env.AI_FALLBACK_MODEL ||
+    (providerName === 'gemini' && model !== 'gemini-2.0-flash' ? 'gemini-2.0-flash' : undefined);
+  let providerErrorMsg = '';
+
+  try {
+    const provider = buildProvider(providerName);
+    hasApiKey = true;
+    model = provider.defaultModel || model;
+    fallbackModel = provider.fallbackModel;
+  } catch (err: any) {
+    hasApiKey = false;
+    providerErrorMsg = err?.message || 'AI provider API key is missing';
+  }
+
+  const rateLimiterHealthy =
+    process.env.NODE_ENV !== 'production' || rateLimiterBackend !== 'memory';
+  const healthy = hasApiKey && rateLimiterHealthy;
+
+  const diagnosticParts: string[] = [];
+  if (!hasApiKey) {
+    diagnosticParts.push(providerErrorMsg || `Missing API key for provider "${providerName}".`);
+  }
+  if (!rateLimiterHealthy) {
+    diagnosticParts.push(
+      'Production rate limiter has no distributed backend; configure Neon DATABASE_URL or REDIS_URL.'
+    );
+  }
+  if (diagnosticParts.length === 0) {
+    diagnosticParts.push(
+      `Ready on ${providerName} (${model}${fallbackModel ? `, fallback: ${fallbackModel}` : ''}) with ${rateLimiterBackend} rate limiter.`
+    );
+  }
+
+  return {
+    healthy,
+    provider: providerName,
+    model: model || 'unconfigured',
+    fallbackModel,
+    rateLimiterBackend,
+    hasApiKey,
+    latencyMs: Math.max(1, Date.now() - start),
+    timestamp,
+    diagnostics: diagnosticParts.join(' '),
+  };
+}
+
 export default async function handler(req: any, res: any) {
   if (req.method === 'OPTIONS') return res.status(204).end();
+
+  // Health probe: GET /api/ai?health=1
+  if (req.method === 'GET') {
+    const query = getQueryParams(req);
+    if (query.health === '1' || query.health === 'true' || query.action === 'health') {
+      const status = buildAdvisorHealthStatus();
+      return res.status(200).json(status);
+    }
+    res.setHeader('Allow', 'GET, POST');
+    return res.status(405).json({ error: 'Method not allowed. Use POST or GET /api/ai?health=1.' });
+  }
+
   if (req.method !== 'POST') {
-    res.setHeader('Allow', 'POST');
+    res.setHeader('Allow', 'GET, POST');
     return res.status(405).json({ error: 'Method not allowed' });
   }
 
@@ -98,19 +174,28 @@ export default async function handler(req: any, res: any) {
   const ip = sanitizeClientIdentifier(Array.isArray(rawIp) ? rawIp[0] : String(rawIp));
 
   let userId: string | undefined = undefined;
-  const authHeader = req.headers?.authorization;
+  const authHeader = req.headers?.authorization || req.headers?.Authorization;
   if (authHeader && String(authHeader).startsWith('Bearer ')) {
     const idToken = String(authHeader).slice(7).trim();
-    if (process.env.NODE_ENV === 'test' && (idToken.startsWith('test_') || idToken.startsWith('mock_') || idToken.length < 50)) {
+
+    // 1. Verify Neon HMAC-SHA256 JWT token first
+    const verifiedNeon = verifyAuthHeader(req);
+    if (verifiedNeon) {
+      userId = verifiedNeon.uid;
+    } else if (
+      process.env.NODE_ENV === 'test' &&
+      (idToken.startsWith('test_') || idToken.startsWith('mock_') || idToken.length < 50)
+    ) {
+      // 2. Unit test harness tokens ONLY in NODE_ENV === 'test'
       userId = idToken;
     } else {
-      try {
-        const { getAuth } = await import(/* @vite-ignore */ 'firebase-admin/auth');
-        const decoded = await getAuth().verifyIdToken(idToken);
-        userId = decoded.uid;
-      } catch (authErr) {
+      // 3. Bridge: verify RS256 Firebase ID token if valid, else reject cleanly with 401
+      const fbUser = await verifyFirebaseIdTokenLightweight(idToken);
+      if (fbUser) {
+        userId = fbUser.uid;
+      } else {
         return res.status(401).json({
-          error: 'Unauthorized: Invalid or expired Firebase ID token.',
+          error: 'Unauthorized: Invalid or expired auth token.',
           transient: false,
         });
       }

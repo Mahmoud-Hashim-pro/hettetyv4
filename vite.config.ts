@@ -69,7 +69,6 @@ export default defineConfig({
         // gzip). It is code-split naturally via the lazy Property3DViewer.
         manualChunks: {
           vendor: ['react', 'react-dom', 'motion', 'lucide-react'],
-          firebase: ['firebase/app', 'firebase/auth', 'firebase/firestore', 'firebase/storage'],
         },
       },
     },

@@ -174,9 +174,9 @@ const PrivacyPage: React.FC<PrivacyPageProps> = ({ t, isRtl }) => {
                   : 'Hettety complies strictly with Egyptian Personal Data Protection Law No. 151 of 2020 and enforces the following technical safeguards:'}
               </p>
               <ul className="list-disc list-inside space-y-2 ms-4">
-                <li>{isRtl ? 'فصل تام في قواعد البيانات بين الوسائط التسويقية العامة والوثائق القانونية الخاصة المحفوظة في مسار الخزنة المشفرة (/documents/).' : 'Strict isolation between public marketing media and private title deeds stored in encrypted storage vaults (/documents/).'}</li>
-                <li>{isRtl ? 'قواعد أمان Firebase Firestore الصارمة التي تمنع أي مستخدم من الوصول لمستندات غير مملوكة له.' : 'Firebase Firestore security rules enforcing granular ownership checks preventing cross-tenant document exposure.'}</li>
-                <li>{isRtl ? 'تسجيل ومراقبة كاملة لعمليات الدخول (Audit Logging) لكل وصول للمستندات الحساسة.' : 'Comprehensive audit logging capturing all read and write accesses to sensitive property title deeds.'}</li>
+                <li>{isRtl ? 'فصل تام في قواعد البيانات بين الوسائط التسويقية العامة والوثائق القانونية الخاصة المحفوظة في خزنة التخزين السحابي المشفّرة (Encrypted Object Storage Vault).' : 'Strict isolation between public marketing media and private title deeds stored in AES-256 encrypted cloud object storage vaults.'}</li>
+                <li>{isRtl ? 'تخزين البيانات التشغيلية والعقارية على قاعدة بيانات Neon Serverless Postgres مشفّرة عبر TLS مع ضوابط ملكية صارمة على مستوى السجل تمنع أي مستخدم من الوصول لبيانات أو مستندات غير مملوكة له.' : 'Operational and property records stored in TLS-encrypted Neon Serverless Postgres with strict server-side ownership controls preventing cross-tenant data or document exposure.'}</li>
+                <li>{isRtl ? 'تسجيل ومراقبة كاملة لعمليات الدخول والتعديل (Audit Logging) في قاعدة بيانات Neon لكل وصول للمستندات الحساسة.' : 'Comprehensive audit logging persisted in Neon Postgres capturing all read and write accesses to sensitive property title deeds.'}</li>
               </ul>
             </div>
           </section>

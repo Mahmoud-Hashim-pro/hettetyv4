@@ -149,9 +149,8 @@ describe('Challenger M1 Empirical Verification: Requirement R3 & R4', () => {
     });
   });
 
-  describe('R3.3: Firestore Failure Modes & Automatic Fallback', () => {
-    it('falls back to PREMIER_LANDMARK_PROPERTIES immediately when Firestore returns empty docs []', async () => {
-      // Mock Firestore getDocs to return an empty collection
+  describe('R3.3: Clean Reset Database Honesty (Zero Demo Fallback Injection)', () => {
+    it('renders the clean zero-demo InventoryEmptyState when database returns empty docs []', async () => {
       vi.spyOn(firebase, 'getDocs').mockResolvedValueOnce({
         docs: [],
       } as any);
@@ -162,39 +161,40 @@ describe('Challenger M1 Empirical Verification: Requirement R3 & R4', () => {
       const listingsBtns = screen.getAllByRole('button', { name: TRANSLATIONS.en.nav_listings });
       fireEvent.click(listingsBtns[0]);
 
-      // Expect One Hyde Park and Mountain View cards to be visible
+      // Respects reset database truthfully — never injects demo listings
       await waitFor(() => {
-        expect(screen.getByText('One Hyde Park Luxury Park Villa')).toBeInTheDocument();
+        expect(screen.getByText(/Property Inventory Is Freshly Reset/i)).toBeInTheDocument();
       });
 
-      expect(screen.getByText('Mountain View iCity Lagoon iVilla')).toBeInTheDocument();
-      expect(screen.queryByText('No properties found')).not.toBeInTheDocument();
+      expect(screen.queryByText('One Hyde Park Luxury Park Villa')).not.toBeInTheDocument();
+      expect(screen.queryByText('Mountain View iCity Lagoon iVilla')).not.toBeInTheDocument();
     });
 
-    it('falls back cleanly to PREMIER_LANDMARK_PROPERTIES when Firestore throws a network error', async () => {
-      // Mock Firestore getDocs to throw an error
+    it('fails cleanly to empty inventory state when database throws a network error', async () => {
       const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
-      vi.spyOn(firebase, 'getDocs').mockRejectedValueOnce(new Error('Network unavailable: Firestore offline'));
+      const consoleWarnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      vi.spyOn(firebase, 'getDocs').mockRejectedValueOnce(new Error('Network unavailable: Neon offline'));
 
       render(<App />);
 
-      // Navigate to Listings
       const listingsBtns = screen.getAllByRole('button', { name: TRANSLATIONS.en.nav_listings });
       fireEvent.click(listingsBtns[0]);
 
-      // Expect premier units to be displayed despite network failure
       await waitFor(() => {
-        expect(screen.getByText('One Hyde Park Luxury Park Villa')).toBeInTheDocument();
+        expect(screen.getByText(/Property Inventory Is Freshly Reset/i)).toBeInTheDocument();
       });
 
-      expect(screen.getByText('Mountain View iCity Lagoon iVilla')).toBeInTheDocument();
-      expect(screen.queryByText('No properties found')).not.toBeInTheDocument();
+      expect(screen.queryByText('One Hyde Park Luxury Park Villa')).not.toBeInTheDocument();
       consoleErrorSpy.mockRestore();
+      consoleWarnSpy.mockRestore();
     });
 
-    it('displays property cards without showing "No properties found" when default filters are active', async () => {
+    it('renders real stored property cards cleanly when database has listings', async () => {
       vi.spyOn(firebase, 'getDocs').mockResolvedValueOnce({
-        docs: [],
+        docs: PREMIER_LANDMARK_PROPERTIES.slice(0, 3).map((p) => ({
+          id: p.id,
+          data: () => p,
+        })),
       } as any);
 
       render(<App />);
@@ -203,21 +203,18 @@ describe('Challenger M1 Empirical Verification: Requirement R3 & R4', () => {
       fireEvent.click(listingsBtns[0]);
 
       await screen.findByText('One Hyde Park Luxury Park Villa');
-
-      // Ensure no empty state header or message
-      expect(screen.queryByText('No properties found')).not.toBeInTheDocument();
-      expect(screen.queryByText(/Try adjusting your filters/i)).not.toBeInTheDocument();
-
-      // Check multiple cards render
-      const cards = screen.getAllByRole('button', { name: /Luxury Park Villa|Lagoon iVilla|Signature Villa|SODIC/i });
-      expect(cards.length).toBeGreaterThanOrEqual(1);
+      expect(screen.getByText('Mountain View iCity Lagoon iVilla')).toBeInTheDocument();
+      expect(screen.queryByText(/Property Inventory Is Freshly Reset/i)).not.toBeInTheDocument();
     });
   });
 
   describe('R3.4: 3D Tour Button Rendering & Interaction', () => {
-    it('renders the 3D walkthrough tour button on premier property cards', async () => {
+    it('renders the 3D walkthrough tour button on stored property cards with 3D assets', async () => {
       vi.spyOn(firebase, 'getDocs').mockResolvedValueOnce({
-        docs: [],
+        docs: PREMIER_LANDMARK_PROPERTIES.slice(0, 2).map((p) => ({
+          id: p.id,
+          data: () => p,
+        })),
       } as any);
 
       render(<App />);
@@ -227,14 +224,16 @@ describe('Challenger M1 Empirical Verification: Requirement R3 & R4', () => {
 
       await screen.findByText('One Hyde Park Luxury Park Villa');
 
-      // The walkthrough button label in English is "Walk through it"
       const tourButtons = screen.getAllByRole('button', { name: /Walk through it/i });
       expect(tourButtons.length).toBeGreaterThan(0);
     });
 
     it('clicking the 3D tour button transitions to the 3D walkthrough experience (#3d)', async () => {
       vi.spyOn(firebase, 'getDocs').mockResolvedValueOnce({
-        docs: [],
+        docs: PREMIER_LANDMARK_PROPERTIES.slice(0, 2).map((p) => ({
+          id: p.id,
+          data: () => p,
+        })),
       } as any);
 
       render(<App />);
@@ -247,7 +246,6 @@ describe('Challenger M1 Empirical Verification: Requirement R3 & R4', () => {
       const tourButtons = screen.getAllByRole('button', { name: /Walk through it/i });
       fireEvent.click(tourButtons[0]);
 
-      // URL hash should change to #3d
       expect(window.location.hash).toBe('#3d');
     });
   });
@@ -271,10 +269,10 @@ describe('Challenger M1 Empirical Verification: Requirement R3 & R4', () => {
       expect(indexHtml).toContain('https://hettety.vercel.app/logo.jpg');
     });
 
-    it('verifies App.tsx schema-json-ld specifies production URL https://hettety.vercel.app/', () => {
-      const appTsx = readFileSync(resolve(projectRoot, 'src/App.tsx'), 'utf-8');
-      expect(appTsx).toContain('"url": "https://hettety.vercel.app/"');
-      expect(appTsx).toContain('"image": "https://hettety.vercel.app/logo.jpg"');
+    it('verifies SeoManager.ts specifies production URL https://hettety.vercel.app/ and OG image', () => {
+      const seoMgr = readFileSync(resolve(projectRoot, 'src/infrastructure/seo/SeoManager.ts'), 'utf-8');
+      expect(seoMgr).toContain("DEFAULT_SITE_URL = 'https://hettety.vercel.app'");
+      expect(seoMgr).toContain("DEFAULT_OG_IMAGE = 'https://hettety.vercel.app/logo.jpg'");
     });
   });
 });

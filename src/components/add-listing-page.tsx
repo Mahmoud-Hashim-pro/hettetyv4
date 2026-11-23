@@ -716,8 +716,8 @@ Return ONLY valid JSON (no markdown), omitting any key you can't find:
     if (urls.length) setPanoramas(prev => [...prev, ...urls]);
     if (failures) alert(isRtl ? `تعذر رفع ${failures} من صور البانوراما` : `${failures} panorama(s) failed to upload`);
     if (skippedForSize) alert(isRtl
-      ? `تم تخطي ${skippedForSize} بانوراما — فعّل خطة Blaze لرفع وسائط أكثر.`
-      : `${skippedForSize} panorama(s) skipped — enable the Firebase Blaze plan for more media.`);
+      ? `تم تخطي ${skippedForSize} بانوراما — يرجى تهيئة Neon Object Storage (S3) لرفع وسائط أكبر.`
+      : `${skippedForSize} panorama(s) skipped — configure Neon Object Storage (S3) for larger media uploads.`);
     setUploadProgress(100);
     setTimeout(() => setUploading(false), 400);
   };
@@ -765,8 +765,8 @@ Return ONLY valid JSON (no markdown), omitting any key you can't find:
         }
       } else {
         alert(isRtl
-          ? 'رفع الفيديوهات الكبيرة يتطلب تفعيل خطة Blaze في Firebase. حاليًا الحد الأقصى 500 كيلوبايت للفيديو.'
-          : 'Large video uploads require the Firebase Blaze plan. The current limit is 500KB per video.');
+          ? 'رفع الفيديوهات الكبيرة يتطلب تهيئة Neon Object Storage (S3). الحد الأقصى الاحتياطي الحالي 500 كيلوبايت.'
+          : 'Large video uploads require Neon Object Storage (S3) credentials. The inline fallback limit is 500KB.');
       }
     } finally {
       setTimeout(() => setUploading(false), 400);
